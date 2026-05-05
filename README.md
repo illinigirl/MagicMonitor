@@ -1,14 +1,18 @@
-# Disney Parks Watchtower
+# Magic Monitor
 
-A serverless ride-status alerter for Walt Disney World parks. Polls
-themeparks.wiki every 2 minutes, diffs against DynamoDB, and fires
-Pushover alerts to subscribers when monitored rides go down, come
-back up, or stay down for an unusually long time.
+A serverless ride-status alerter and live dashboard for Walt Disney
+World parks. Polls themeparks.wiki every 2 minutes, diffs against
+DynamoDB, and fires Pushover alerts to subscribers when monitored
+rides go down, come back up, or stay down for an unusually long time.
+A Next.js dashboard at `magicmonitor.megillini.dev` shows live ride
+status and park hours.
 
-Phase 1 (this commit): backend only. The poller runs, alerts fire,
-subscribers are seeded manually. Phase 2 will add a Next.js dashboard
-on `disney.megillini.dev` with Cognito + Google sign-in for self-service
-park toggles.
+Status (2026-05-05):
+- **M1 backend** — deployed and polling every 2 min in production
+- **M1.5 park-hours alert filter** — deployed
+- **M2-A web dashboard** — works locally
+- **M2-B auth + Amplify deploy** — in progress (this milestone)
+- See `PROJECT.md` for the full roadmap
 
 ## Architecture (M1)
 
@@ -190,12 +194,18 @@ aws dynamodb scan \
 | Pushover | $5 one-time (already paid) |
 | **Total recurring** | **~$0.20/mo** |
 
-## What's next (M2 preview)
+## What's next (M2-B in progress)
 
-- Next.js dashboard at `disney.megillini.dev` on AWS Amplify
+- Next.js dashboard deployed at `magicmonitor.megillini.dev` on AWS
+  Amplify (currently runs locally; CDK changes for Amplify + ACM +
+  Cognito 2nd app client are in flight)
 - Cognito + Google sign-in (reuses Watchtower's user pool via a
   second app client — no Google Cloud changes needed)
-- Self-service per-user park toggles + Pushover key management
-- Trip-aware auto-toggle (parks light up automatically on trip dates)
+- Read path is Server Components → DynamoDB directly through the
+  Amplify SSR compute IAM role (no separate API tier)
+
+After M2-B, M3 adds self-service per-user park toggles, favorite
+rides, and Pushover key management — implemented as Next.js Route
+Handlers in the same app rather than a separate FastAPI service.
 
 See `PROJECT.md` for the full roadmap.

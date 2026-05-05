@@ -2,14 +2,17 @@
  * Server-only DynamoDB access for the dashboard.
  *
  * Same table the poller Lambda writes. We only read here — the poller
- * is the sole writer for ride state rows. Future M2-B work will add
- * write paths (per-user park toggles, favorites) but keep them in
- * separate API routes that go through API Gateway + a FastAPI Lambda
- * to match Watchtower's pattern.
+ * is the sole writer for ride state rows. M3 will add write paths
+ * (per-user park toggles, favorites) as Next.js Route Handlers in
+ * this same app: NextAuth's `auth()` already gives us the Cognito sub
+ * in-handler, the SSR compute role grows to include scoped
+ * UpdateItem on USER#* and PARK#*#USER#* keys, and TS types stay
+ * end-to-end. No separate API service.
  *
  * In dev, the SDK picks up SSO creds via AWS_PROFILE in the shell.
- * In production (Amplify SSR), the IAM role provides credentials —
- * no env vars needed.
+ * In production (Amplify SSR), the SSR compute IAM role provides
+ * credentials — no env vars needed. The role is granted via
+ * `dataTable.grantReadData(webApp.computeRole)` in disney-stack.ts.
  */
 import "server-only";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";

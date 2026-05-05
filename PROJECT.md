@@ -36,13 +36,15 @@ which rides matter, their Pushover key for alerts.
 | Schedule | EventBridge | Native AWS cron, no separate service needed |
 | Storage | DynamoDB single-table | Serverless, free at this scale, interview-popular |
 | Notifications | Pushover (HTTPS API from Lambda) | Family already uses it; ~$0/mo recurring |
-| Frontend | Next.js 16 + Tailwind 4 + React 19 | Same stack as Watchtower for portfolio consistency |
+| Frontend | Next.js 16 + Tailwind 4 + React 19 | Modern SSR stack; Server Components let us read DynamoDB directly without a separate API tier |
 | Type stack | Fraunces + Inter + JetBrains Mono | Mirrors Watchtower; shared visual lineage |
 | Color palette | Castle: deep navy + pink + gold (OKLCH) | Disney-feeling without using any actual Disney TM |
 | Auth | Amazon Cognito + Google federation | Reuses Watchtower's user pool via second app client (no new Google OAuth setup) |
-| IaC | AWS CDK (TypeScript) | Same as Watchtower; reuses Python Lambda bundling helper |
-| Hosting | AWS Amplify | Same as Watchtower; SSR Next.js with custom domain |
-| Observability | CloudWatch + X-Ray | Native AWS, matches Watchtower |
+| Read API | None — Server Components query DynamoDB directly | Read path is render-on-navigation; APIGW + FastAPI would add a hop with no benefit at this scale |
+| Write API (M3+) | Next.js Route Handlers in same app | Small data plane (toggles, favorites) — TS end-to-end, NextAuth session in-handler, one fewer Lambda than the FastAPI approach |
+| IaC | AWS CDK (TypeScript) | Reuses Watchtower's Python Lambda bundling helper for the poller |
+| Hosting | AWS Amplify | SSR Next.js with custom domain; SSR compute role gets scoped DynamoDB access |
+| Observability | CloudWatch + X-Ray | Native AWS, native to Lambda + Amplify |
 
 ## Out of scope
 
@@ -72,9 +74,11 @@ which rides matter, their Pushover key for alerts.
 - **Budget**: <$5/mo recurring. DynamoDB + Lambda + Amplify all in
   or near free tier at this scale.
 - **Time**: 5-10 hours/week, no fixed deadline.
-- **Quality bar**: must look like the Watchtower demo — same visual
-  identity treatment, same auth flow, same deployment hygiene. The
-  two projects reinforce each other in the portfolio.
+- **Quality bar**: stands on its own as a portfolio demo — TLS,
+  custom domain, Google sign-in, deploy hygiene, README with cost
+  breakdown and architecture diagram. Shares visual lineage and the
+  Cognito user pool with Watchtower so they reinforce each other if
+  both ship, but Magic Monitor must be demoable independently.
 
 ## Definition of done
 
@@ -124,13 +128,26 @@ Each milestone ships something demo-able; even partial completion
 
 #### M2-B — Auth + production deploy (~2-3 hrs work + cert wait)
 - Add Amplify app + custom domain (`magicmonitor.megillini.dev`) +
-  ACM cert in CDK stack
+  ACM cert (us-east-2) in CDK stack
 - Add Cognito 2nd app client on Watchtower's existing user pool
-  (no new Google OAuth setup — reuses Watchtower's federation)
-- Cloudflare CNAME for `magicmonitor.megillini.dev` (manual)
+  (no new Google OAuth setup — reuses Watchtower's federation +
+  `auth.megillini.dev` hosted UI)
+- Grant `dynamodb:Scan` on `DisneyData` to the Amplify SSR compute
+  role so Server Components can read live ride state in production
+- Cloudflare CNAMEs (manual): ACM validation, Amplify domain
+  validation, production `magicmonitor` → CloudFront
 - NextAuth wiring for Cognito provider
-- Sign-in button + protected routes
+- Sign-in / Sign-out buttons in the header (pages stay public for
+  M2-B; per-user gated pages land in M3)
 - *Demo-able:* sign in with Google at the live URL, see the dashboard
+
+  **Architecture note:** read path is Server Components reading
+  DynamoDB directly through the Amplify SSR Lambda's IAM role — no
+  APIGW + FastAPI tier. M3's write path will be Next.js Route
+  Handlers in the same app, not a separate API service. Decision
+  rationale: the data plane is small enough that an extra hop earns
+  nothing, and TS-end-to-end keeps schema drift down. See
+  `web/src/lib/dynamodb.ts` for the read implementation.
 
 ### Future
 
@@ -141,6 +158,13 @@ Each milestone ships something demo-able; even partial completion
   rides in your favorites (writes USER#<sub>/FAV_RIDE#<id>)
 - New-user gating: show "Pick which rides to watch" first-run flow
   before any alerts fire (default: zero rides → zero alerts)
+- Implementation: Next.js Route Handlers under `web/src/app/api/me/`
+  (NOT a separate FastAPI service). Each handler calls `auth()` to
+  get the Cognito sub, then writes through `@aws-sdk/lib-dynamodb`.
+  CDK adds scoped `UpdateItem`/`PutItem` permissions to the Amplify
+  SSR compute role — same role that reads in M2-B, just broader
+  conditions. Revisit this if MM ever needs a public/mobile API
+  that warrants the APIGW boundary.
 - *Demo-able:* sign up as a new user, paste a Pushover key, pick
   favorites, get alerted within 2 min when one of them changes status
 
