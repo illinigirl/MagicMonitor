@@ -5,6 +5,10 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
+import * as cognito from "aws-cdk-lib/aws-cognito";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as codebuild from "aws-cdk-lib/aws-codebuild";
+import * as amplify from "@aws-cdk/aws-amplify-alpha";
 import * as path from "path";
 import { execSync } from "child_process";
 import * as fs from "fs";
@@ -24,6 +28,60 @@ const PARK_KEYS = [
   "hollywood_studios",
   "animal_kingdom",
 ];
+
+// ─── M2-B: auth + production deploy constants ───────────────────────
+
+/** Public hostname for the dashboard. Cloudflare CNAME points here. */
+const APP_DOMAIN = "magicmonitor.megillini.dev";
+
+// Note: there is NO ACM cert constant here, deliberately. Amplify
+// custom domains require a us-east-1 cert (Amplify Hosting fronts
+// via CloudFront, which is global/us-east-1 for cert lookup). Rather
+// than maintain a us-east-1 cert ourselves and pass it via the L2
+// `customCertificate` prop, we let `addDomain` auto-issue and manage
+// its own cert — same approach Watchtower uses. The trade-off is a
+// second validation CNAME at Cloudflare (Amplify emits it at deploy
+// time and the deploy stalls until the cert validates), in exchange
+// for one less moving part in our IaC.
+
+/** Secrets Manager name for the GitHub PAT used by Amplify to pull
+ * source from illinigirl/MagicMonitor. Separate from Watchtower's PAT
+ * secret so rotating one doesn't impact the other. */
+const GITHUB_TOKEN_SECRET = "/magicmonitor/github-token";
+
+/** Secrets Manager name for the NextAuth/Auth.js session-encryption
+ * secret. 32 random bytes, bootstrapped manually 2026-05-05. Rotates
+ * by re-creating the secret + redeploying Amplify (existing sessions
+ * invalidate, which is fine). */
+const NEXTAUTH_SECRET_NAME = "/magicmonitor/nextauth-secret";
+
+/** Cognito user pool that owns Magic Monitor's auth. Owned by
+ * Watchtower stack — imported here read-only as `IUserPool`. The pool
+ * also owns the Google IdP and the `auth.megillini.dev` custom hosted-UI
+ * domain, both of which Magic Monitor reuses verbatim. Cross-stack
+ * coupling: if Watchtower destroys this pool, MM auth breaks too. */
+const WATCHTOWER_USER_POOL_ID = "us-east-2_ORhu761AY";
+
+/** Cognito hosted-UI base URL — owned by Watchtower stack at
+ * auth.megillini.dev. Reused as-is so MM doesn't need its own auth
+ * subdomain or its own us-east-1 cert (Cognito custom domains require
+ * us-east-1 certs regardless of pool region; Watchtower already paid
+ * that cost). The Google OAuth callback configured in Google Cloud
+ * Console points at https://auth.megillini.dev/oauth2/idpresponse,
+ * which works for any app client on the pool — no Google Cloud
+ * changes needed for MM. */
+const COGNITO_DOMAIN_URL = "https://auth.megillini.dev";
+
+/** GitHub OIDC provider ARN (pre-existing — Watchtower stack created it).
+ * AWS only allows one provider per token URL per account, so MM imports
+ * the existing one rather than creating a new one. */
+const GITHUB_OIDC_PROVIDER_ARN =
+  "arn:aws:iam::601669029997:oidc-provider/token.actions.githubusercontent.com";
+
+/** GitHub repo whose pushes Amplify auto-builds and whose Actions
+ * assume the deploy role via OIDC. */
+const GITHUB_OWNER = "illinigirl";
+const GITHUB_REPO = "MagicMonitor";
 
 /**
  * Local Python bundling for the poller Lambda. Same approach as
@@ -208,7 +266,7 @@ export class DisneyStack extends cdk.Stack {
       targets: [new targets.LambdaFunction(pollerFn)],
     });
 
-    // ─── Outputs ─────────────────────────────────────────────────────
+    // ─── Outputs (M1) ────────────────────────────────────────────────
     new cdk.CfnOutput(this, "TableName", {
       value: dataTable.tableName,
       description: "DynamoDB single table for ride state + subscriptions",
@@ -220,6 +278,300 @@ export class DisneyStack extends cdk.Stack {
     new cdk.CfnOutput(this, "PollerLogGroup", {
       value: `/aws/lambda/${pollerFn.functionName}`,
       description: "CloudWatch log group — `aws logs tail` to watch live",
+    });
+
+    // ═════════════════════════════════════════════════════════════════
+    // M2-B: auth + production deploy
+    //
+    // Architecture:
+    //   GitHub push to main
+    //       │
+    //       ▼
+    //   Amplify build (pnpm install + next build)
+    //       │
+    //       ▼
+    //   Amplify SSR Lambda  ◄─── browser hits magicmonitor.megillini.dev
+    //       │  (read DynamoDB directly via ssrComputeRole — no APIGW)
+    //       ▼
+    //   DynamoDB DataTable (RIDE#*/STATE rows)
+    //
+    //   Auth: NextAuth → Cognito hosted UI (auth.megillini.dev, owned
+    //   by Watchtower stack) → Google. MM has its own app client on
+    //   the shared user pool. M3 will grow this Lambda's role to
+    //   include scoped writes for per-user toggles + favorites.
+    // ═════════════════════════════════════════════════════════════════
+
+    // ─── Cognito: 2nd app client on Watchtower's existing user pool ──
+    // Imported (read-only handle). The pool itself, the Google IdP,
+    // and the auth.megillini.dev custom domain are all owned by the
+    // Watchtower stack — Magic Monitor's only Cognito-side resource
+    // is this app client.
+    const userPool = cognito.UserPool.fromUserPoolId(
+      this,
+      "ImportedUserPool",
+      WATCHTOWER_USER_POOL_ID,
+    );
+
+    // GOOGLE here is a static string-name reference ("Google") that
+    // resolves at runtime against the IdP attached to the imported
+    // pool. We can't add a CDK dependency edge across stacks, so the
+    // contract is "Watchtower owns the Google IdP, MM consumes it."
+    // If the Watchtower IdP is ever removed, MM sign-ins break too.
+    const userPoolClient = new cognito.UserPoolClient(this, "UserPoolClient", {
+      userPool,
+      userPoolClientName: "magicmonitor-web",
+      // PKCE is conceptually sufficient, but NextAuth v5's Cognito
+      // provider validation requires a clientSecret in its config —
+      // the secret stays server-side in the SSR Lambda env and never
+      // reaches the browser. Same constraint Watchtower hit.
+      generateSecret: true,
+      supportedIdentityProviders: [
+        cognito.UserPoolClientIdentityProvider.GOOGLE,
+      ],
+      oAuth: {
+        flows: { authorizationCodeGrant: true },
+        scopes: [
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.PROFILE,
+        ],
+        callbackUrls: [
+          `https://${APP_DOMAIN}/api/auth/callback/cognito`,
+          // Local dev (`pnpm dev` → :3000)
+          "http://localhost:3000/api/auth/callback/cognito",
+        ],
+        logoutUrls: [
+          `https://${APP_DOMAIN}/`,
+          "http://localhost:3000/",
+        ],
+      },
+      refreshTokenValidity: cdk.Duration.days(30),
+      accessTokenValidity: cdk.Duration.hours(1),
+      idTokenValidity: cdk.Duration.hours(1),
+      // Don't leak whether a Cognito user exists. Default post-2024.
+      preventUserExistenceErrors: true,
+    });
+
+    const cognitoIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${WATCHTOWER_USER_POOL_ID}`;
+
+    // ─── Amplify app ─────────────────────────────────────────────────
+    // Same monorepo build pattern as Watchtower (pnpm + .env.production
+    // materialization). The L2 alpha sets the legacy `OauthToken` field
+    // for GitHub PATs; we override to `AccessToken` (the modern field)
+    // via the L1 escape hatch below.
+    const githubToken = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "GithubTokenSecret",
+      GITHUB_TOKEN_SECRET,
+    );
+
+    const webApp = new amplify.App(this, "WebApp", {
+      appName: "magicmonitor",
+      sourceCodeProvider: new amplify.GitHubSourceCodeProvider({
+        owner: GITHUB_OWNER,
+        repository: GITHUB_REPO,
+        oauthToken: githubToken.secretValue,
+      }),
+      // WEB_COMPUTE = SSR. The parks page (`app/parks/[park]/page.tsx`)
+      // is a dynamic Server Component that scans DDB on each request.
+      // Compute role is auto-created by the L2 (we attach the DDB
+      // grant after the App is constructed — see below). An earlier
+      // attempt to provide an explicit pre-built role failed builds
+      // with "Unable to assume specified IAM Role"; the L2's internal
+      // role wiring carries some implicit configuration that the
+      // public API doesn't expose, so deferring to it is the
+      // path-of-least-surprise.
+      platform: amplify.Platform.WEB_COMPUTE,
+      environmentVariables: {
+        // Read at build time and materialized into .env.production by
+        // the build spec below; consumed at SSR runtime by Next.js.
+        DISNEY_TABLE_NAME: dataTable.tableName,
+        AMPLIFY_MONOREPO_APP_ROOT: "web",
+        AMPLIFY_DIFF_DEPLOY: "false",
+        // Avoid the "do you accept telemetry?" interactive prompt
+        // on the build runner.
+        NEXT_TELEMETRY_DISABLED: "1",
+        // ─── NextAuth + Cognito ──────────────────────────────────
+        // AUTH_TRUST_HOST tells Auth.js to trust the X-Forwarded-Host
+        // header (Amplify is behind CloudFront).
+        AUTH_TRUST_HOST: "true",
+        NEXTAUTH_URL: `https://${APP_DOMAIN}`,
+        // unsafeUnwrap returns a CFN dynamic-reference string
+        // ("{{resolve:secretsmanager:…}}"), not the literal value —
+        // CFN unwinds it at deploy time, so the actual secret never
+        // lands in source, cdk.out, or the synthesized template.
+        NEXTAUTH_SECRET: cdk.SecretValue.secretsManager(
+          NEXTAUTH_SECRET_NAME,
+        ).unsafeUnwrap(),
+        COGNITO_ISSUER: cognitoIssuer,
+        COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
+        // Same dynamic-reference treatment — CDK fetches the
+        // Cognito-managed client secret at deploy time via an
+        // AwsCustomResource under the hood.
+        COGNITO_CLIENT_SECRET: userPoolClient.userPoolClientSecret.unsafeUnwrap(),
+        COGNITO_DOMAIN_URL,
+        NEXT_PUBLIC_COGNITO_DOMAIN_URL: COGNITO_DOMAIN_URL,
+        NEXT_PUBLIC_COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
+      },
+      buildSpec: codebuild.BuildSpec.fromObjectToYaml({
+        version: "1.0",
+        applications: [
+          {
+            appRoot: "web",
+            frontend: {
+              phases: {
+                preBuild: {
+                  commands: [
+                    "corepack enable",
+                    "corepack prepare pnpm@latest --activate",
+                    "pnpm install --frozen-lockfile",
+                  ],
+                },
+                build: {
+                  commands: [
+                    // Amplify only injects env vars at build time —
+                    // anything not prefixed NEXT_PUBLIC_ is gone at
+                    // SSR runtime. Materializing here so Next.js
+                    // reads them out of .env.production at request
+                    // time. AUTH_* are Auth.js v5 canonical names;
+                    // NEXTAUTH_* are kept as v4-compat fallbacks.
+                    "echo \"DISNEY_TABLE_NAME=$DISNEY_TABLE_NAME\" >> .env.production",
+                    "echo \"AUTH_URL=$NEXTAUTH_URL\" >> .env.production",
+                    "echo \"AUTH_SECRET=$NEXTAUTH_SECRET\" >> .env.production",
+                    "echo \"NEXTAUTH_URL=$NEXTAUTH_URL\" >> .env.production",
+                    "echo \"NEXTAUTH_SECRET=$NEXTAUTH_SECRET\" >> .env.production",
+                    "echo \"AUTH_TRUST_HOST=$AUTH_TRUST_HOST\" >> .env.production",
+                    "echo \"COGNITO_ISSUER=$COGNITO_ISSUER\" >> .env.production",
+                    "echo \"COGNITO_CLIENT_ID=$COGNITO_CLIENT_ID\" >> .env.production",
+                    "echo \"COGNITO_CLIENT_SECRET=$COGNITO_CLIENT_SECRET\" >> .env.production",
+                    "echo \"COGNITO_DOMAIN_URL=$COGNITO_DOMAIN_URL\" >> .env.production",
+                    "pnpm build",
+                  ],
+                },
+              },
+              artifacts: {
+                baseDirectory: ".next",
+                files: ["**/*"],
+              },
+              cache: {
+                paths: ["node_modules/**/*", ".next/cache/**/*"],
+              },
+            },
+          },
+        ],
+      }),
+    });
+
+    // Escape hatch: swap OauthToken (legacy field set by alpha module)
+    // for AccessToken (modern field that fine-grained PATs need).
+    // Same workaround Watchtower uses.
+    const cfnApp = webApp.node.defaultChild as cdk.CfnResource;
+    cfnApp.addPropertyOverride(
+      "AccessToken",
+      cdk.SecretValue.secretsManager(GITHUB_TOKEN_SECRET).unsafeUnwrap(),
+    );
+    cfnApp.addPropertyDeletionOverride("OauthToken");
+
+    const mainBranch = webApp.addBranch("main", {
+      autoBuild: true,
+      stage: "PRODUCTION",
+      branchName: "main",
+    });
+
+    // Grant the SSR compute role read access to the DDB table so
+    // Server Components in `web/src/lib/dynamodb.ts` can scan ride
+    // state at request time. M3 will broaden this to include scoped
+    // writes (UpdateItem/PutItem on USER#* and PARK#*#USER#* keys)
+    // for per-user toggles and favorites.
+    if (!webApp.computeRole) {
+      throw new Error(
+        "Amplify L2 should auto-create computeRole when platform is WEB_COMPUTE. Got undefined.",
+      );
+    }
+    dataTable.grantReadData(webApp.computeRole);
+
+    // Custom domain. Amplify auto-issues a us-east-1 cert for the
+    // subdomain on first deploy and emits a DNS-validation CNAME
+    // visible in the Amplify console — see the AmplifyDomainStatus
+    // output below for how to find it. Cloudflare DNS-only (gray
+    // cloud), proxied = OFF.
+    const webAppCustomDomain = webApp.addDomain("WebAppCustomDomain", {
+      domainName: "megillini.dev",
+      subDomains: [{ branch: mainBranch, prefix: "magicmonitor" }],
+    });
+
+    // ─── GitHub Actions OIDC role ────────────────────────────────────
+    // Imports the existing OIDC provider (created by Watchtower stack —
+    // AWS only allows one provider per token URL per account). The
+    // role itself is MM-specific and trust-policy-scoped to pushes/PRs
+    // on illinigirl/MagicMonitor only.
+    const githubOidc = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
+      this,
+      "GithubOidcImported",
+      GITHUB_OIDC_PROVIDER_ARN,
+    );
+
+    const deployRole = new iam.Role(this, "GithubDeployRole", {
+      roleName: "MagicMonitorGithubDeploy",
+      assumedBy: new iam.FederatedPrincipal(
+        githubOidc.openIdConnectProviderArn,
+        {
+          StringEquals: {
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          },
+          StringLike: {
+            "token.actions.githubusercontent.com:sub": [
+              `repo:${GITHUB_OWNER}/${GITHUB_REPO}:ref:refs/heads/main`,
+              `repo:${GITHUB_OWNER}/${GITHUB_REPO}:pull_request`,
+            ],
+          },
+        },
+        "sts:AssumeRoleWithWebIdentity",
+      ),
+      description:
+        "Assumed by GitHub Actions to deploy the MagicMonitor CDK stack",
+      maxSessionDuration: cdk.Duration.hours(1),
+    });
+
+    // AdministratorAccess at this scale is fine for a single-developer
+    // portfolio project; can narrow to per-service permissions later
+    // if MM ever has multi-developer CI.
+    deployRole.addManagedPolicy(
+      iam.ManagedPolicy.fromAwsManagedPolicyName("AdministratorAccess"),
+    );
+
+    // ─── Outputs (M2-B) ──────────────────────────────────────────────
+    new cdk.CfnOutput(this, "AmplifyAppId", {
+      value: webApp.appId,
+      description: "Amplify app id (find in console)",
+    });
+    new cdk.CfnOutput(this, "AmplifyDefaultUrl", {
+      value: `https://${mainBranch.branchName}.${webApp.defaultDomain}`,
+      description: "Default *.amplifyapp.com URL — works alongside the custom domain",
+    });
+    new cdk.CfnOutput(this, "AmplifyCustomUrl", {
+      value: `https://${APP_DOMAIN}`,
+      description: "Public URL (custom domain) — primary user-facing URL",
+    });
+    new cdk.CfnOutput(this, "AmplifyDomainStatus", {
+      value: webAppCustomDomain.domainName,
+      description: "Custom domain attached to Amplify app — see console for production CNAME target",
+    });
+    new cdk.CfnOutput(this, "CognitoClientId", {
+      value: userPoolClient.userPoolClientId,
+      description: "Magic Monitor's Cognito app client (separate from Watchtower's)",
+    });
+    new cdk.CfnOutput(this, "CognitoIssuer", {
+      value: cognitoIssuer,
+      description: "OIDC issuer URL — NextAuth uses this to fetch JWKS",
+    });
+    new cdk.CfnOutput(this, "CognitoDomainUrl", {
+      value: COGNITO_DOMAIN_URL,
+      description: "Cognito hosted-UI base URL (shared with Watchtower)",
+    });
+    new cdk.CfnOutput(this, "GithubDeployRoleArn", {
+      value: deployRole.roleArn,
+      description: "Role ARN to set as AWS_ROLE_ARN in MagicMonitor's GitHub Actions secrets",
     });
   }
 }
