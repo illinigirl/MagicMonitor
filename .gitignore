@@ -36,3 +36,8 @@ venv/
 # Lambda asset bundling artifacts
 infra/lambda/*/build/
 infra/lambda/*/dist/
+
+# Local debugging screenshots — never commit
+*.jpeg
+*.jpg
+*.png
