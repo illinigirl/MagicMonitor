@@ -11,8 +11,10 @@ Status (2026-05-05):
 - **M1 backend** — deployed and polling every 2 min in production
 - **M1.5 park-hours alert filter** — deployed
 - **M2-A web dashboard** — works locally
-- **M2-B auth + Amplify deploy** — in progress (this milestone)
-- See `PROJECT.md` for the full roadmap
+- **M2-B auth + Amplify deploy** — ✅ live at https://magicmonitor.megillini.dev
+- **M3 per-user dashboard** — next up
+- See `PROJECT.md` for the roadmap and `RUNBOOK.md` for operational
+  reference (lessons learned, gotchas, common commands)
 
 ## Architecture (M1)
 
@@ -194,18 +196,10 @@ aws dynamodb scan \
 | Pushover | $5 one-time (already paid) |
 | **Total recurring** | **~$0.20/mo** |
 
-## What's next (M2-B in progress)
+## What's next (M3)
 
-- Next.js dashboard deployed at `magicmonitor.megillini.dev` on AWS
-  Amplify (currently runs locally; CDK changes for Amplify + ACM +
-  Cognito 2nd app client are in flight)
-- Cognito + Google sign-in (reuses Watchtower's user pool via a
-  second app client — no Google Cloud changes needed)
-- Read path is Server Components → DynamoDB directly through the
-  Amplify SSR compute IAM role (no separate API tier)
-
-After M2-B, M3 adds self-service per-user park toggles, favorite
-rides, and Pushover key management — implemented as Next.js Route
-Handlers in the same app rather than a separate FastAPI service.
-
-See `PROJECT.md` for the full roadmap.
+M3 adds self-service per-user pages: profile + Pushover key entry,
+park toggles, favorite-rides grid, and new-user onboarding flow.
+Implemented as Next.js Route Handlers in the same app (no separate
+FastAPI service). See `RUNBOOK.md` "What's next — M3 implementation
+plan" for the phased breakdown and `PROJECT.md` for the roadmap.

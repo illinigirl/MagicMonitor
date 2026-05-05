@@ -103,6 +103,18 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### M2-B — Auth + production deploy (✅ shipped 2026-05-05)
+- Live at https://magicmonitor.megillini.dev with TLS, Google sign-in
+  via Cognito, and live ride data rendered server-side from DynamoDB
+- CDK adds Amplify SSR app + custom domain + Cognito 2nd app client +
+  GitHub OIDC role for future CI deploys, all in `disney-stack.ts`
+- NextAuth wired in `web/` (auth.ts, route handler, Sign In/Sign Out
+  buttons in header). M1 poller untouched.
+- Real journey took ~7 hours (vs ~3 estimated) due to a stack of
+  AWS-side changes that landed within days of MM's setup. See
+  RUNBOOK.md "M2-B journey" for the 5 specific lessons learned —
+  required reading before touching Amplify Hosting in CDK again.
+
 #### M1 — Backend (✅ deployed 2026-05-04)
 - CDK stack: DynamoDB single table + Poller Lambda + EventBridge schedule
 - Python Lambda ports `wait_times.py` + `monitor.py` diff logic
@@ -126,31 +138,6 @@ Each milestone ships something demo-able; even partial completion
 
 ### Next
 
-#### M2-B — Auth + production deploy (~2-3 hrs work + cert wait)
-- Add Amplify app + custom domain (`magicmonitor.megillini.dev`) +
-  ACM cert (us-east-2) in CDK stack
-- Add Cognito 2nd app client on Watchtower's existing user pool
-  (no new Google OAuth setup — reuses Watchtower's federation +
-  `auth.megillini.dev` hosted UI)
-- Grant `dynamodb:Scan` on `DisneyData` to the Amplify SSR compute
-  role so Server Components can read live ride state in production
-- Cloudflare CNAMEs (manual): ACM validation, Amplify domain
-  validation, production `magicmonitor` → CloudFront
-- NextAuth wiring for Cognito provider
-- Sign-in / Sign-out buttons in the header (pages stay public for
-  M2-B; per-user gated pages land in M3)
-- *Demo-able:* sign in with Google at the live URL, see the dashboard
-
-  **Architecture note:** read path is Server Components reading
-  DynamoDB directly through the Amplify SSR Lambda's IAM role — no
-  APIGW + FastAPI tier. M3's write path will be Next.js Route
-  Handlers in the same app, not a separate API service. Decision
-  rationale: the data plane is small enough that an extra hop earns
-  nothing, and TS-end-to-end keeps schema drift down. See
-  `web/src/lib/dynamodb.ts` for the read implementation.
-
-### Future
-
 #### M3 — Per-user dashboard pages (~1 week)
 - Profile page: name + Pushover user key entry (writes USER#<sub>/PROFILE)
 - Park toggles: which parks alert me right now (writes PARK#<key>/USER#<sub>)
@@ -167,6 +154,8 @@ Each milestone ships something demo-able; even partial completion
   that warrants the APIGW boundary.
 - *Demo-able:* sign up as a new user, paste a Pushover key, pick
   favorites, get alerted within 2 min when one of them changes status
+
+### Future
 
 #### M4 — Showtimes (~2-3 days)
 - Same themeparks.wiki API returns SHOW entities alongside attractions
