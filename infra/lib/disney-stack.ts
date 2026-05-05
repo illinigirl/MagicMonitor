@@ -490,6 +490,27 @@ export class DisneyStack extends cdk.Stack {
     }
     dataTable.grantReadData(webApp.computeRole);
 
+    // CloudWatch Logs permissions for the SSR compute role. Newer
+    // alpha versions of @aws-cdk/aws-amplify-alpha don't auto-attach
+    // these (Watchtower's deploy at v2.251.0 picked up an
+    // `AmplifyComputeLogs` policy automatically; MM's identical-version
+    // deploy did NOT — likely an upstream change in how the L2 wires
+    // default policies when the user adds their own). Without these,
+    // builds fail with "Unable to assume specified IAM Role" because
+    // Amplify pre-validates the role can write its expected logs.
+    webApp.computeRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+        ],
+        resources: [
+          `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/amplify/*`,
+        ],
+      }),
+    );
+
     // Custom domain. Amplify auto-issues a us-east-1 cert for the
     // subdomain on first deploy and emits a DNS-validation CNAME
     // visible in the Amplify console — see the AmplifyDomainStatus
