@@ -20,7 +20,12 @@ import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
 
 import type { ParkKey } from "./parks";
 
-const region = process.env.AWS_REGION ?? "us-east-2";
+// Hardcoded — AWS_REGION is auto-set by the runtime to whatever region
+// the SSR Lambda is invoked in, which for Amplify Hosting's edge-style
+// SSR can be us-east-1 (CloudFront global). Our DDB table lives in
+// us-east-2; reading AWS_REGION here would silently query the wrong
+// region with the wrong table. Pin to the table's region.
+const region = process.env.DISNEY_REGION ?? "us-east-2";
 const tableName = process.env.DISNEY_TABLE_NAME ?? "DisneyData";
 
 // One client per Node process — Next.js dev hot-reloads modules so
