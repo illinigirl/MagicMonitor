@@ -1,0 +1,38 @@
+# CDK
+infra/cdk.out/
+infra/node_modules/
+infra/*.d.ts
+infra/*.js
+infra/.cdk.staging/
+
+# Next.js / web
+web/node_modules/
+web/.next/
+web/out/
+web/build/
+web/.turbo/
+web/tsconfig.tsbuildinfo
+web/next-env.d.ts
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local env (never commit secrets)
+.env
+.env.local
+.env.*.local
+
+# Lambda asset bundling artifacts
+infra/lambda/*/build/
+infra/lambda/*/dist/
