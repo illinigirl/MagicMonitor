@@ -479,6 +479,49 @@ export class DisneyStack extends cdk.Stack {
     );
     cfnApp.addPropertyDeletionOverride("OauthToken");
 
+    // RUNBOOK Lesson 5 — round 2. Newer @aws-cdk/aws-amplify-alpha
+    // (≥ 2.251.x) auto-generates the App's service role with
+    // `aws:SourceArn` + `aws:SourceAccount` conditions on the trust
+    // policy, following AWS's "best practice" recommendation. In
+    // practice those conditions break Amplify's internal service-role
+    // chain (the runtime SourceArn doesn't match the obvious app
+    // ARN), and builds fail in <1s with "Unable to assume specified
+    // IAM Role."
+    //
+    // The first M2-B deploy got a conditions-free role and worked.
+    // A subsequent CDK deploy in M3 caused CFN to recreate the role
+    // (likely because the App resource diff propagated), this time
+    // with the new alpha defaults, and every build after broke until
+    // the trust policy was hand-stripped via
+    // `aws iam update-assume-role-policy`.
+    //
+    // Override the role's trust policy to the minimal "amplify can
+    // assume" form (matching Watchtower's working role). Future alpha
+    // upgrades that re-add conditions will get overwritten on every
+    // deploy.
+    // The L2 alpha doesn't expose the auto-created service role via a
+    // typed property, so reach into the construct tree by its known
+    // child id ("Role"). If a future alpha rename breaks this lookup
+    // we throw loudly rather than silently letting the conditions
+    // come back.
+    const webAppRole = webApp.node.tryFindChild("Role") as iam.Role | undefined;
+    if (!webAppRole) {
+      throw new Error(
+        "Could not find webApp.node.findChild('Role'). The alpha module likely renamed it — re-locate the App's auto-generated service role and reapply the no-conditions trust override.",
+      );
+    }
+    const cfnWebAppRole = webAppRole.node.defaultChild as iam.CfnRole;
+    cfnWebAppRole.assumeRolePolicyDocument = {
+      Version: "2012-10-17",
+      Statement: [
+        {
+          Effect: "Allow",
+          Principal: { Service: "amplify.amazonaws.com" },
+          Action: "sts:AssumeRole",
+        },
+      ],
+    };
+
     const mainBranch = webApp.addBranch("main", {
       autoBuild: true,
       stage: "PRODUCTION",

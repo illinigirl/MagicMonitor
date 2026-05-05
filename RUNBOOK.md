@@ -195,6 +195,61 @@ amplify.amazonaws.com` with no conditions. Watchtower's working role
 has none, ours shouldn't either. Add SourceArn ONLY after careful
 testing.
 
+### Lesson 5 — round 2: trust-policy conditions can come back on deploy
+
+**Symptom:** during M3 Phase 1 (2026-05-05), a `cdk deploy` that
+modified the `AWS::Amplify::App` resource (added an env var + a
+buildspec line) caused all subsequent Amplify builds to fail in <1s
+with `Unable to assume specified IAM Role`. No "Update required"
+banner in the console. GitHub App was installed and the connection
+was healthy.
+
+**Diagnosis:** the M2-B deploy used an older `@aws-cdk/aws-amplify-alpha`
+that auto-generated the App's service role with `aws:SourceArn` +
+`aws:SourceAccount` conditions on the trust policy (per AWS "best
+practice"). That role was created and never re-templated until my M3
+deploys — at which point Amplify started assuming the role through
+its internal service-role chain, where the SourceArn condition no
+longer matched. Builds failed silently.
+
+Watchtower didn't have the issue because its role was created on an
+even earlier alpha that emitted no conditions, and it hasn't been
+re-templated since.
+
+**Fix (manual, fast):**
+```
+aws iam update-assume-role-policy \
+  --role-name DisneyStack-WebAppRole1AA0E641-GrEntXDsq4VT \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Service": "amplify.amazonaws.com"},
+      "Action": "sts:AssumeRole"
+    }]
+  }' \
+  --profile watchtower
+```
+Then re-trigger an Amplify build. Should succeed.
+
+**Fix (permanent, in CDK):** `disney-stack.ts` now reaches into
+`webApp.node.tryFindChild("Role")` and overrides the role's
+`AssumeRolePolicyDocument` to the no-conditions form. The current
+alpha generates the right thing already, so the override is a
+defensive no-op today; if a future alpha upgrade re-introduces the
+conditions, the next CDK deploy that touches the role will reset it.
+
+**Diagnostic shortcut:** when an Amplify build fails with the IAM
+error and no console banner is shown, compare the failing role's
+trust policy against Watchtower's working one:
+```
+aws iam get-role --role-name DisneyStack-WebAppRole1AA0E641-... \
+  --profile watchtower --query 'Role.AssumeRolePolicyDocument'
+aws iam get-role --role-name WatchtowerStack-WebAppRole1AA0E641-... \
+  --profile watchtower --query 'Role.AssumeRolePolicyDocument'
+```
+If MM has Conditions and Watchtower doesn't, this is the cause.
+
 ## Operational tasks
 
 ### Refresh AWS SSO (sessions last 8-12 hours)
