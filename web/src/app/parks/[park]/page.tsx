@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 
+import { auth } from "@/auth";
 import { findPark } from "@/lib/parks";
 import { getParkRides } from "@/lib/dynamodb";
+import { getUserFavoriteRides } from "@/lib/dynamodb-writes";
 import {
   getParkSchedule,
   isExtraHoursNow,
@@ -13,31 +15,51 @@ import { ParkSchedule } from "@/components/park-schedule";
 
 // Server-render fresh on each request — DynamoDB query is cheap and
 // the data changes every 2 min, so caching past ~30s would be stale.
+// Note: must stay <=30 because the favorites filter (?favorites=1)
+// is read from searchParams and we want toggle changes visible
+// immediately, not after a cache expiry.
 export const revalidate = 30;
 
 export default async function ParkPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ park: string }>;
+  searchParams: Promise<{ favorites?: string }>;
 }) {
-  const { park: parkKeyRaw } = await params;
+  const [{ park: parkKeyRaw }, { favorites: favParam }] = await Promise.all([
+    params,
+    searchParams,
+  ]);
   const park = findPark(parkKeyRaw);
   if (!park) notFound();
 
-  // Parallel fetch — DynamoDB scan + themeparks.wiki schedule are
-  // independent and both block render.
-  const [rides, schedule] = await Promise.all([
+  // Parallel fetch — DDB ride scan, themeparks.wiki schedule, and
+  // (when signed in) the user's favorites all block render. Run
+  // together rather than sequentially.
+  const session = await auth();
+  const sub = session?.user?.id;
+  const [rides, schedule, favorites] = await Promise.all([
     getParkRides(park.key),
     getParkSchedule(park.key),
+    sub ? getUserFavoriteRides(sub, park.key) : Promise.resolve(new Set<string>()),
   ]);
 
   const parkIsOpen = schedule
     ? isParkOpenNow(schedule) || isExtraHoursNow(schedule)
     : true;
 
-  const operating = rides.filter((r) => r.status === "OPERATING");
-  const down = rides.filter((r) => r.status === "DOWN");
-  const closed = rides.filter(
+  // ?favorites=1 narrows the list to just favorited rides. Off by
+  // default (anonymous + signed-in alike see everything) so the
+  // page still serves as a public ride-status snapshot.
+  const showOnlyFavorites = favParam === "1" && favorites.size > 0;
+  const visibleRides = showOnlyFavorites
+    ? rides.filter((r) => favorites.has(r.ride_id))
+    : rides;
+
+  const operating = visibleRides.filter((r) => r.status === "OPERATING");
+  const down = visibleRides.filter((r) => r.status === "DOWN");
+  const closed = visibleRides.filter(
     (r) => r.status === "CLOSED" || r.status === "REFURBISHMENT",
   );
 
@@ -67,6 +89,25 @@ export default async function ParkPage({
         <ParkSchedule schedule={schedule} />
       </div>
 
+      {/* Filter toggle — only shown when signed in AND user has at
+          least one favorite in this park. Hides itself otherwise to
+          avoid a dead control on first visits. */}
+      {sub && favorites.size > 0 && (
+        <div className="mt-4 flex items-center gap-3 text-sm">
+          <span className="label-meta">View:</span>
+          <FilterToggle
+            href={`/parks/${park.key}`}
+            label="All rides"
+            active={!showOnlyFavorites}
+          />
+          <FilterToggle
+            href={`/parks/${park.key}?favorites=1`}
+            label={`★ Favorites (${favorites.size})`}
+            active={showOnlyFavorites}
+          />
+        </div>
+      )}
+
       {/* When the park is closed, render a different empty-state up
           front rather than a misleading "24 rides operating" pulled
           from the last poll before close. The poller keeps writing
@@ -75,9 +116,10 @@ export default async function ParkPage({
         <ClosedStateNotice rideCount={rides.length} downCount={down.length} />
       ) : (
         <p className="label-meta mt-4">
-          {rides.length} attractions · {operating.length} open ·
+          {visibleRides.length} attractions · {operating.length} open ·
           {" "}
           {down.length} down · {closed.length} closed
+          {showOnlyFavorites && " (favorites only)"}
         </p>
       )}
 
@@ -86,7 +128,7 @@ export default async function ParkPage({
         <Section title={`Down (${down.length})`} accent="bad">
           <ul>
             {down.map((r) => (
-              <RideRow key={r.ride_id} ride={r} />
+              <RideRow key={r.ride_id} ride={r} isFavorite={favorites.has(r.ride_id)} />
             ))}
           </ul>
         </Section>
@@ -101,7 +143,7 @@ export default async function ParkPage({
           ) : (
             <ul>
               {operating.map((r) => (
-                <RideRow key={r.ride_id} ride={r} />
+                <RideRow key={r.ride_id} ride={r} isFavorite={favorites.has(r.ride_id)} />
               ))}
             </ul>
           )}
@@ -112,7 +154,7 @@ export default async function ParkPage({
         <Section title={`Closed or in refurb (${closed.length})`}>
           <ul>
             {closed.map((r) => (
-              <RideRow key={r.ride_id} ride={r} />
+              <RideRow key={r.ride_id} ride={r} isFavorite={favorites.has(r.ride_id)} />
             ))}
           </ul>
         </Section>
@@ -142,6 +184,33 @@ function ClosedStateNotice({
         Live ride status returns when the park reopens.
       </p>
     </div>
+  );
+}
+
+/** Pill-style link that highlights when the current view matches.
+ * Plain anchor tag so server-rendering picks up the correct active
+ * state without client JS. */
+function FilterToggle({
+  href,
+  label,
+  active,
+}: {
+  href: string;
+  label: string;
+  active: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+        active
+          ? "bg-gold text-gold-ink"
+          : "bg-bg-1 text-fg-2 hover:bg-bg-2"
+      }`}
+      aria-current={active ? "page" : undefined}
+    >
+      {label}
+    </Link>
   );
 }
 

@@ -16,6 +16,7 @@
  * by revalidatePath() inside the server action.
  */
 
+import Link from "next/link";
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 
@@ -86,21 +87,31 @@ export function SettingsForm({
           Pushover alerts only fire for parks you check here. You can change
           this any time — the next 2-min poll picks it up.
         </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 gap-2">
           {PARKS.map((park) => (
-            <label
+            <div
               key={park.key}
-              className="flex items-center gap-3 rounded-md border border-line bg-bg-1 px-3 py-2 cursor-pointer hover:bg-bg-2"
+              className="flex items-center gap-3 rounded-md border border-line bg-bg-1 px-3 py-2 hover:bg-bg-2"
             >
-              <input
-                type="checkbox"
-                name="parks"
-                value={park.key}
-                defaultChecked={subscribedSet.has(park.key)}
-                className="h-4 w-4 accent-accent"
-              />
-              <span className="text-fg-0">{park.name}</span>
-            </label>
+              {/* Label wraps only checkbox + name so the row's
+                  toggle target doesn't include the favorites link. */}
+              <label className="flex items-center gap-3 flex-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  name="parks"
+                  value={park.key}
+                  defaultChecked={subscribedSet.has(park.key)}
+                  className="h-4 w-4 accent-gold"
+                />
+                <span className="text-fg-0">{park.name}</span>
+              </label>
+              <Link
+                href={`/me/rides/${park.key}`}
+                className="text-fg-3 hover:text-fg-1 text-xs transition-colors whitespace-nowrap"
+              >
+                Pick favorites →
+              </Link>
+            </div>
           ))}
         </div>
       </fieldset>

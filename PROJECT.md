@@ -171,6 +171,11 @@ Each milestone ships something demo-able; even partial completion
 - Auto-toggle subscriptions based on current trip dates
 - Per-trip-day showtime view (uses M4 data)
 - Optional: household linking so spouse + sister get the same alerts
+- "Mark as ridden today" — TTL'd row (`USER#<sub>/RIDDEN#<ride_id>#<YYYY-MM-DD>`,
+  ~24h TTL) that suppresses alerts for rides you've already done.
+  Captured here from M3 Phase 2 discussion: a real day-of-trip need
+  (one alert per ride per day cap) but only useful in the context of
+  an active trip, so it lives here rather than in M3.
 - *Demo-able:* "I have a trip June 15-20, here's the calendar — alerts
   auto-enable on those dates and I see what shows are running each day"
 

@@ -25,6 +25,7 @@ import {
   DeleteCommand,
   GetCommand,
   ScanCommand,
+  QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 
 import type { ParkKey } from "./parks";
@@ -185,4 +186,98 @@ export async function getUserParkSubscriptions(
     out.add(parkKey);
   }
   return out;
+}
+
+// ─── Favorite rides (M3 Phase 2) ─────────────────────────────────────
+//
+// Schema: USER#<sub> / FAV_RIDE#<ride_id> with denormalized park_key.
+//
+// The denormalized park_key on each row trades 12 bytes per favorite
+// for two query benefits:
+//   1. /me/rides/[park] can fetch a user's favorites for ONE park
+//      with a Query + FilterExpression instead of fetching all
+//      favorites and filtering client-side.
+//   2. A future "all favorites grouped by park" view groups locally
+//      without joining against the RIDE# table.
+//
+// The poller's "who favorited ride X?" lookup is a different access
+// pattern — it queries by ride_id, not by user — and will need a
+// GSI on FAV_RIDE#<ride_id> when Phase 2's poller change lands.
+// We don't add the GSI in the data layer because the GSI projection
+// is sized to the poller's needs, not this module's.
+
+interface FavRideRow {
+  PK: string;
+  SK: string;
+  park_key?: ParkKey;
+  ride_name?: string;
+  favorited_at?: string;
+}
+
+/**
+ * Return the set of ride_ids the user has favorited in `parkKey`.
+ *
+ * Query (not Scan) on PK=USER#<sub>, SK begins_with FAV_RIDE#, then
+ * FilterExpression on park_key — DDB charges for the items the
+ * filter evaluates, not just the matches, but at <100 favorites
+ * per user the cost is rounding error.
+ */
+export async function getUserFavoriteRides(
+  sub: string,
+  parkKey: ParkKey,
+): Promise<Set<string>> {
+  const resp = await client.send(
+    new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: "PK = :pk AND begins_with(SK, :skp)",
+      FilterExpression: "park_key = :park",
+      ExpressionAttributeValues: {
+        ":pk": `USER#${sub}`,
+        ":skp": "FAV_RIDE#",
+        ":park": parkKey,
+      },
+    }),
+  );
+  const out = new Set<string>();
+  for (const row of (resp.Items ?? []) as FavRideRow[]) {
+    out.add(row.SK.replace(/^FAV_RIDE#/, ""));
+  }
+  return out;
+}
+
+/**
+ * Toggle a favorite-ride row on or off.
+ *
+ * Subscribed=true: PutItem with denormalized park_key + ride_name +
+ * favorited_at. Both extra attributes are best-effort metadata for
+ * future views; the poller only cares that the row exists.
+ *
+ * Subscribed=false: DeleteItem.
+ *
+ * Idempotent — repeat calls produce the same end state. The poller's
+ * fanout (Phase 2) picks up the change on its next 2-min tick.
+ */
+export async function setFavoriteRide(
+  sub: string,
+  rideId: string,
+  parkKey: ParkKey,
+  rideName: string,
+  isFavorite: boolean,
+): Promise<void> {
+  const Key = { PK: `USER#${sub}`, SK: `FAV_RIDE#${rideId}` };
+  if (isFavorite) {
+    await client.send(
+      new PutCommand({
+        TableName: tableName,
+        Item: {
+          ...Key,
+          park_key: parkKey,
+          ride_name: rideName,
+          favorited_at: new Date().toISOString(),
+        },
+      }),
+    );
+  } else {
+    await client.send(new DeleteCommand({ TableName: tableName, Key }));
+  }
 }
