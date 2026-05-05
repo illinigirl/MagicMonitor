@@ -386,6 +386,12 @@ export class DisneyStack extends cdk.Stack {
         // Read at build time and materialized into .env.production by
         // the build spec below; consumed at SSR runtime by Next.js.
         DISNEY_TABLE_NAME: dataTable.tableName,
+        // M3: SSR reads the Pushover app token from SSM at runtime
+        // (via the SSM grant on computeRole below) to validate
+        // user-supplied user keys before saving them. Only the
+        // PARAMETER NAME is in env — the secret value never leaves
+        // SSM. Rotates without a redeploy.
+        PUSHOVER_APP_TOKEN_PARAM,
         AMPLIFY_MONOREPO_APP_ROOT: "web",
         AMPLIFY_DIFF_DEPLOY: "false",
         // Avoid the "do you accept telemetry?" interactive prompt
@@ -436,6 +442,7 @@ export class DisneyStack extends cdk.Stack {
                     // time. AUTH_* are Auth.js v5 canonical names;
                     // NEXTAUTH_* are kept as v4-compat fallbacks.
                     "echo \"DISNEY_TABLE_NAME=$DISNEY_TABLE_NAME\" >> .env.production",
+                    "echo \"PUSHOVER_APP_TOKEN_PARAM=$PUSHOVER_APP_TOKEN_PARAM\" >> .env.production",
                     "echo \"AUTH_URL=$NEXTAUTH_URL\" >> .env.production",
                     "echo \"AUTH_SECRET=$NEXTAUTH_SECRET\" >> .env.production",
                     "echo \"NEXTAUTH_URL=$NEXTAUTH_URL\" >> .env.production",
@@ -480,15 +487,73 @@ export class DisneyStack extends cdk.Stack {
 
     // Grant the SSR compute role read access to the DDB table so
     // Server Components in `web/src/lib/dynamodb.ts` can scan ride
-    // state at request time. M3 will broaden this to include scoped
-    // writes (UpdateItem/PutItem on USER#* and PARK#*#USER#* keys)
-    // for per-user toggles and favorites.
+    // state at request time. Reads stay table-wide (no LeadingKeys
+    // condition) because the parks pages legitimately read RIDE#*
+    // rows the poller writes — only writes get the prefix scoping
+    // below.
     if (!webApp.computeRole) {
       throw new Error(
         "Amplify L2 should auto-create computeRole when platform is WEB_COMPUTE. Got undefined.",
       );
     }
     dataTable.grantReadData(webApp.computeRole);
+
+    // ─── M3: scoped write permissions on the SSR compute role ───────
+    //
+    // Defense-in-depth IAM scoping (Option B′ from RUNBOOK.md "Decision
+    // to flag for Phase 1"). Restricts SSR-side writes to user-data
+    // partitions only, so a bug in any /api/me/* handler cannot
+    // corrupt the live RIDE# state the poller maintains.
+    //
+    // Partitions in scope:
+    //   USER#<sub> → PROFILE, FAV_RIDE#<ride_id>  (M3 phases 1+2)
+    //   PARK#<key> → USER#<sub>                   (park subscriptions)
+    //
+    // What this DOES enforce: the SSR role cannot write to RIDE#*
+    // rows under any circumstances, even with a buggy handler.
+    //
+    // What this does NOT enforce: cross-user isolation. All SSR
+    // requests use the same compute role, so one user's session
+    // could in principle write another user's PK if the handler
+    // forgets to constrain by `auth().sub`. Route handlers MUST
+    // enforce that themselves. True per-user IAM isolation would
+    // require Cognito Identity Pool + per-request
+    // AssumeRoleWithWebIdentity — overkill for a trusted-user
+    // portfolio app (documented as Option C in the runbook).
+    //
+    // ForAllValues:StringLike is the correct operator: dynamodb:LeadingKeys
+    // is a multi-valued condition key (BatchWriteItem can target many
+    // PKs), and we want every targeted PK to match one of the patterns.
+    webApp.computeRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+        ],
+        resources: [dataTable.tableArn],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["USER#*", "PARK#*"],
+          },
+        },
+      }),
+    );
+
+    // M3: SSM read for the Pushover app token (used at SSR runtime
+    // by /api/me/profile-style server actions to validate user-
+    // supplied Pushover user keys before saving). Tightly scoped to
+    // the one parameter ARN — same hygiene as the poller's grant.
+    // Default-key SecureString decryption needs no explicit KMS
+    // permission.
+    webApp.computeRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter${PUSHOVER_APP_TOKEN_PARAM}`,
+        ],
+      }),
+    );
 
     // CloudWatch Logs permissions for the SSR compute role. Newer
     // alpha versions of @aws-cdk/aws-amplify-alpha don't auto-attach

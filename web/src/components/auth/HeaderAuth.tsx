@@ -10,6 +10,8 @@
  * page. M3 will replace this with a profile-link affordance.
  */
 
+import Link from "next/link";
+
 import { auth } from "@/auth";
 
 import { SignInButton } from "./SignInButton";
@@ -27,10 +29,16 @@ export async function HeaderAuth() {
   return (
     <div className="flex items-center gap-3">
       {email && (
-        <span className="hidden md:inline text-fg-2 text-sm" title={email}>
+        <span className="hidden md:inline text-fg-3 text-sm" title={email}>
           {email}
         </span>
       )}
+      <Link
+        href="/me"
+        className="rounded-md border border-line bg-bg-1 hover:bg-bg-2 px-3 py-1.5 text-sm font-medium text-fg-1 transition-colors"
+      >
+        Settings
+      </Link>
       <SignOutButton />
     </div>
   );
