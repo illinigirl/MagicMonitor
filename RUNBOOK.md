@@ -397,6 +397,16 @@ These don't block anything; clean up when convenient.
    to force re-consent each time, or (b) showing the user a "to fully
    sign out, also sign out of Google at accounts.google.com" hint.
 
+9. **"Live status →" link copy on landing-page park cards (M4
+   polish).** Was unambiguous when it was the only action on a card;
+   now that "Today's shows →" sits right below it (added in M4 Phase
+   1), "Live status" reads ambiguously alongside "shows" — status of
+   what? Change to "Live ride status →" so the two siblings parallel
+   cleanly. The landing-page hero kicker ("Live status / Pick a
+   park.") is similarly imprecise but small — judgment call whether
+   to touch that copy too. See `web/src/components/park-card.tsx`
+   and `web/src/app/page.tsx`.
+
 ## What's next — M3 implementation plan
 
 PROJECT.md describes M3 in narrative form. Implementation order:
