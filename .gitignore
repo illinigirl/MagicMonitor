@@ -41,3 +41,6 @@ infra/lambda/*/dist/
 *.jpeg
 *.jpg
 *.png
+
+# Local-only scratch (Pi data dumps, etc — never committed)
+.scratch/

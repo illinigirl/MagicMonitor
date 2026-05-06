@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
@@ -47,6 +48,15 @@ export default async function HomePage({
           Wait times and ride status update every two minutes. Down rides
           surface to the top so you don&apos;t have to scan past the
           carousel of merchandise to find them.
+        </p>
+        <p className="mt-4 text-sm">
+          <Link
+            href="/analytics"
+            className="transition-opacity hover:opacity-80"
+            style={{ color: "var(--gold)" }}
+          >
+            See 57 days of wait-time analytics →
+          </Link>
         </p>
       </section>
 
