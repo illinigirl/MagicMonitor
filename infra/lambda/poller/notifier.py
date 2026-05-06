@@ -115,3 +115,24 @@ def alert_still_down(
     title = f"{emoji} {ride_name} still down"
     body = f"{park_name}\n{ride_name} has been down for {minutes_down} min."
     return _send(user_key, title, body, priority=0)
+
+
+def alert_low_wait(
+    user_key: str,
+    ride_name: str,
+    park_name: str,
+    park_key: str,
+    wait_mins: int,
+    typical_wait_mins: int,
+) -> bool:
+    """Fire when a ride's current wait dropped below its hour-of-day
+    typical. Lower priority than DOWN — it's an opportunity, not a
+    breakdown — but worth opening Pushover for."""
+    emoji = PARK_EMOJI.get(park_key, "🎢")
+    title = f"{emoji} {ride_name} — low wait now"
+    body = (
+        f"{park_name}\n"
+        f"{ride_name} is at {wait_mins} min. "
+        f"Typical for this hour: ~{typical_wait_mins} min."
+    )
+    return _send(user_key, title, body, priority=0)

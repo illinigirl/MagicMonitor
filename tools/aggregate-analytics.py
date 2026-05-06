@@ -48,6 +48,19 @@ ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / ".scratch" / "disney-pi-snapshot.db"
 OUT_PATH = ROOT / "web" / "src" / "data" / "analytics-snapshot.ts"
 
+# Side-output for the poller Lambda — per (ride, hour-ET) wait
+# thresholds used by the M7-promoted "short wait" alerts. Bundled
+# into the Python Lambda asset by CDK.
+BASELINES_PATH = ROOT / "infra" / "lambda" / "poller" / "baselines.json"
+
+# Short-wait alert thresholds. We only emit a threshold for (ride, hour)
+# combinations where the typical wait is "interesting" — alerting that
+# Tom Sawyer Island has a 5-min wait at 9am is noise because it always
+# does. The threshold itself is half the typical wait, capped so we
+# never alert on a 60-min wait as "short."
+MIN_INTERESTING_AVG_WAIT = 25  # baseline must be at least this many mins
+SHORT_WAIT_THRESHOLD_CAP = 30  # never alert if current wait > this many mins
+
 EASTERN = ZoneInfo("America/New_York")
 
 # Per-ride data with fewer than this many active polls is dropped —
@@ -254,12 +267,69 @@ export const ANALYTICS_SNAPSHOT: AnalyticsSnapshot = {json_text};
 """
     )
 
+    # Side-output: short-wait baselines for the poller Lambda.
+    _write_short_wait_baselines(rides_list, snapshot["generated_at"])
+
     print(f"  total: {time.time() - t0:.1f}s")
     print(f"  wrote {OUT_PATH}")
     print(f"    rides: {len(rides_list)}")
     print(f"    heatmap cells: {sum(len(v) for v in heatmaps.values())}")
     print(f"    output size: {OUT_PATH.stat().st_size / 1024:.1f} KB")
     con.close()
+
+
+def _write_short_wait_baselines(rides_list: list, generated_at: str) -> None:
+    """Emit infra/lambda/poller/baselines.json for short-wait alerts.
+
+    Per (ride_id, hour-ET): a threshold below which we'd consider the
+    current wait "short enough to ping people about." Computed as half
+    the typical operating wait at that hour, capped at SHORT_WAIT_
+    THRESHOLD_CAP, and only emitted when the typical wait clears
+    MIN_INTERESTING_AVG_WAIT (so we don't alert on rides that are
+    always short during quiet hours).
+
+    Schema:
+        {
+          "generated_at": "...",
+          "min_avg_wait_for_threshold": 25,
+          "max_threshold": 30,
+          "rides": {
+            "<ride_id>": {
+              "<hour>": <threshold_int_minutes>
+            }
+          }
+        }
+    """
+    out: dict = {}
+    for ride in rides_list:
+        thresholds: dict[str, int] = {}
+        for entry in ride["hourly_wait"]:
+            avg = entry["wait"]
+            if avg < MIN_INTERESTING_AVG_WAIT:
+                continue
+            threshold = min(SHORT_WAIT_THRESHOLD_CAP, round(avg * 0.5))
+            # Threshold must still be a useful gate — if it rounds to 0
+            # or below the floor, skip. A threshold of 5 min is fine; a
+            # threshold of 1 isn't actionable.
+            if threshold < 5:
+                continue
+            thresholds[str(entry["hour"])] = threshold
+        if thresholds:
+            out[ride["ride_id"]] = thresholds
+
+    payload = {
+        "generated_at": generated_at,
+        "min_avg_wait_for_threshold": MIN_INTERESTING_AVG_WAIT,
+        "max_threshold": SHORT_WAIT_THRESHOLD_CAP,
+        "rides": out,
+    }
+    BASELINES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    BASELINES_PATH.write_text(json.dumps(payload, indent=2))
+    print(f"  wrote {BASELINES_PATH}")
+    print(
+        f"    rides with thresholds: {len(out)} / {len(rides_list)}, "
+        f"size: {BASELINES_PATH.stat().st_size / 1024:.1f} KB"
+    )
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@
 import type { AnalyticsSnapshot } from "@/lib/analytics";
 
 export const ANALYTICS_SNAPSHOT: AnalyticsSnapshot = {
-  "generated_at": "2026-05-06T16:45:58.825892+00:00",
+  "generated_at": "2026-05-06T17:14:14.491375+00:00",
   "date_range": {
     "start": "2026-03-10T14:40:09.861336+00:00",
     "end": "2026-05-06T16:09:28.032041+00:00"

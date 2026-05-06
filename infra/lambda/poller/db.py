@@ -24,6 +24,10 @@ from boto3.dynamodb.conditions import Key
 TABLE_NAME = os.environ["DISNEY_TABLE_NAME"]
 HISTORY_RETENTION_DAYS = int(os.environ.get("HISTORY_RETENTION_DAYS", "90"))
 DOWN_ALERT_COOLDOWN_SECS = int(os.environ.get("DOWN_ALERT_COOLDOWN_SECS", "900"))
+# Short-wait alerts get a longer cooldown — the low-wait window for a
+# ride often persists 30-60 min, and we don't want to spam-ping during
+# the same trough. 90 min default; configurable via env.
+LOW_WAIT_ALERT_COOLDOWN_SECS = int(os.environ.get("LOW_WAIT_ALERT_COOLDOWN_SECS", "5400"))
 
 # Module-level resource — reused across warm invocations to avoid
 # reconnecting on every poll. Lambda freezes/thaws this between calls.
@@ -139,6 +143,28 @@ def mark_down_alert_sent(ride_id: str) -> None:
         Item={
             "PK":      f"RIDE#{ride_id}",
             "SK":      "COOLDOWN#DOWN",
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "ttl":     expire_ts,
+        }
+    )
+
+
+# ─── Low-wait cooldown ─────────────────────────────────────────────
+# Mirrors the DOWN cooldown pattern — same shape, different SK and a
+# longer default TTL because the low-wait window itself usually lasts
+# 30-60 min and we don't want to re-alert during the same trough.
+
+def is_low_wait_alert_on_cooldown(ride_id: str) -> bool:
+    resp = _table.get_item(Key={"PK": f"RIDE#{ride_id}", "SK": "COOLDOWN#LOW_WAIT"})
+    return "Item" in resp
+
+
+def mark_low_wait_alert_sent(ride_id: str) -> None:
+    expire_ts = int(time.time()) + LOW_WAIT_ALERT_COOLDOWN_SECS
+    _table.put_item(
+        Item={
+            "PK":      f"RIDE#{ride_id}",
+            "SK":      "COOLDOWN#LOW_WAIT",
             "sent_at": datetime.now(timezone.utc).isoformat(),
             "ttl":     expire_ts,
         }
