@@ -27,12 +27,15 @@ interface Props {
   initialName: string;
   initialPushoverUserKey: string;
   initialSubscribedParks: ParkKey[];
+  /** Server-fetched count of favorited rides per park, for inline display. */
+  favoriteCountsByPark: Record<ParkKey, number>;
 }
 
 export function SettingsForm({
   initialName,
   initialPushoverUserKey,
   initialSubscribedParks,
+  favoriteCountsByPark,
 }: Props) {
   const [state, formAction] = useActionState<SaveSettingsResult | null, FormData>(
     saveSettings,
@@ -109,7 +112,10 @@ export function SettingsForm({
                 href={`/me/rides/${park.key}`}
                 className="text-fg-3 hover:text-fg-1 text-xs transition-colors whitespace-nowrap"
               >
-                Pick favorites →
+                Pick favorites
+                {favoriteCountsByPark[park.key] > 0 &&
+                  ` (${favoriteCountsByPark[park.key]})`}
+                {" →"}
               </Link>
             </div>
           ))}

@@ -15,9 +15,9 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import {
+  getFavoriteRideCountsByPark,
   getUserParkSubscriptions,
   getUserProfile,
-  userHasAnyFavorites,
 } from "@/lib/dynamodb-writes";
 
 import { SettingsForm } from "./settings-form";
@@ -41,12 +41,15 @@ export default async function MePage({
   }
 
   // Three checks drive the Phase 3 setup banner. Done in parallel
-  // — independent partition keys, no ordering dependency.
-  const [profile, subscribedParks, hasFavorites] = await Promise.all([
+  // — independent partition keys, no ordering dependency. The
+  // favorite-counts call also feeds the per-park "(N)" inline count
+  // shown next to each park's "Pick favorites →" link.
+  const [profile, subscribedParks, favoriteCountsByPark] = await Promise.all([
     getUserProfile(sub),
     getUserParkSubscriptions(sub),
-    userHasAnyFavorites(sub),
+    getFavoriteRideCountsByPark(sub),
   ]);
+  const hasFavorites = Object.values(favoriteCountsByPark).some((n) => n > 0);
 
   const setupStatus = computeSetupStatus({
     hasProfile: profile !== null,
@@ -78,6 +81,7 @@ export default async function MePage({
         initialName={profile?.name ?? session.user?.name ?? ""}
         initialPushoverUserKey={profile?.pushoverUserKey ?? ""}
         initialSubscribedParks={Array.from(subscribedParks)}
+        favoriteCountsByPark={favoriteCountsByPark}
       />
     </div>
   );

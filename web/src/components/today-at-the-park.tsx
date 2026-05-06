@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 
 import {
@@ -39,9 +39,17 @@ export function TodayAtThePark({ showtimes }: { showtimes: ParkShowtimes }) {
   const isSearching = q.length > 0;
   const isFiltering = categoryFilter !== null;
 
-  // Frozen at component-render time so all rows in this paint agree
-  // on what counts as past. The page revalidates every 60s anyway.
-  const now = useMemo(() => new Date(), []);
+  // Ticks once a minute on the client so the "in N min" countdown
+  // and the past-show greying update without waiting for the page
+  // to revalidate. Server-side render starts with a fresh `new Date()`,
+  // then the effect takes over hydration-side. Cheap (one setState/min)
+  // and avoids a stale-clock UX where a 5-min countdown lingers at "5"
+  // for the full 60s revalidate window.
+  const [now, setNow] = useState<Date>(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Per-category counts for the pill row. Computed once from the
   // server-bucketed data; doesn't depend on search/filter state.
@@ -95,6 +103,7 @@ export function TodayAtThePark({ showtimes }: { showtimes: ParkShowtimes }) {
         <NextUpCallout
           show={showtimes.nextUp.show}
           time={showtimes.nextUp.time}
+          now={now}
         />
       )}
 
@@ -261,12 +270,17 @@ function Pill({
 function NextUpCallout({
   show,
   time,
+  now,
 }: {
   show: ShowEntity;
   time: Showtime;
+  now: Date;
 }) {
+  // Read from the ticking `now` (parent state) so the countdown
+  // updates each minute on the client. Using Date.now() here would
+  // freeze it at first paint until the next page revalidate.
   const minsUntil = Math.round(
-    (new Date(time.start).getTime() - Date.now()) / 60000,
+    (new Date(time.start).getTime() - now.getTime()) / 60000,
   );
   return (
     <div

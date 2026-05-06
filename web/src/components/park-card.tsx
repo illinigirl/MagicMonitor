@@ -50,7 +50,7 @@ export function ParkCard({
           <p className="mt-2 text-fg-2 text-sm">{park.tagline}</p>
           {schedule && <CardStatusLine schedule={schedule} />}
           <p className="mt-4 text-xs text-fg-3 group-hover:text-fg-2 transition-colors">
-            Live status →
+            Live ride status →
           </p>
         </Link>
         <Link

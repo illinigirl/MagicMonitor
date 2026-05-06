@@ -246,12 +246,18 @@ export async function getUserFavoriteRides(
 }
 
 /**
- * Cheap "do you have any favorites at all?" check. Used by Phase 3's
- * onboarding banner to tell users they're subscribed to parks but
- * won't get alerts until they pick favorites. One Query bounded to
- * Limit=1 — DDB stops as soon as it finds a single FAV_RIDE row.
+ * Per-park favorite counts for the signed-in user.
+ *
+ * One Query against PK=USER#<sub>, SK begins_with FAV_RIDE#, project
+ * the denormalized park_key and bucket client-side. At <100 favorites
+ * per user this is cheaper than 4 parallel per-park Queries and
+ * gives /me both the per-park count (for "Pick favorites (N) →"
+ * inline counts) and the "has any favorites" boolean for the setup
+ * banner from a single round-trip.
  */
-export async function userHasAnyFavorites(sub: string): Promise<boolean> {
+export async function getFavoriteRideCountsByPark(
+  sub: string,
+): Promise<Record<ParkKey, number>> {
   const resp = await client.send(
     new QueryCommand({
       TableName: tableName,
@@ -260,11 +266,21 @@ export async function userHasAnyFavorites(sub: string): Promise<boolean> {
         ":pk": `USER#${sub}`,
         ":skp": "FAV_RIDE#",
       },
-      Limit: 1,
-      ProjectionExpression: "SK",
+      ProjectionExpression: "park_key",
     }),
   );
-  return (resp.Items?.length ?? 0) > 0;
+  const counts: Record<ParkKey, number> = {
+    magic_kingdom: 0,
+    epcot: 0,
+    hollywood_studios: 0,
+    animal_kingdom: 0,
+  };
+  for (const row of (resp.Items ?? []) as { park_key?: ParkKey }[]) {
+    if (row.park_key && row.park_key in counts) {
+      counts[row.park_key] += 1;
+    }
+  }
+  return counts;
 }
 
 /**
