@@ -12,19 +12,30 @@ import {
 } from "@/lib/analytics";
 import { findPark } from "@/lib/parks";
 
-export const dynamic = "force-static";
+// Default rendering (no force-static) — the snapshot is in-memory at
+// module load, so per-request work is just the sort + render. We need
+// search params to drive ?sort=, which force-static strips.
+const SORT_MODES = ["down", "wait", "name"] as const;
+type SortMode = (typeof SORT_MODES)[number];
+
+function parseSort(raw: string | undefined): SortMode {
+  return SORT_MODES.includes(raw as SortMode) ? (raw as SortMode) : "down";
+}
 
 export default async function ParkAnalyticsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ park: string }>;
+  searchParams: Promise<{ sort?: string }>;
 }) {
-  const { park: parkKeyRaw } = await params;
+  const [{ park: parkKeyRaw }, sp] = await Promise.all([params, searchParams]);
   const park = findPark(parkKeyRaw);
   if (!park) notFound();
 
+  const sort = parseSort(sp.sort);
   const data = getAnalytics();
-  const rides = getRidesForPark(park.key);
+  const rides = sortRides(getRidesForPark(park.key), sort);
   const heatmap = getParkHeatmap(park.key);
 
   return (
@@ -67,13 +78,13 @@ export default async function ParkAnalyticsPage({
 
       <section>
         <h3 className="display text-xl font-medium mb-2 text-fg-1">
-          Ride downtime ranking
+          {SORT_HEADERS[sort]}
         </h3>
-        <p className="text-fg-2 text-sm mb-5 max-w-2xl leading-relaxed">
-          Percentage of operating-window polls each ride spent in DOWN status.
-          Higher = more breakdowns / mid-day shutdowns over the data window.
+        <p className="text-fg-2 text-sm mb-4 max-w-2xl leading-relaxed">
+          {SORT_DESCRIPTIONS[sort]}
         </p>
-        <RideTable rides={rides} />
+        <SortPills active={sort} parkKey={park.key} />
+        <RideTable rides={rides} sort={sort} />
       </section>
     </div>
   );
@@ -215,14 +226,106 @@ function Legend({ maxWait }: { maxWait: number }) {
   );
 }
 
-function RideTable({ rides }: { rides: RideAnalytics[] }) {
-  // Highest possible downtime in this park, used to scale the bars.
-  const maxDowntime = Math.max(...rides.map((r) => r.downtime_pct), 1);
+/**
+ * Sort the per-park rides list by the requested mode. Nullable
+ * fields (avg_wait can be null for never-operating rides in the
+ * window) sort to the bottom regardless of direction so a refurb
+ * ride doesn't leapfrog real data.
+ */
+function sortRides(rides: RideAnalytics[], mode: SortMode): RideAnalytics[] {
+  const out = [...rides];
+  if (mode === "down") {
+    out.sort((a, b) => b.downtime_pct - a.downtime_pct);
+  } else if (mode === "wait") {
+    out.sort((a, b) => {
+      if (a.avg_wait === null && b.avg_wait === null) return 0;
+      if (a.avg_wait === null) return 1;
+      if (b.avg_wait === null) return -1;
+      return b.avg_wait - a.avg_wait;
+    });
+  } else {
+    out.sort((a, b) => a.ride_name.localeCompare(b.ride_name));
+  }
+  return out;
+}
 
+const SORT_HEADERS: Record<SortMode, string> = {
+  down: "Ride downtime ranking",
+  wait: "Longest average waits",
+  name: "All rides (A → Z)",
+};
+
+const SORT_DESCRIPTIONS: Record<SortMode, string> = {
+  down:
+    "Percentage of operating-window polls each ride spent in DOWN status. Higher = more breakdowns / mid-day shutdowns over the data window.",
+  wait:
+    "Average wait while operating. Useful for spotting which attractions consistently command the longest queues.",
+  name:
+    "Alphabetical. Useful when you want to look up a specific ride's stats without hunting.",
+};
+
+function SortPills({
+  active,
+  parkKey,
+}: {
+  active: SortMode;
+  parkKey: import("@/lib/parks").ParkKey;
+}) {
+  const opts: { mode: SortMode; label: string }[] = [
+    { mode: "down", label: "Most down" },
+    { mode: "wait", label: "Longest wait" },
+    { mode: "name", label: "A → Z" },
+  ];
+  return (
+    <div className="mb-4 flex flex-wrap gap-1.5">
+      {opts.map((o) => {
+        // Default sort omits the param — keeps URLs clean and a
+        // bookmark of the bare /analytics page lands on the same
+        // default the page renders cold.
+        const href =
+          o.mode === "down"
+            ? `/parks/${parkKey}/analytics`
+            : `/parks/${parkKey}/analytics?sort=${o.mode}`;
+        const isActive = o.mode === active;
+        return (
+          <Link
+            key={o.mode}
+            href={href}
+            aria-current={isActive ? "page" : undefined}
+            className={
+              isActive
+                ? "rounded-full px-3 py-1 text-xs font-medium bg-gold text-gold-ink"
+                : "rounded-full px-3 py-1 text-xs font-medium bg-bg-1 text-fg-2 hover:bg-bg-2 transition-colors"
+            }
+            style={isActive ? { color: "var(--gold-ink)" } : undefined}
+          >
+            {o.label}
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+function RideTable({ rides, sort }: { rides: RideAnalytics[]; sort: SortMode }) {
+  // Bar scale tracks the active sort metric so the bars are visually
+  // meaningful in every mode. In "name" we fall back to downtime since
+  // a length-of-name bar would be meaningless.
+  const maxDowntime = Math.max(...rides.map((r) => r.downtime_pct), 1);
+  const maxWait = Math.max(
+    ...rides.map((r) => r.avg_wait ?? 0).filter((n) => n > 0),
+    1,
+  );
   return (
     <div className="rounded-lg border border-line bg-bg-1 shadow-[var(--shadow-card)] overflow-hidden">
       {rides.map((r) => (
-        <RideRow key={r.ride_id} ride={r} maxDowntime={maxDowntime} />
+        <RideRow
+          key={r.ride_id}
+          ride={r}
+          maxDowntime={maxDowntime}
+          maxWait={maxWait}
+          sort={sort}
+        />
       ))}
     </div>
   );
@@ -231,18 +334,36 @@ function RideTable({ rides }: { rides: RideAnalytics[] }) {
 function RideRow({
   ride,
   maxDowntime,
+  maxWait,
+  sort,
 }: {
   ride: RideAnalytics;
   maxDowntime: number;
+  maxWait: number;
+  sort: SortMode;
 }) {
-  const barWidth = Math.max(2, (ride.downtime_pct / maxDowntime) * 100);
+  // Bar tracks whichever metric the user is currently sorting by.
+  // For "name" mode the bar reverts to downtime so it isn't an
+  // arbitrary visual signal.
+  const barMetric = sort === "wait" ? "wait" : "down";
+  const barWidth =
+    barMetric === "wait" && ride.avg_wait !== null
+      ? Math.max(2, (ride.avg_wait / maxWait) * 100)
+      : Math.max(2, (ride.downtime_pct / maxDowntime) * 100);
+  const headlineValue =
+    sort === "wait"
+      ? ride.avg_wait !== null
+        ? `${ride.avg_wait}`
+        : "—"
+      : ride.downtime_pct.toFixed(1);
+  const headlineUnit = sort === "wait" ? "min" : "%";
   return (
     <div className="border-b border-line-soft last:border-b-0 px-4 py-3">
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-fg-0 font-medium truncate">{ride.ride_name}</span>
         <span className="display text-base text-fg-0 tabular-nums shrink-0">
-          {ride.downtime_pct.toFixed(1)}
-          <span className="label-meta ml-1">%</span>
+          {headlineValue}
+          <span className="label-meta ml-1">{headlineUnit}</span>
         </span>
       </div>
       <div className="mt-1.5 h-1.5 rounded-full bg-bg-2 overflow-hidden">
@@ -269,8 +390,12 @@ function RideRow({
           {ride.max_wait !== null && " min"}
         </span>
         <span>·</span>
-        <span className="tabular-nums">
-          {ride.total_polls.toLocaleString()} polls
+        <span>
+          downtime{" "}
+          <span className="text-fg-2 tabular-nums">
+            {ride.downtime_pct.toFixed(1)}
+          </span>
+          %
         </span>
       </div>
     </div>
