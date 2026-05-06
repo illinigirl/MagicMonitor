@@ -55,7 +55,7 @@ export default async function HomePage({
             className="transition-opacity hover:opacity-80"
             style={{ color: "var(--gold)" }}
           >
-            See 57 days of wait-time analytics →
+            See historical wait-time analytics →
           </Link>
         </p>
       </section>

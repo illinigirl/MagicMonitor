@@ -35,7 +35,7 @@ export const PARKS: Park[] = [
     name: "EPCOT",
     shortName: "EP",
     accentVar: "--park-epcot",
-    tagline: "Spaceship Earth, the World Showcase, that ball.",
+    tagline: "That ball, the World Showcase, Cosmic Rewind.",
   },
   {
     key: "hollywood_studios",

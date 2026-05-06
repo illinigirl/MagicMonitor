@@ -13,7 +13,7 @@ a dollar a month.
 ## What it does
 
 Polls themeparks.wiki every two minutes for live wait times and
-ride status across the four WDW theme parks. When a ride your
+ride status across the four WDW theme parks. When a ride in your
 favorites list goes down, comes back up, or its current wait drops
 below what's typical for that hour-of-day, a Pushover notification
 fires to every user who's both subscribed to that park and marked
@@ -22,8 +22,8 @@ that ride as a favorite.
 A web dashboard at `magicmonitor.megillini.dev` shows live ride
 status, park hours (including Early Entry and Extended Evening
 Hours for deluxe / DVC guests), today's entertainment lineup, and
-57 days of analytics — hour × day-of-week wait heatmaps and
-per-ride downtime rankings drawn from 8.8 million polling rows.
+wait-time analytics — hour × day-of-week heatmaps and per-ride
+downtime rankings drawn from millions of historical poll rows.
 
 ## Stack at a glance
 
@@ -57,7 +57,7 @@ flowchart TD
     Poll -->|read + write| DDB
     Poll -->|fanout alerts| PO[Pushover API]
 
-    SSR -.reads.-> Snapshot[analytics-snapshot.ts<br/>shipped in repo<br/>57 days, 8.8M rows]
+    SSR -.reads.-> Snapshot[analytics-snapshot.ts<br/>shipped in repo<br/>millions of historical rows]
     Poll -.reads.-> Baselines[baselines.json<br/>per-ride-hour wait thresholds]
 
     classDef aws fill:#232f3e,stroke:#ff9900,color:#fff
@@ -86,8 +86,6 @@ session without re-validating JWT cookies at an API edge.
 | **Today at the park** — chronological showtimes with category-pill filters (parade, fireworks, stage, music, character meet) and live search | **Analytics** — hour × day-of-week heatmap, ride downtime ranking with three sort modes, drawn from 8.8M historical poll rows |
 
 ## Engineering judgment moments
-
-A few decisions worth surfacing for the recruiter who scrolls this far.
 
 ### Single-table DynamoDB, deliberately
 
@@ -274,16 +272,15 @@ Known follow-ups](RUNBOOK.md#known-follow-ups-low-priority) and
   transition in PROJECT.md M6.
 - **README screenshots** — wait, you're reading them.
 
-## Out of scope
+## Deliberately skipped
 
-- **Lightning Lane purchase tracking** — no public API for personal
-  LL inventory.
-- **SMS notifications** — 10DLC compliance ($130/yr + 2-week
-  vetting + EIN) for zero architectural depth over Pushover.
-- **Multi-region** — single region (us-east-2). Latency on a 2-min
-  poll cadence doesn't matter.
-- **High availability beyond AWS defaults** — Lambda cold-start
-  storms or 5-minute outages are acceptable.
+- **Lightning Lane purchase tracking** — no public API exists for
+  personal LL inventory; would require manually syncing from the
+  Disney app, which doesn't generalize past the original user.
+- **SMS notifications** — 10DLC compliance is $130/yr + a two-week
+  vetting period + EIN paperwork for zero architectural depth over
+  Pushover. Pushover ships in a day; SMS would burn three weeks of
+  calendar time on regulatory work.
 
 ## License
 
