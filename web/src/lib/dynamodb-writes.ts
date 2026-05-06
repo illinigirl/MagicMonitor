@@ -246,6 +246,28 @@ export async function getUserFavoriteRides(
 }
 
 /**
+ * Cheap "do you have any favorites at all?" check. Used by Phase 3's
+ * onboarding banner to tell users they're subscribed to parks but
+ * won't get alerts until they pick favorites. One Query bounded to
+ * Limit=1 — DDB stops as soon as it finds a single FAV_RIDE row.
+ */
+export async function userHasAnyFavorites(sub: string): Promise<boolean> {
+  const resp = await client.send(
+    new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: "PK = :pk AND begins_with(SK, :skp)",
+      ExpressionAttributeValues: {
+        ":pk": `USER#${sub}`,
+        ":skp": "FAV_RIDE#",
+      },
+      Limit: 1,
+      ProjectionExpression: "SK",
+    }),
+  );
+  return (resp.Items?.length ?? 0) > 0;
+}
+
+/**
  * Toggle a favorite-ride row on or off.
  *
  * Subscribed=true: PutItem with denormalized park_key + ride_name +
