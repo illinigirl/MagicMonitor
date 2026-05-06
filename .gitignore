@@ -41,6 +41,8 @@ infra/lambda/*/dist/
 *.jpeg
 *.jpg
 *.png
+# …except the README portfolio shots, which are checked in.
+!docs/screenshots/*.png
 
 # Local-only scratch (Pi data dumps, etc — never committed)
 .scratch/
