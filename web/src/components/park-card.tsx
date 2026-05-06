@@ -24,9 +24,14 @@ export function ParkCard({
   park: Park;
   schedule: ParkSchedule | null;
 }) {
+  // Whole card no longer wraps in a single Link — we now have two
+  // destinations per card (live ride status + today's showtimes) and
+  // HTML doesn't allow nested <a>. Card body is still the primary
+  // click target via the inner Link; the gold "Today's shows" link
+  // is a sibling so it gets its own click. The card-wide hover
+  // effect still works via `group hover:bg-bg-2` on the wrapper.
   return (
-    <Link
-      href={`/parks/${park.key}`}
+    <div
       className="group relative flex items-stretch overflow-hidden rounded-lg border border-line bg-bg-1 hover:bg-bg-2 transition-colors shadow-[var(--shadow-card)]"
       style={
         { "--park-accent": `var(${park.accentVar})` } as React.CSSProperties
@@ -37,17 +42,26 @@ export function ParkCard({
         style={{ background: "var(--park-accent)" }}
       />
       <div className="flex-1 px-6 py-5">
-        <div className="flex items-baseline gap-3">
-          <h2 className="display text-2xl font-medium text-fg-0">{park.name}</h2>
-          <span className="label-meta">{park.shortName}</span>
-        </div>
-        <p className="mt-2 text-fg-2 text-sm">{park.tagline}</p>
-        {schedule && <CardStatusLine schedule={schedule} />}
-        <p className="mt-4 text-xs text-fg-3 group-hover:text-fg-2 transition-colors">
-          Live status →
-        </p>
+        <Link href={`/parks/${park.key}`} className="block">
+          <div className="flex items-baseline gap-3">
+            <h2 className="display text-2xl font-medium text-fg-0">{park.name}</h2>
+            <span className="label-meta">{park.shortName}</span>
+          </div>
+          <p className="mt-2 text-fg-2 text-sm">{park.tagline}</p>
+          {schedule && <CardStatusLine schedule={schedule} />}
+          <p className="mt-4 text-xs text-fg-3 group-hover:text-fg-2 transition-colors">
+            Live status →
+          </p>
+        </Link>
+        <Link
+          href={`/parks/${park.key}/today`}
+          className="mt-1 inline-block text-xs transition-opacity hover:opacity-80"
+          style={{ color: "var(--gold)" }}
+        >
+          Today&apos;s shows →
+        </Link>
       </div>
-    </Link>
+    </div>
   );
 }
 
