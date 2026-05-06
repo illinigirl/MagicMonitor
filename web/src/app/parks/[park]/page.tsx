@@ -87,6 +87,17 @@ export default async function ParkPage({
         </div>
         <p className="text-fg-2 mt-2">{park.tagline}</p>
         <ParkSchedule schedule={schedule} />
+        {/* Showtimes live behind a click — most visits are ride-driven
+            and a flat list of 60-90 daily entertainment slots would
+            crowd the page. Subtle text link keeps it discoverable
+            without competing with the down-rides above. */}
+        <Link
+          href={`/parks/${park.key}/today`}
+          className="inline-block mt-3 text-sm transition-colors hover:opacity-80"
+          style={{ color: "var(--gold)" }}
+        >
+          Today&apos;s shows →
+        </Link>
       </div>
 
       {/* Filter toggle — only shown when signed in AND user has at

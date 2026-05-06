@@ -191,7 +191,15 @@ Each milestone ships something demo-able; even partial completion
   is most likely to be down — useful for trip planning"
 
 #### M7+ — Polish (grab bag)
-- Low-wait alerts (needs ~1 week of history to compute baselines)
+- Low-wait alerts (needs ~1 week of history to compute baselines).
+  When this ships, also add per-type toggles to `/me`
+  (`down_up` / `short_wait`) — until short-wait exists there's only
+  one alert type, so type-pickers are moot. Lightning-lane alerts
+  remain out of scope pre-demo (no public LL purchase API).
+- Show alerts: opt-in per show, fires N min before start time. Needs
+  a daily showtime poll (stable through the day, no per-2-min churn)
+  plus a per-user `SHOW_ALERT#<show_id>` row mirroring the FAV_RIDE
+  shape. Past-demo scope.
 - Per-ride alerts (not just per-park)
 - Email digest summary at end of trip
 - Public read-only stats page (no sign-in needed)
