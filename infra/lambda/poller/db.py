@@ -161,3 +161,27 @@ def get_user_profile(user_id: str) -> Optional[dict]:
     """Fetch a user's profile (name + pushover_user_key)."""
     resp = _table.get_item(Key={"PK": f"USER#{user_id}", "SK": "PROFILE"})
     return resp.get("Item")
+
+
+# ─── Favorite rides (M3 Phase 2) ────────────────────────────────────
+# USER#<id> / FAV_RIDE#<ride_id> rows with denormalized park_key let
+# the poller answer "which of this user's favorites are in this park?"
+# with a single Query + FilterExpression. The denormalized park_key
+# makes the filter cheap (no second lookup against RIDE# state).
+#
+# Access pattern is per-user, per-park, once per invocation — cached
+# in index.py so we don't re-query within a poll.
+
+def get_user_favorites_for_park(user_id: str, park_key: str) -> set[str]:
+    """Return the set of ride_ids the user has favorited in this park.
+
+    Empty set means: user has no favorites in this park, so M3 Phase 2's
+    fanout filter will skip them entirely. That's the intended behavior
+    (matches Phase 3's "default zero rides → zero alerts" spec).
+    """
+    resp = _table.query(
+        KeyConditionExpression=Key("PK").eq(f"USER#{user_id}") & Key("SK").begins_with("FAV_RIDE#"),
+        FilterExpression="park_key = :park",
+        ExpressionAttributeValues={":park": park_key},
+    )
+    return {item["SK"].removeprefix("FAV_RIDE#") for item in resp.get("Items", [])}

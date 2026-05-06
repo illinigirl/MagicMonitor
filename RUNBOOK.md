@@ -362,6 +362,41 @@ These don't block anything; clean up when convenient.
    we did for MM. Better to do it on your schedule than have a build
    silently break before a demo.
 
+5. **/me single-form trap (M3 Phase 2 polish).** The settings page
+   has profile + Pushover key + park toggles all under one Save
+   button. Clicking "Pick favorites →" before saving silently loses
+   typed input. Fixes (pick one):
+   - Per-section auto-save (debounced) so navigating away preserves
+     state.
+   - Per-section save buttons (profile, parks separately).
+   - Unsaved-changes warning before navigating away from `/me`.
+   First user to hit this was Megan during M3 Phase 2 sub-migration.
+
+6. **Per-park favorite count on /me (M3 Phase 2 polish).** The park
+   toggle row shows "Pick favorites →" but no indication of how many
+   favorites the user already has in that park. Add a small count
+   inline, e.g. "Pick favorites (10) →". Cheap: the data is already
+   fetched server-side via `getUserFavoriteRides` (would need to
+   call once per park, or add a multi-park variant).
+
+7. **Legacy `USER#megan` row.** From the M1 manual seed step in
+   README.md. Has PROFILE + park subs + a real Pushover user key.
+   Still gets alerts under the old fanout (post-Phase-2 poller
+   change: only if it has FAV_RIDE rows, which it doesn't). Safe
+   to delete with `aws dynamodb delete-item` for `USER#megan/PROFILE`
+   plus the four `PARK#*/USER#megan` rows. Left intact for now in
+   case you want it as a "system test user" for diagnostics.
+
+8. **Cognito hosted-UI logout doesn't drop Google's session.** The
+   SignOutButton calls Cognito `/logout` which clears Cognito's
+   own cookie, but Google's session at accounts.google.com persists
+   independently. Result: re-clicking "Sign in" silently
+   re-authenticates without showing the Google account picker.
+   Confusing for shared-browser test scenarios. Could be addressed
+   by: (a) setting `prompt=consent` instead of `prompt=select_account`
+   to force re-consent each time, or (b) showing the user a "to fully
+   sign out, also sign out of Google at accounts.google.com" hint.
+
 ## What's next — M3 implementation plan
 
 PROJECT.md describes M3 in narrative form. Implementation order:

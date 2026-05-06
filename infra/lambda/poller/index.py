@@ -6,12 +6,22 @@ Triggered by EventBridge every 2 minutes. For each park:
   2. Diff each attraction against the stored STATE row in DynamoDB
   3. Persist the new state and append to history if status changed
   4. For each status transition that warrants an alert, fan out
-     Pushover messages to every subscriber of that park
+     Pushover messages to the INTERSECTION of:
+       (users subscribed to this park) ∩ (users who favorited THIS ride)
 
-Multi-user-ready from day 1: subscribers are read from DynamoDB
-PARK#<key> / USER#<id> rows, and each user's Pushover user_key comes
-from their USER#<id> / PROFILE row. M2 will add a UI to manage these
-rows; M1 ships with rows seeded manually (see README's seed step).
+M3 Phase 2: alerts are per-favorite, not per-park. A user subscribed
+to "EPCOT" with no favorites in EPCOT receives zero alerts —
+intentional, matches Phase 3's "default zero rides → zero alerts"
+spec. To get alerts, a user needs BOTH a park subscription AND
+favorites in that park.
+
+Subscriber rows: PARK#<key> / USER#<id> (park subscription)
+Favorite rows:   USER#<id> / FAV_RIDE#<ride_id>  (with denormalized park_key)
+Profile rows:    USER#<id> / PROFILE             (name + pushover_user_key)
+
+Cooldowns are per-ride, not per-recipient: even if zero users get
+the alert today (no favoriters), the cooldown is set so flap-induced
+status churn doesn't spam if a user adds the favorite mid-window.
 """
 
 import os
@@ -41,6 +51,13 @@ def handler(event, context):
     # every ride event.
     subscribers_by_park: dict[str, list[str]] = {}
     profile_cache: dict[str, dict] = {}
+
+    # M3 Phase 2: per-(user, park) favorite-rides cache. Looked up
+    # lazily — only queried for users actually subscribed to a park
+    # we're processing. One Query per (user × park) per invocation.
+    # At ~10 users × 4 parks = 40 queries per poll = ~28K/day, well
+    # within free tier.
+    favorites_cache: dict[tuple[str, str], set[str]] = {}
 
     # Cache park hours per park (one schedule call per invocation).
     # Returns True if alerts should fire for this park right now,
@@ -83,6 +100,27 @@ def handler(event, context):
             profile = db.get_user_profile(user_id) or {}
             profile_cache[user_id] = profile
         return profile_cache.get(user_id, {}).get("pushover_user_key")
+
+    def get_favorites(user_id: str, park_key: str) -> set[str]:
+        """Lazily fetch + cache one user's favorites for one park."""
+        cache_key = (user_id, park_key)
+        if cache_key not in favorites_cache:
+            favorites_cache[cache_key] = db.get_user_favorites_for_park(user_id, park_key)
+        return favorites_cache[cache_key]
+
+    def filter_to_favoriters(
+        subscribers: list[str], park_key: str, ride_id: str
+    ) -> list[str]:
+        """Of these park-subscribers, return only those who favorited THIS ride.
+
+        M3 Phase 2 alert intersection: alerts for a ride event go to
+        the set of users who BOTH (a) subscribed to the park AND
+        (b) marked that specific ride as a favorite. A user with
+        zero favorites in a park gets zero alerts for that park —
+        intentional, matches Phase 3's "default zero rides → zero
+        alerts" spec.
+        """
+        return [s for s in subscribers if ride_id in get_favorites(s, park_key)]
 
     # Track rides currently down across all parks for the post-loop
     # "second alert" sweep (rides down >= SECOND_ALERT_MINS get a
@@ -159,9 +197,20 @@ def handler(event, context):
                     print(f"[poller] Skipping DOWN alert for {attr['name']} (cooldown)")
                     continue
 
+                # Cooldown is set per-ride (not per-recipient) on
+                # purpose: even if zero users get the alert today
+                # (no one favorited this ride), we still want the
+                # cooldown to prevent flap-induced spam if a user
+                # adds the favorite mid-window. They'll catch the
+                # next event.
                 db.mark_down_alert_sent(ride_id)
+                favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
+                print(
+                    f"[poller] {attr['name']} DOWN: {len(subscribers)} park subs, "
+                    f"{len(favoriters)} favoriters → alerting"
+                )
                 total_alerts += _fanout(
-                    subscribers, get_user_key,
+                    favoriters, get_user_key,
                     notifier.alert_ride_down,
                     ride_name=attr["name"],
                     park_name=attr["park_name"],
@@ -183,8 +232,13 @@ def handler(event, context):
                 if not alerts_allowed(park_key):
                     continue
 
+                favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
+                print(
+                    f"[poller] {attr['name']} BACK UP: {len(subscribers)} park subs, "
+                    f"{len(favoriters)} favoriters → alerting"
+                )
                 total_alerts += _fanout(
-                    subscribers, get_user_key,
+                    favoriters, get_user_key,
                     notifier.alert_ride_up,
                     ride_name=attr["name"],
                     park_name=attr["park_name"],
@@ -229,8 +283,13 @@ def handler(event, context):
         })
 
         subscribers = get_subscribers(attr["park_key"])
+        favoriters = filter_to_favoriters(subscribers, attr["park_key"], ride_id)
+        print(
+            f"[poller] {attr['name']} STILL DOWN ({int(elapsed_mins)}m): "
+            f"{len(subscribers)} park subs, {len(favoriters)} favoriters → alerting"
+        )
         total_alerts += _fanout(
-            subscribers, get_user_key,
+            favoriters, get_user_key,
             notifier.alert_still_down,
             ride_name=attr["name"],
             park_name=attr["park_name"],
