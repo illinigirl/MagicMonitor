@@ -58,6 +58,26 @@ export const config: NextAuthConfig = {
   // Encrypted-JWT session, stored in an httpOnly cookie. No DB.
   session: { strategy: "jwt" },
   callbacks: {
+    // Initial sign-in carries `account` + `profile`; subsequent
+    // requests only carry `token` (JWT decoded from the cookie).
+    //
+    // Why this exists (M3 Phase 2 bug): without an explicit override,
+    // Auth.js v5's JWT-strategy session was emitting a fresh random
+    // sub per sign-in instead of the Cognito user's stable sub. We
+    // discovered this when three sign-ins by the same user produced
+    // three different USER#<sub> partitions in DynamoDB. Anchoring
+    // `token.sub` to Cognito's ID-token sub on each sign-in fixes
+    // it: subsequent JWT-only refreshes carry the same sub via the
+    // cookie, and any future sign-in re-anchors to the same value.
+    async jwt({ token, account, profile }) {
+      if (
+        account?.provider === "cognito" &&
+        typeof profile?.sub === "string"
+      ) {
+        token.sub = profile.sub;
+      }
+      return token;
+    },
     async session({ session, token }) {
       // Surface the Cognito sub on session.user.id. M3 uses this as
       // the partition-key prefix for per-user DDB rows (USER#<sub>).
