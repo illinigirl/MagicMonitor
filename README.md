@@ -129,6 +129,34 @@ event. If user count grows past hundreds, the per-user favorites
 move to a GSI on `FAV_RIDE#<ride_id>` and the fanout filter becomes
 "for this ride, who has it favorited?" instead.
 
+### Pre-aggregated analytics, not streams→Athena
+
+The "millions of polling rows" behind the analytics page live as
+a ~230 KB TypeScript module checked into the repo, not behind a
+DynamoDB Streams → Firehose → S3 → Athena pipeline. Two reasons.
+
+First, MM's poller writes only status *changes* to DDB (HIST# rows
+on transition), not every poll. A streams pipeline would carry
+the wrong-shaped data — transitions, not the granular hour-bucketed
+wait values the analytics page needs.
+
+Second, Athena earns its complexity at 10 GB+. The dataset here
+is 1.5 GB; the Glue / IAM / partitioning surface, the per-query
+cost, and the freshness-vs-cost calculus all skew against it at
+this scale.
+
+The data originated in a sibling Raspberry Pi project that's been
+recording every-2-min wait snapshots into SQLite for a couple of
+months. `tools/aggregate-analytics.py` reads that file, buckets
+by (ride, hour-of-day) and (park, hour × day-of-week), and emits
+the static module. Server Components import it directly. Zero AWS
+data plane, zero per-request cost, instant render.
+
+When freshness becomes load-bearing, the documented upgrade path
+([PROJECT.md M6](PROJECT.md)) is hourly-bucketed wait writes into
+a `RIDE#<id>/AGG#<hour>` DDB partition with a nightly re-aggregation
+Lambda — about 1-2 days of work, no streams or Athena required.
+
 ### Short-wait alerts use the analytics layer
 
 The most interesting feedback loop in the system: the historical
