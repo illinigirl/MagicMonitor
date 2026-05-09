@@ -71,6 +71,12 @@ MIN_RIDE_POLLS = 100
 # else we treat it as "park closed at this hour" and leave the cell
 # empty in the UI.
 MIN_HEATMAP_CELL_POLLS = 20
+# Hours strictly before this (in ET) get attributed to the previous
+# day's heatmap row. Disney parks regularly stay open past midnight
+# for special events (Halloween parties, EEH for deluxe guests); a
+# 1am Friday poll is really part of Thursday's park-day. 4am is the
+# safe cutoff — no WDW park has ever operated past 3am.
+PARK_DAY_BOUNDARY_HOUR = 4
 
 
 def main() -> None:
@@ -145,6 +151,12 @@ def main() -> None:
         # weekday(): Mon=0..Sun=6. Convert to SQLite-style Sun=0..Sat=6
         # so the JS-side reads match what disney_dashboard.py emits.
         dow = (dt_et.weekday() + 1) % 7
+        # The heatmap shows park-day flow, not calendar-day flow: a
+        # 1am poll on calendar-Friday belongs to Thursday's park
+        # evening (parks stay open past midnight for events / EEH).
+        # Per-ride hourly buckets use the raw `hour` (no dow concern);
+        # only the heatmap (dow, hour) accumulator reassigns.
+        heatmap_dow = (dow - 1) % 7 if hour < PARK_DAY_BOUNDARY_HOUR else dow
 
         ride_total[ride_id] += 1
 
@@ -154,7 +166,7 @@ def main() -> None:
         if is_active:
             ride_active[ride_id] += 1
             rh_active[(ride_id, hour)] += 1
-            pdh_active[(meta["park_id"], dow, hour)] += 1
+            pdh_active[(meta["park_id"], heatmap_dow, hour)] += 1
             if status == "DOWN":
                 ride_down[ride_id] += 1
                 rh_down[(ride_id, hour)] += 1
@@ -164,8 +176,8 @@ def main() -> None:
             ride_wait_n[ride_id] += 1
             rh_wait_sum[(ride_id, hour)] += wait_mins
             rh_wait_n[(ride_id, hour)] += 1
-            pdh_wait_sum[(meta["park_id"], dow, hour)] += wait_mins
-            pdh_wait_n[(meta["park_id"], dow, hour)] += 1
+            pdh_wait_sum[(meta["park_id"], heatmap_dow, hour)] += wait_mins
+            pdh_wait_n[(meta["park_id"], heatmap_dow, hour)] += 1
             current_max = ride_max_wait[ride_id]
             if current_max is None or wait_mins > current_max:
                 ride_max_wait[ride_id] = wait_mins

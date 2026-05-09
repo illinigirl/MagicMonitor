@@ -91,6 +91,18 @@ export default async function ParkAnalyticsPage({
 }
 
 /**
+ * Hour columns ordered by park-day flow, not calendar-clock flow.
+ * Disney parks routinely stay open past midnight for special events
+ * (Halloween parties, EEH for deluxe guests), so the natural
+ * "morning → night → after-midnight" reading puts 12-3am on the right
+ * side. The aggregator already reassigns those late-night data points
+ * to the previous calendar day's row, so this column ordering and the
+ * dow assignment line up to "Thursday's park day = Thursday's row,
+ * including any 12-3am Friday-calendar-time data."
+ */
+const PARK_DAY_HOURS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 0, 1, 2, 3];
+
+/**
  * Heatmap as a CSS grid: 25 columns (label + 24 hours), 8 rows (header
  * + 7 days). One cell per (dow, hour). Color intensity scales with the
  * cell's wait relative to the park's max — keeps each park's heatmap
@@ -120,15 +132,16 @@ function Heatmap({ cells }: { cells: HeatmapCell[] }) {
         className="grid gap-1 min-w-[640px]"
         style={{ gridTemplateColumns: "auto repeat(24, minmax(0,1fr))" }}
       >
-        {/* Header row: empty corner + 24 hour labels. Show every 3rd
-            label so the row doesn't get cluttered at small widths. */}
+        {/* Header row: empty corner + 24 hour labels in park-day
+            order. Show every 3rd label so the row doesn't get
+            cluttered at small widths. */}
         <div />
-        {Array.from({ length: 24 }).map((_, h) => (
+        {PARK_DAY_HOURS.map((h, i) => (
           <div
-            key={h}
+            key={i}
             className="text-fg-3 text-[10px] tabular-nums text-center"
           >
-            {h % 3 === 0 ? formatHour(h) : ""}
+            {i % 3 === 0 ? formatHour(h) : ""}
           </div>
         ))}
 
@@ -136,7 +149,7 @@ function Heatmap({ cells }: { cells: HeatmapCell[] }) {
           <FragmentRow
             key={dow}
             label={label}
-            cells={grid[dow]}
+            row={grid[dow]}
             maxWait={maxWait}
           />
         ))}
@@ -148,18 +161,24 @@ function Heatmap({ cells }: { cells: HeatmapCell[] }) {
 
 function FragmentRow({
   label,
-  cells,
+  row,
   maxWait,
 }: {
   label: string;
-  cells: (HeatmapCell | null)[];
+  row: (HeatmapCell | null)[];
   maxWait: number;
 }) {
   return (
     <>
       <div className="text-fg-2 text-xs pr-2 self-center">{label}</div>
-      {cells.map((cell, h) => (
-        <HeatCell key={h} cell={cell} maxWait={maxWait} hour={h} dow={label} />
+      {PARK_DAY_HOURS.map((h, i) => (
+        <HeatCell
+          key={i}
+          cell={row[h]}
+          maxWait={maxWait}
+          hour={h}
+          dow={label}
+        />
       ))}
     </>
   );
