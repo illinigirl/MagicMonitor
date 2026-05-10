@@ -961,6 +961,74 @@ def get_ride_downtime_today(
     }
 
 
+def _fetch_park_currently_down(table, park_key: str) -> list[dict] | None:
+    """Return every DOWN ride in the park with its down-since timing.
+
+    Used by the planner to detect weather-vs-mechanical patterns: a
+    single outdoor ride DOWN during a storm might be coincidence, but
+    multiple outdoor rides simultaneously DOWN within a similar window
+    is essentially proof of weather causation. Claude classifies each
+    ride as outdoor/indoor from general knowledge; we just surface
+    the raw "what's broken right now" picture.
+
+    Scope is the whole park, not just the user's wishlist, so the
+    planner sees the broader pattern even when the wishlist itself
+    is a small subset. Returns None on DDB failure (planner degrades
+    gracefully rather than blocking the whole call).
+    """
+    if table is None:
+        return None
+    try:
+        items = []
+        scan_kwargs = {
+            "FilterExpression": "SK = :sk AND park_key = :pk AND #s = :down",
+            "ExpressionAttributeNames": {"#s": "status"},
+            "ExpressionAttributeValues": {
+                ":sk": "STATE", ":pk": park_key, ":down": "DOWN",
+            },
+        }
+        while True:
+            resp = table.scan(**scan_kwargs)
+            items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    except Exception:
+        return None
+
+    items = _convert_decimals(items)
+    out: list[dict] = []
+    for item in items:
+        rid = item.get("ride_id")
+        entry: dict[str, Any] = {
+            "ride_name": item.get("name"),
+            "ride_id": rid,
+            "last_seen": item.get("last_seen"),
+        }
+        # DOWN_SINCE gives "how long" — critical for the concurrent-
+        # within-X-min detection. One extra GetItem per DOWN ride;
+        # typical DOWN count is <5 so this is cheap.
+        try:
+            ds_resp = table.get_item(
+                Key={"PK": f"RIDE#{rid}", "SK": "DOWN_SINCE"}
+            )
+            ds = ds_resp.get("Item")
+            if ds and ds.get("down_since"):
+                entry["down_since"] = ds["down_since"]
+                try:
+                    down_dt = datetime.fromisoformat(ds["down_since"])
+                    elapsed = datetime.now(timezone.utc) - down_dt
+                    entry["down_duration_mins"] = round(
+                        elapsed.total_seconds() / 60, 1
+                    )
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+        out.append(entry)
+    return out
+
+
 def _fetch_park_hours_today(park_key: str) -> dict[str, Any] | None:
     """Fetch today's open/close window for a park from themeparks.wiki.
 
@@ -1350,27 +1418,38 @@ def get_planning_context(
        return-time models — diagnose before predicting.
 
        a) **Weather-caused downtime (outdoor rides during a storm).**
-          If status=DOWN AND the ride is outdoor (general knowledge:
-          coasters, water rides, anything with exposed track/queue)
-          AND weather.current.weather_code is 95/96/99 (thunderstorm
-          variants) OR precipitation_chance is very high right now,
-          assume the downtime is weather-caused, NOT mechanical.
+          Diagnostic checklist, in order of confidence:
 
-          The historical cluster median mostly captures mechanical
-          breakdowns and DOES NOT APPLY to weather closures.
+          - **Strongest signal: multiple simultaneous outdoor downs.**
+            Check `currently_down_in_park`. If 3+ outdoor rides went
+            DOWN within ~20 min of each other AND it's currently
+            storming (weather.current.weather_code 95/96/99 or high
+            precip), weather causation is near-certain. Single-ride
+            DOWN during a storm could be coincidence; concurrent
+            outdoor downs is essentially proof.
+          - **Medium signal: one outdoor ride DOWN, recent down_since,
+            storm now.** Likely weather, but acknowledge uncertainty
+            ("could be weather or coincident mechanical").
+          - **Weak signal: outdoor ride DOWN for hours, storm just
+            arrived.** Cause is probably mechanical-then-weather-
+            prolongs; reopening still waits for storm clear regardless.
 
-          Return-time prediction: Disney follows the NWS lightning
-          rule — outdoor rides resume ~30 min after the last
-          lightning strike within their watch zone. Use
-          weather.next_6h to find when the storm clears (weather_code
-          drops back to <80) and add ~30 min. Example: "Big Thunder
-          is likely down due to the thunderstorm. Forecast shows
-          storms clearing by 5:45 PM, so expect reopening around
-          6:15 PM — not the ~70 min mechanical-cluster average."
+          When weather causation applies, the historical cluster
+          median does NOT — that data mostly captures mechanical
+          breakdowns. Return-time prediction follows Disney's lightning
+          rule: outdoor rides resume ~30 min after the last lightning
+          strike. Use weather.next_6h to find when the storm clears
+          (weather_code drops back to <80) and add ~30 min.
 
-          Edge case: if a ride has been DOWN for hours AND the storm
-          just started, the cause is probably mechanical-then-weather-
-          prolongs; reopening waits for storm clear regardless.
+          Example: "Big Thunder, TRON, and Splash all went DOWN
+          within 15 minutes of each other and it's currently
+          thunderstorming — this is a park-wide weather closure, not
+          mechanical. Forecast shows storms clearing by 5:45 PM, so
+          expect all three back around 6:15 PM. Indoor rides are
+          unaffected — do Mansion or Pirates during the closure."
+
+          Indoor rides DOWN during the same storm are still mechanical
+          (the rain isn't why they're broken) — apply cluster math.
 
        b) **Mechanical downtime (everything else).** Use
           `down_duration_mins`, `typical_down_cluster_mins`, and
@@ -1643,6 +1722,7 @@ def get_planning_context(
         "park_hours": _fetch_park_hours_today(park_key),
         "weather": _fetch_weather_forecast(),
         "today_vs_forecast": _compute_load_vs_forecast(rides_out),
+        "currently_down_in_park": _fetch_park_currently_down(table, park_key),
         "rides": rides_out,
         "unresolved": unresolved,
     }
