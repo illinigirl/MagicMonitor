@@ -1080,30 +1080,58 @@ def _fetch_weather_forecast() -> dict[str, Any] | None:
     }
 
 
-def _forecast_growth_rate(forecast: list[dict]) -> float | None:
-    """Compute the average waitline growth rate (min/hour) across the
-    forecast horizon.
+def _forecast_peak_in_window(
+    forecast: list[dict], hours_ahead: int = 3
+) -> dict[str, Any] | None:
+    """Find the peak forecasted wait in the next N hours from now.
 
-    Linear best-fit would be more rigorous, but a simple
-    (last - first) / hours estimate is enough for the planner's
-    cost-of-delay reasoning and avoids dragging numpy into the MCP
-    server. Returns None for forecasts with <2 points or zero span.
+    Replaces the old full-horizon slope metric, which was misleading
+    for non-monotonic forecasts: Pirates of the Caribbean humps
+    10→40 (afternoon peak)→10 over the day, and a (last-first)/hours
+    slope reports 0.0 — masking the real peak that an evening
+    planner would walk into. Forward-looking peak captures the
+    cost-of-delay signal that matters: "if you defer this ride,
+    here's the worst wait you'd hit and how soon."
+
+    Returns:
+        Dict with peak_wait_mins, minutes_until_peak (from now), and
+        peak_at (ISO timestamp). None if the forecast has no
+        forward-looking entries with valid waits.
     """
-    if not forecast or len(forecast) < 2:
+    if not forecast:
         return None
-    try:
-        first_t = datetime.fromisoformat(forecast[0]["time"])
-        last_t = datetime.fromisoformat(forecast[-1]["time"])
-        first_w = forecast[0].get("wait_mins")
-        last_w = forecast[-1].get("wait_mins")
-        if first_w is None or last_w is None:
-            return None
-        hours = (last_t - first_t).total_seconds() / 3600
-        if hours <= 0:
-            return None
-        return round((last_w - first_w) / hours, 2)
-    except (KeyError, ValueError):
+    now_utc = datetime.now(timezone.utc)
+    cutoff = now_utc + timedelta(hours=hours_ahead)
+
+    peak_wait: int | None = None
+    peak_time: datetime | None = None
+    for entry in forecast:
+        try:
+            t = datetime.fromisoformat(entry["time"])
+        except (KeyError, ValueError):
+            continue
+        # Compare in UTC so timezone-aware datetimes from upstream
+        # (with `-04:00` offsets) compare cleanly.
+        t_utc = t.astimezone(timezone.utc)
+        if t_utc < now_utc or t_utc > cutoff:
+            continue
+        wait = entry.get("wait_mins")
+        if not isinstance(wait, (int, float)):
+            continue
+        if peak_wait is None or wait > peak_wait:
+            peak_wait = wait
+            peak_time = t
+
+    if peak_wait is None or peak_time is None:
         return None
+    minutes_until = round(
+        (peak_time.astimezone(timezone.utc) - now_utc).total_seconds() / 60, 1
+    )
+    return {
+        "peak_wait_mins": peak_wait,
+        "minutes_until_peak": minutes_until,
+        "peak_at": peak_time.isoformat(),
+    }
 
 
 @mcp.tool()
@@ -1119,13 +1147,19 @@ def get_planning_context(
 
     HOW TO USE THE RESPONSE WHEN ORDERING RIDES:
 
-    1. **Cost-of-delay rule** (most important). For each operating
-       ride, the marginal cost of delaying it = `forecast_growth_mins_per_hour`
-       × time-it-would-take-to-do-other-rides-first. Order by
-       DESCENDING cost-of-delay, NOT by ascending current wait. A ride
-       with 10 min wait + flat forecast is fine to defer; a ride with
-       60 min wait + +30/hour forecast is critical to do RIGHT NOW.
-       Show your math when explaining the order.
+    1. **Cost-of-delay rule** (most important). The fields you want:
+       `forecast_peak_next_3h_mins` (worst forecasted wait in the next
+       3 hours) and `forecast_minutes_until_peak` (how soon that peak
+       hits). For each ride, marginal cost of deferring it ≈
+       max(0, forecast_at_deferred_time - current_wait_mins). Order
+       by DESCENDING cost-of-delay, NOT by ascending current wait.
+       Show your math: "If I do TRON first (~80 min round trip),
+       Pirates' wait at +80 min would be ~40 (its peak hits in 60
+       min and holds), so deferring Pirates costs +30 min. If I do
+       Pirates first (~25 min), TRON's wait at +25 min is still ~85
+       (flat over the next 3h), so deferring TRON costs ~0. Pirates
+       first." The full `forecast` array is also returned so you can
+       look up exact future-wait values at specific times when needed.
 
     2. **DOWN-state rides.** Use `down_duration_mins` and
        `typical_down_cluster_mins` to estimate when they'll come back.
@@ -1143,7 +1177,21 @@ def get_planning_context(
        limits how many rides you can plausibly fit. Estimate ~25 min
        per ride at typical cadence (queue + ride + walk).
 
-    5. **Weather + heat.** Outdoor rides (coasters like Big Thunder,
+    5. **Meal/break windows.** If the user mentions wanting to eat or
+       take a break in a specific time window ("quick-service dinner
+       between 5-7pm" / "let's stop for snacks around 3"), treat it
+       as a fixed ~30-45 min hold in the schedule and sequence rides
+       to put them in the right area when the window starts. Use your
+       general knowledge of WDW dining locations (Pecos Bill's in
+       Frontierland, Cosmic Ray's in Tomorrowland near Space Mountain,
+       Pinocchio Village Haus in Fantasyland, Columbia Harbour House
+       in Liberty Square near Haunted Mansion, etc.) to suggest a
+       specific spot near whichever ride you'd be at when the window
+       opens. Acknowledge this is a general-knowledge suggestion, not
+       a live-data lookup — wait times and operating status of
+       restaurants aren't currently in MM's data.
+
+    6. **Weather + heat.** Outdoor rides (coasters like Big Thunder,
        TRON, Splash, Slinky Dog; water rides like Pirates, Splash,
        Kali) close for lightning (weather_code 95/96/99). Heavy rain
        (weather_code 80+ or precipitation_chance > 70%) means outdoor
@@ -1302,9 +1350,15 @@ def get_planning_context(
                 forecast = f_item.get("forecast", []) or []
                 out["forecast_polled_at"] = f_item.get("polled_at")
                 out["forecast"] = forecast
-                growth = _forecast_growth_rate(forecast)
-                if growth is not None:
-                    out["forecast_growth_mins_per_hour"] = growth
+                # Peak-in-next-3h is the cost-of-delay signal that
+                # matters for planning. The old full-horizon slope
+                # was misleading for hump-shaped curves like Pirates
+                # of the Caribbean (afternoon peak → drops by close).
+                peak = _forecast_peak_in_window(forecast, hours_ahead=3)
+                if peak is not None:
+                    out["forecast_peak_next_3h_mins"] = peak["peak_wait_mins"]
+                    out["forecast_minutes_until_peak"] = peak["minutes_until_peak"]
+                    out["forecast_peak_at"] = peak["peak_at"]
             else:
                 # Common when ride is currently DOWN — themeparks.wiki
                 # stops forecasting DOWN rides. Note that explicitly
