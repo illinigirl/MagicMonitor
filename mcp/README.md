@@ -73,6 +73,8 @@ the other live-DDB tools:
 > What's currently down at EPCOT?
 >
 > Is Space Mountain operating right now, and what's the wait?
+>
+> How many times has Test Track gone down today?
 
 If you see "AWS credentials expired" instead, run `aws sso login
 --profile watchtower` and try again — Claude Desktop picks up the
@@ -102,6 +104,7 @@ DynamoDB table.
 | `get_ride_forecast` | DDB live | Latest themeparks.wiki forecast snapshot for one ride |
 | `get_live_ride_status` | DDB live | Current live status of one ride (status, wait, LL availability) |
 | `get_park_live_status` | DDB live | Current live status of every ride in one park, optionally filtered |
+| `get_ride_downtime_today` | DDB live | Count of DOWN events for one ride during one park-day (today / N days back) |
 | `find_rides_matching` | snapshot | Filter and sort rides by predicates ("low downtime, high avg wait") |
 
 Future tools (planned):

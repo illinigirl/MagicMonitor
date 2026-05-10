@@ -18,9 +18,11 @@ that's expected. Use the MCP Inspector for interactive testing:
 """
 import json
 import os
+from datetime import datetime, time, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from mcp.server.fastmcp import FastMCP
 
@@ -32,6 +34,17 @@ from mcp.server.fastmcp import FastMCP
 # their own profile at the same account.
 _DDB_REGION = os.environ.get("DISNEY_REGION", "us-east-2")
 _DDB_TABLE = os.environ.get("DISNEY_TABLE_NAME", "DisneyData")
+
+# Park-day boundary in Eastern time. Mirrors tools/aggregate-analytics.py
+# so the live downtime tool agrees with the historical heatmap and
+# down-cluster aggregations: a 1am Friday breakdown counts as
+# "Thursday's park day," not Friday's. Disney World's parks span ET
+# year-round; no per-park override needed.
+_PARK_DAY_BOUNDARY_HOUR = 4
+_EASTERN = ZoneInfo("America/New_York")
+# HIST# row TTL in the poller. Tools that look further back than this
+# will return empty results — make that explicit rather than silent.
+_HIST_RETENTION_DAYS = 90
 
 mcp = FastMCP("Magic Monitor")
 
@@ -160,7 +173,7 @@ def hello_magic_monitor() -> str:
         "get_ride_dow_pattern, get_ride_down_clusters, "
         "get_short_wait_baseline, get_ride_forecast, "
         "get_live_ride_status, get_park_live_status, "
-        "find_rides_matching."
+        "get_ride_downtime_today, find_rides_matching."
     )
 
 
@@ -672,6 +685,147 @@ def get_park_live_status(
                 "last_seen": r.get("last_seen"),
             }
             for r in items
+        ],
+    }
+
+
+def _park_day_window_utc(days_back: int) -> tuple[datetime, datetime, str]:
+    """Return [start, end_inclusive] UTC datetimes covering one park-day.
+
+    Park-days run 4am ET to 4am ET (next calendar day). A 1am Friday
+    breakdown belongs to Thursday's park-day — matches the historical
+    analytics convention in tools/aggregate-analytics.py exactly, so
+    "today's down count" stays consistent with the live heatmap that
+    the model can also pull via get_park_heatmap.
+
+    `end_inclusive` is shifted back by 1 microsecond from the next
+    park-day's start so DynamoDB BETWEEN over HIST# SKs is a clean
+    half-open interval — a transition recorded at exactly the next
+    park-day's 4am-ET-rendered-as-UTC won't double-count.
+    """
+    now_et = datetime.now(_EASTERN)
+    target_date = (now_et - timedelta(days=days_back)).date()
+    start_et = datetime.combine(
+        target_date, time(_PARK_DAY_BOUNDARY_HOUR, 0), tzinfo=_EASTERN
+    )
+    end_et = start_et + timedelta(days=1) - timedelta(microseconds=1)
+    return (
+        start_et.astimezone(timezone.utc),
+        end_et.astimezone(timezone.utc),
+        target_date.isoformat(),
+    )
+
+
+@mcp.tool()
+def get_ride_downtime_today(
+    ride_name: str, days_back: int = 0
+) -> dict[str, Any]:
+    """Count how many times a ride went DOWN during one park-day.
+
+    Live tool — Queries the RIDE#<id>/HIST#<ts> sub-rows the poller
+    writes on every status transition. Returns each DOWN incident
+    that *started* during the park-day window, plus how many
+    DOWN→OPERATING recoveries fell in the same window.
+
+    "Park-day" matches the analytics convention exactly: 4am ET to
+    4am ET (next calendar day). A 12-3am poll attributes to the
+    previous park-day's row. So "Big Thunder broke down 3 times
+    today" is consistent across this tool, the heatmap, and the
+    DOWN-cluster historical aggregation.
+
+    Use this for: 'how many times has Big Thunder been down today?'
+    'has Test Track had any breakdowns this morning?' 'pull yesterday's
+    Pirates of the Caribbean downtime — was it that bad?'
+
+    Args:
+        ride_name: Substring match (case-insensitive). 'big thunder'
+            matches 'Big Thunder Mountain Railroad'.
+        days_back: 0 = today (default), 1 = yesterday, etc. Capped
+            at 90 (HIST# rows TTL after 90 days; older queries return
+            empty without explanation otherwise).
+
+    Returns:
+        Dict with ride_name, ride_id, park_day (ISO date), down_count,
+        recovery_count, total_transitions (any status change in the
+        window — useful for spotting flap), the down incidents (each
+        with went_down_at + wait_at_breakdown), and an is_partial_day
+        flag when the park-day is still in progress (i.e., days_back=0
+        before 4am ET tomorrow). On AWS auth failure: a clear
+        error_hint pointing at SSO refresh.
+    """
+    if days_back < 0:
+        raise ValueError("days_back must be >= 0 (0 = today, 1 = yesterday)")
+    if days_back > _HIST_RETENTION_DAYS:
+        raise ValueError(
+            f"HIST rows TTL after {_HIST_RETENTION_DAYS} days; "
+            f"days_back={days_back} would return empty. "
+            f"For older windows use the historical analytics snapshot "
+            f"(get_ride_down_clusters)."
+        )
+
+    ride = _find_ride(ride_name)
+    rid = ride["ride_id"]
+    window_start_utc, window_end_utc, park_day = _park_day_window_utc(days_back)
+
+    try:
+        table = _ddb_table()
+        # Query HIST# range with a SK BETWEEN. UTC ISO strings sort
+        # lexicographically, so the BETWEEN cleanly bounds the window.
+        # Defensively paginate even though one ride's transitions in
+        # one park-day fit in a single page at any plausible volume.
+        items: list[dict] = []
+        sk_lo = f"HIST#{window_start_utc.isoformat()}"
+        sk_hi = f"HIST#{window_end_utc.isoformat()}"
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND SK BETWEEN :lo AND :hi",
+            "ExpressionAttributeValues": {
+                ":pk": f"RIDE#{rid}",
+                ":lo": sk_lo,
+                ":hi": sk_hi,
+            },
+        }
+        while True:
+            resp = table.query(**kwargs)
+            items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    except Exception as e:
+        err = _aws_error_payload(e)
+        if err is not None:
+            return {"ride_name": ride["ride_name"], "ride_id": rid, **err}
+        return {
+            "ride_name": ride["ride_name"],
+            "ride_id": rid,
+            "error": "DynamoDB query failed",
+            "error_message": str(e),
+        }
+
+    items = _convert_decimals(items)
+    down_events = [i for i in items if i.get("new_status") == "DOWN"]
+    recoveries = [
+        i for i in items
+        if i.get("old_status") == "DOWN" and i.get("new_status") == "OPERATING"
+    ]
+
+    return {
+        "ride_name": ride["ride_name"],
+        "ride_id": rid,
+        "park_day": park_day,
+        "park_day_window_utc": {
+            "start": window_start_utc.isoformat(),
+            "end_inclusive": window_end_utc.isoformat(),
+        },
+        "is_partial_day": days_back == 0,
+        "down_count": len(down_events),
+        "recovery_count": len(recoveries),
+        "total_transitions": len(items),
+        "down_incidents": [
+            {
+                "went_down_at": e.get("changed_at"),
+                "wait_at_breakdown": e.get("wait_mins"),
+            }
+            for e in down_events
         ],
     }
 
