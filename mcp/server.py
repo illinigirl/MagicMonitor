@@ -1383,21 +1383,38 @@ def get_planning_context(
        - If two LL windows overlap, the user has to pick one. Flag
          the conflict and ask which is the priority.
        - **Suggest modifying LLs when a better slot would help.**
-         Disney Genie+ / Multi-Pass / ILL reservations can typically
-         be modified through the app — the user can swap their
-         current return window for a different available one. If
-         the current window creates an awkward fit (requires
-         backtracking, conflicts with dining, forces a worse ride
-         order, pushes against park close), proactively suggest the
-         user check the app for a later slot AND say specifically
-         what time would be better and why. Example: "Your TRON LL
-         at 5-6 PM means cutting across the park during dinner. If
-         a 7-8 PM slot is available, that would let you do Plan A
-         end-to-end without backtracking — worth checking the app."
-         Important: don't claim a specific slot is available. We
-         don't have live LL inventory data; only the user's app
-         can confirm. Frame it as "if available" / "worth checking,"
-         not as a known fact.
+         Disney Genie+ / Multi-Pass / ILL reservations can be
+         modified through the app. The planner has indirect signal
+         about availability via each ride's `current_ll_offer`,
+         which is the GLOBAL next-available LL return time being
+         offered right now (not user-specific — same number Disney
+         shows anyone booking fresh).
+
+         How to reason about whether the user's target swap-time
+         is available:
+         - target_swap_time >= current_ll_offer.return_start
+           → slots through the target are still in inventory.
+           Suggest the swap with high confidence: "Looks like 7-8 PM
+           is still open — current next-available is 6:30 PM, so
+           any slot after that should be bookable. Worth swapping."
+         - target_swap_time < current_ll_offer.return_start
+           → slots before next-available are sold out, including
+           the target. Tell the user honestly: "7-8 PM appears to
+           be gone — earliest available now is 8:30 PM. Your 5-6 PM
+           is still the best slot you have access to."
+
+         Proactively trigger this reasoning when the current LL
+         window creates an awkward fit (requires backtracking,
+         conflicts with dining, forces a worse ride order, pushes
+         against park close). Don't suggest a swap if the current
+         slot is fine.
+
+         What we don't have: visibility into specific future slots
+         beyond "next-available" — Disney's API doesn't expose a
+         full inventory map. So we can confirm "≥ X is available"
+         or "< X is sold out" with confidence, but we can't say
+         "specifically 7:15 PM is open." Phrase suggestions
+         accordingly.
 
     1. **Cost-of-delay rule** (most important). The fields you want:
        `forecast_peak_next_3h_mins` (worst forecasted wait in the next
