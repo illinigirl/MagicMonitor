@@ -1346,12 +1346,46 @@ def get_planning_context(
        enough to scale by). If confidence is low or the field is
        absent, use forecast values as-is.
 
-    2. **DOWN-state rides.** Use `down_duration_mins` and
-       `typical_down_cluster_mins` to estimate when they'll come back.
-       `cluster_progress_pct` near 0% = early, plan ~typical more min;
-       near 100% = could come back any minute. Do NOT infer return
-       time from `current_ll_offer.return_start` — Lightning Lane
-       offers are unrelated to operational status.
+    2. **DOWN-state rides.** Two different causes, two different
+       return-time models — diagnose before predicting.
+
+       a) **Weather-caused downtime (outdoor rides during a storm).**
+          If status=DOWN AND the ride is outdoor (general knowledge:
+          coasters, water rides, anything with exposed track/queue)
+          AND weather.current.weather_code is 95/96/99 (thunderstorm
+          variants) OR precipitation_chance is very high right now,
+          assume the downtime is weather-caused, NOT mechanical.
+
+          The historical cluster median mostly captures mechanical
+          breakdowns and DOES NOT APPLY to weather closures.
+
+          Return-time prediction: Disney follows the NWS lightning
+          rule — outdoor rides resume ~30 min after the last
+          lightning strike within their watch zone. Use
+          weather.next_6h to find when the storm clears (weather_code
+          drops back to <80) and add ~30 min. Example: "Big Thunder
+          is likely down due to the thunderstorm. Forecast shows
+          storms clearing by 5:45 PM, so expect reopening around
+          6:15 PM — not the ~70 min mechanical-cluster average."
+
+          Edge case: if a ride has been DOWN for hours AND the storm
+          just started, the cause is probably mechanical-then-weather-
+          prolongs; reopening waits for storm clear regardless.
+
+       b) **Mechanical downtime (everything else).** Use
+          `down_duration_mins`, `typical_down_cluster_mins`, and
+          `cluster_progress_pct` as before. Near 0% = early, plan
+          ~typical more min; near 100% = could come back any minute.
+
+       NEVER infer return time from `current_ll_offer.return_start` —
+       Lightning Lane offers are unrelated to operational status.
+
+       Note for users: the planner doesn't currently store historical
+       weather, so we can't perfectly correlate "when the ride went
+       down" with "when the storm started." Use current weather +
+       down_since timing as the heuristic and acknowledge the
+       uncertainty when relevant ("if the storm started before this
+       ride went down, weather is the likely cause").
 
     3. **Proximity grouping.** Each ride has `location.lat/lon`. Use
        haversine distance to identify clusters (rides within ~250m
