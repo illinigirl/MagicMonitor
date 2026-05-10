@@ -103,6 +103,24 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### Phase A2 — Forecast capture in poller (✅ shipped 2026-05-10)
+- Poller now extracts the `forecast` array from each `/live` response
+  and writes one `RIDE#<id>/FORECAST#<polled_at>` row per poll, TTL'd
+  after 7 days. No additional API calls — forecast was already in the
+  same payload we were polling for status.
+- New STATE attribute `last_forecast_at` tracks forecast presence
+  cheaply, so Phase C can ask "when did Space Mountain stop having
+  a forecast?" without us having stored 5K+ empty rows/day for the
+  ~23% of attractions that never have one (DOWN rides, walk-up
+  meets, transportation, some shows).
+- New MCP tool `get_ride_forecast(ride_name)` reads the latest snapshot
+  from DDB. First MCP tool that hits live AWS — uses boto3's default
+  credential chain (picks up `AWS_PROFILE=watchtower` from Claude
+  Desktop's MCP env block) and surfaces SSO-expired errors with a
+  clear `aws sso login` hint instead of a stack trace.
+- Sets up Phase C (forecast-vs-actual accuracy analytics) once a few
+  days of forecast history accumulate.
+
 #### M2-B — Auth + production deploy (✅ shipped 2026-05-05)
 - Live at https://magicmonitor.megillini.dev with TLS, Google sign-in
   via Cognito, and live ride data rendered server-side from DynamoDB

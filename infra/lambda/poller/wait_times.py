@@ -49,8 +49,22 @@ def fetch_live_data(park_key: str) -> list[dict]:
             "wait_mins": 35,                 # or None if not reported
             "ll":        {...} | None,       # current Lightning Lane offer
             "ll_state":  {...} | None,       # full LL state (for drop tracking)
+            "forecast":  [{...}, ...] | None,  # hourly predictions, see below
             "last_seen": "<iso8601 utc>",
         }
+
+    The "forecast" field — when themeparks.wiki provides one — is a list
+    of dicts each shaped {time, wait_mins, percentage}. `time` is the
+    raw upstream ISO-8601 string with offset (e.g. "2026-05-10T10:00:00-04:00")
+    so DST transitions stay accurate; `wait_mins` is the predicted wait
+    in minutes; `percentage` is upstream's relative load metric (semantics
+    not officially documented). The forecast covers current-hour through
+    park close, ~14 entries early, fewer as the day progresses.
+
+    Forecasts are absent for: DOWN rides, walk-up character meets,
+    no-queue attractions (transportation), and some shows. ~77% of
+    attractions have one at any given time. We return None (not [])
+    so the poller can cheaply skip writes — callers must check.
     """
     park_id = PARK_IDS.get(park_key)
     if not park_id:
@@ -118,10 +132,34 @@ def fetch_live_data(park_key: str) -> list[dict]:
             "wait_mins": wait_mins,
             "ll":        ll_info,
             "ll_state":  ll_state,
+            "forecast":  _normalize_forecast(entry.get("forecast")),
             "last_seen": now,
         })
 
     return attractions
+
+
+def _normalize_forecast(raw: Optional[list]) -> Optional[list[dict]]:
+    """Normalize the upstream forecast array, or return None if absent.
+
+    Renames `waitTime` → `wait_mins` for codebase consistency; keeps
+    `time` and `percentage` unchanged. Drops malformed entries silently
+    rather than failing the whole poll — a single bad forecast row
+    isn't worth dropping a status update for.
+    """
+    if not raw:
+        return None
+    out: list[dict] = []
+    for entry in raw:
+        try:
+            out.append({
+                "time":       entry["time"],
+                "wait_mins":  entry.get("waitTime"),
+                "percentage": entry.get("percentage"),
+            })
+        except (KeyError, TypeError):
+            continue
+    return out or None
 
 
 def _normalize_status(raw: str) -> str:

@@ -21,9 +21,12 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-That installs the `mcp` SDK (Python). No AWS credentials needed for
-the v1 hello-world; later tools that read live DDB data will require
-an active SSO session under the `watchtower` profile.
+That installs the `mcp` SDK and `boto3`. The analytics tools work
+fully offline (they read JSON files committed to the repo). Live
+DDB tools (currently `get_ride_forecast`) require an active SSO
+session — refresh with `aws sso login --profile watchtower` and
+make sure Claude Desktop's MCP config sets `AWS_PROFILE=watchtower`
+(see "Register with Claude Desktop" below).
 
 ## Register with Claude Desktop
 
@@ -35,15 +38,22 @@ and add (or merge into) the `mcpServers` block:
   "mcpServers": {
     "magic-monitor": {
       "command": "/Users/meganschott/Documents/Pi/Disney/mcp/.venv/bin/python",
-      "args": ["/Users/meganschott/Documents/Pi/Disney/mcp/server.py"]
+      "args": ["/Users/meganschott/Documents/Pi/Disney/mcp/server.py"],
+      "env": {
+        "AWS_PROFILE": "watchtower"
+      }
     }
   }
 }
 ```
 
-Then restart Claude Desktop. The `hello_magic_monitor` tool should
-appear in the tools list (look for the wrench / 🔧 icon in the
-input bar).
+The `env` block tells boto3 which SSO profile to read from the
+shared cache when the live-data tools (e.g. `get_ride_forecast`)
+run. Without it the MCP server still loads, but the live tools
+return an "AWS credentials expired" hint instead of forecasts.
+
+Restart Claude Desktop after editing the config. The full tool list
+should appear in the tools menu (wrench / 🔧 icon).
 
 ## Verify
 
@@ -52,7 +62,15 @@ In a new Claude Desktop conversation:
 > Call hello_magic_monitor to make sure the Magic Monitor MCP server is reachable.
 
 You should see Claude invoke the tool and return the greeting
-string. If you don't see the tool show up at all, common causes:
+string. To verify the live-DDB path:
+
+> What's the wait-time forecast for Big Thunder Mountain right now?
+
+Claude should call `get_ride_forecast`, return the latest forecast
+snapshot, and (with luck) tell you when the wait peaks. If you see
+"AWS credentials expired" instead, run `aws sso login --profile
+watchtower` and try again — Claude Desktop picks up the refreshed
+SSO cache on the next tool call. If you don't see the tool show up at all, common causes:
 
 - Forgot to restart Claude Desktop after editing the config.
 - JSON syntax error in `claude_desktop_config.json` (trailing
@@ -61,19 +79,28 @@ string. If you don't see the tool show up at all, common causes:
   Claude Desktop launches the command literally and doesn't expand
   `~` or relative paths.
 
-## Tools (v1)
+## Tools
 
-| Tool | Purpose |
-|---|---|
-| `hello_magic_monitor` | Sanity check — returns a greeting |
+Read-only by design. Analytics tools read static JSON snapshots
+shipped with the repo. The live-data tool reads the deployed
+DynamoDB table.
 
-Later tools (planned):
+| Tool | Source | Purpose |
+|---|---|---|
+| `hello_magic_monitor` | — | Sanity check — returns a greeting + tool list |
+| `get_park_heatmap` | snapshot | Wait-time heatmap cells for one park, optionally filtered to a day-of-week |
+| `get_ride_analytics` | snapshot | Downtime %, hourly waits, peak/trough for one ride |
+| `get_ride_dow_pattern` | snapshot | Per-(day-of-week, hour) wait + downtime cells for one ride |
+| `get_ride_down_clusters` | snapshot | Contiguous DOWN runs for one ride; flap-style vs structural signal |
+| `get_short_wait_baseline` | snapshot | Per-hour SHORT_WAIT alert thresholds for one ride |
+| `get_ride_forecast` | DDB live | Latest themeparks.wiki forecast snapshot for one ride |
+| `find_rides_matching` | snapshot | Filter and sort rides by predicates ("low downtime, high avg wait") |
+
+Future tools (planned):
 
 - `get_live_ride_status` — current STATE rows from DynamoDB
-- `get_park_heatmap` — analytics heatmap cells for one park
-- `get_ride_analytics` — per-ride downtime %, hourly waits, peak/trough
-- `get_short_wait_baseline` — the threshold the poller uses for SHORT_WAIT alerts
-- `find_rides_matching` — filter rides by predicates ("low downtime, high avg wait")
+- `get_ride_forecast_history` — multiple poll-snapshots for a ride
+  (Phase C: forecast-vs-actual accuracy analysis)
 
 ## Standalone debugging
 

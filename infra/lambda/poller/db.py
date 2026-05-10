@@ -28,6 +28,10 @@ DOWN_ALERT_COOLDOWN_SECS = int(os.environ.get("DOWN_ALERT_COOLDOWN_SECS", "900")
 # ride often persists 30-60 min, and we don't want to spam-ping during
 # the same trough. 90 min default; configurable via env.
 LOW_WAIT_ALERT_COOLDOWN_SECS = int(os.environ.get("LOW_WAIT_ALERT_COOLDOWN_SECS", "5400"))
+# Forecast snapshots aren't useful past ~1 day for accuracy work but
+# 7 days lets us spot weekly recurrence in forecast-vs-actual analysis
+# without bloating the table. Tune via env if Phase C wants longer.
+FORECAST_RETENTION_DAYS = int(os.environ.get("FORECAST_RETENTION_DAYS", "7"))
 
 # Module-level resource — reused across warm invocations to avoid
 # reconnecting on every poll. Lambda freezes/thaws this between calls.
@@ -49,23 +53,31 @@ def upsert_ride(attraction: dict) -> None:
     Uses PutItem (full overwrite) — the attraction dict is the source
     of truth on every poll. Attributes preserved across writes (like
     DOWN_SINCE) live in their own SK rows.
+
+    `last_forecast_at` is set when the upstream /live response includes
+    a forecast for this ride and left unset (== removed on overwrite)
+    otherwise. That lets Phase C derive forecast-availability signals
+    ("Space Mountain hasn't had a forecast in 4 hours") without
+    storing 5K+ empty rows/day. The full forecast snapshots live in
+    FORECAST# sub-rows written by record_forecast.
     """
-    _table.put_item(
-        Item={
-            "PK":         f"RIDE#{attraction['id']}",
-            "SK":         "STATE",
-            "ride_id":    attraction["id"],
-            "park_key":   attraction["park_key"],
-            "park_id":    attraction["park_id"],
-            "park_name":  attraction["park_name"],
-            "name":       attraction["name"],
-            "status":     attraction["status"],
-            "wait_mins":  attraction["wait_mins"],
-            "ll":         attraction.get("ll"),
-            "ll_state":   attraction.get("ll_state"),
-            "last_seen":  attraction["last_seen"],
-        }
-    )
+    item = {
+        "PK":         f"RIDE#{attraction['id']}",
+        "SK":         "STATE",
+        "ride_id":    attraction["id"],
+        "park_key":   attraction["park_key"],
+        "park_id":    attraction["park_id"],
+        "park_name":  attraction["park_name"],
+        "name":       attraction["name"],
+        "status":     attraction["status"],
+        "wait_mins":  attraction["wait_mins"],
+        "ll":         attraction.get("ll"),
+        "ll_state":   attraction.get("ll_state"),
+        "last_seen":  attraction["last_seen"],
+    }
+    if attraction.get("forecast"):
+        item["last_forecast_at"] = attraction["last_seen"]
+    _table.put_item(Item=item)
 
 
 def record_status_change(
@@ -94,6 +106,34 @@ def record_status_change(
             "wait_mins":  wait_mins,
             "changed_at": changed_at,
             "ttl":        expire_ts,
+        }
+    )
+
+
+# ─── Forecast snapshots ─────────────────────────────────────────────
+# Append-only per-poll snapshots of the upstream forecast array. One
+# row per (ride, poll), TTL'd after FORECAST_RETENTION_DAYS. Sets up
+# Phase C (forecast-vs-actual accuracy) once a few days of data
+# accumulate. No-op when forecast is None/empty — see upsert_ride
+# for the cheap forecast-presence signal we keep on STATE rows
+# instead of writing empty FORECAST rows for rides that never have one.
+
+def record_forecast(ride_id: str, polled_at: str, forecast: list[dict]) -> None:
+    """Persist one poll's forecast for a ride.
+
+    `polled_at` is the ISO-8601 UTC timestamp from the poll (matches
+    the attraction's last_seen). `forecast` is the normalized list
+    from wait_times._normalize_forecast — must be non-empty; callers
+    should skip the call entirely when no forecast was returned.
+    """
+    expire_ts = int(time.time()) + (FORECAST_RETENTION_DAYS * 86400)
+    _table.put_item(
+        Item={
+            "PK":        f"RIDE#{ride_id}",
+            "SK":        f"FORECAST#{polled_at}",
+            "polled_at": polled_at,
+            "forecast":  forecast,
+            "ttl":       expire_ts,
         }
     )
 

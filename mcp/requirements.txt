@@ -1,3 +1,7 @@
 # Pinned to the version that was installed during scaffolding so
 # subsequent setups are reproducible. Bump intentionally when needed.
 mcp[cli]==1.27.1
+# Live DDB read tools (Phase A2+) use boto3 with the default credential
+# chain — picks up the user's `watchtower` SSO cache when Claude Desktop
+# launches the server. No keys ever land in this repo.
+boto3==1.43.6

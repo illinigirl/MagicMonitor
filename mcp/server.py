@@ -17,11 +17,21 @@ that's expected. Use the MCP Inspector for interactive testing:
     npx @modelcontextprotocol/inspector .venv/bin/python server.py
 """
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+
+# DDB region pinned to match the deployed stack (RUNBOOK Quick Reference).
+# Profile is intentionally NOT hard-coded — boto3's default credential
+# chain picks up `AWS_PROFILE=watchtower` from Claude Desktop's MCP env
+# block, env vars on the user's shell, or the active SSO cache. That way
+# the same code works for the project owner and any reviewer who points
+# their own profile at the same account.
+_DDB_REGION = os.environ.get("DISNEY_REGION", "us-east-2")
+_DDB_TABLE = os.environ.get("DISNEY_TABLE_NAME", "DisneyData")
 
 mcp = FastMCP("Magic Monitor")
 
@@ -51,6 +61,41 @@ def _snapshot() -> dict[str, Any]:
 def _baselines() -> dict[str, Any]:
     """Load the short-wait alert thresholds once per process."""
     return json.loads(_BASELINES_PATH.read_text())
+
+
+@lru_cache(maxsize=1)
+def _ddb_table():
+    """Lazy-init the DDB table resource on first live-data tool call.
+
+    Defers the boto3 import + session construction until a tool that
+    actually needs DDB runs. Offline tools (analytics-snapshot readers)
+    keep working even when AWS creds are unavailable, which keeps the
+    MCP server itself usable for local demos that don't touch live
+    data — for example, a portfolio walkthrough on a laptop with no
+    SSO session.
+    """
+    import boto3  # local import: only paid when DDB is actually used
+    session = boto3.Session(region_name=_DDB_REGION)
+    return session.resource("dynamodb").Table(_DDB_TABLE)
+
+
+def _convert_decimals(obj: Any) -> Any:
+    """Recursively convert boto3 Decimals to int/float for JSON-friendly output.
+
+    DynamoDB returns numbers as `decimal.Decimal` to preserve precision.
+    MCP tool returns get serialized to JSON for the client, and JSON
+    has no Decimal type — without this conversion the MCP runtime fails
+    or surfaces opaque type errors. We convert back to int when the value
+    is whole (matches our write shape) and float otherwise.
+    """
+    from decimal import Decimal
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == obj.to_integral_value() else float(obj)
+    if isinstance(obj, dict):
+        return {k: _convert_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_convert_decimals(v) for v in obj]
+    return obj
 
 
 def _normalize_park(park: str) -> str:
@@ -113,7 +158,8 @@ def hello_magic_monitor() -> str:
         "Hello from Magic Monitor — MCP wiring works. "
         "Available tools: get_park_heatmap, get_ride_analytics, "
         "get_ride_dow_pattern, get_ride_down_clusters, "
-        "get_short_wait_baseline, find_rides_matching."
+        "get_short_wait_baseline, get_ride_forecast, "
+        "find_rides_matching."
     )
 
 
@@ -334,6 +380,110 @@ def get_ride_down_clusters(ride_name: str) -> dict[str, Any]:
         "total_downtime_minutes": total_downtime,
         "most_common_start": most_common_start,
         "clusters": clusters,
+    }
+
+
+@mcp.tool()
+def get_ride_forecast(ride_name: str) -> dict[str, Any]:
+    """Return the most recent themeparks.wiki forecast for a ride.
+
+    Live tool — reads the latest FORECAST# row from DynamoDB. Forecasts
+    are upstream's hourly wait-time predictions covering current-hour
+    through park close (~14 entries early in the day, fewer as it
+    progresses). The poller captures one forecast snapshot per ride
+    per 2-min poll and TTLs them after 7 days.
+
+    Use this to answer 'how busy is Space Mountain expected to get
+    later today?' / 'will the Test Track wait stay this short?' /
+    'when does the system think Big Thunder peaks today?' Pair with
+    get_ride_analytics for "expected today vs typical for this hour."
+
+    Forecasts are absent for: DOWN rides, walk-up character meets,
+    no-queue attractions (Main Street Vehicles, the Railroad), and
+    some shows. The tool returns a clear `forecast_available: false`
+    response in those cases, with the ride's `last_forecast_at` (when
+    available) so you can answer 'when did Space Mountain stop having
+    a forecast?'
+
+    Args:
+        ride_name: Substring match (case-insensitive). 'space mountain'
+            matches 'Space Mountain'.
+
+    Returns:
+        Dict with ride_name, ride_id, polled_at (UTC iso), forecast
+        (list of {time, wait_mins, percentage}). On absence: ride_name,
+        ride_id, forecast_available=false, last_forecast_at (or null).
+        On AWS auth failure: a clear error_hint pointing at SSO refresh.
+    """
+    ride = _find_ride(ride_name)
+    rid = ride["ride_id"]
+
+    try:
+        table = _ddb_table()
+        # Query the FORECAST# range for this ride, descending, take 1.
+        # Pure key-condition (no FilterExpression) — boto3 begins_with
+        # over an SK range is a single index walk. Limit=1 means we
+        # walk one key and stop.
+        resp = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"RIDE#{rid}",
+                ":sk": "FORECAST#",
+            },
+            ScanIndexForward=False,
+            Limit=1,
+        )
+    except Exception as e:
+        # Surface the auth-expired case explicitly — by far the most
+        # common failure mode on a personal-dev MCP server. Other
+        # errors fall through with their boto3 message intact so the
+        # client can see what broke.
+        msg = str(e)
+        if "Token has expired" in msg or "ExpiredToken" in msg or "InvalidClientTokenId" in msg:
+            return {
+                "ride_name": ride["ride_name"],
+                "ride_id": rid,
+                "error": "AWS credentials expired",
+                "error_hint": "Run `aws sso login --profile watchtower` and retry.",
+            }
+        return {
+            "ride_name": ride["ride_name"],
+            "ride_id": rid,
+            "error": "DynamoDB query failed",
+            "error_message": msg,
+        }
+
+    items = resp.get("Items", [])
+    if not items:
+        # No forecast row found. Try to surface the cheap last-seen
+        # signal we keep on the STATE row so the model can answer
+        # "when did Space Mountain last have a forecast?" without a
+        # second query loop.
+        state_resp = table.get_item(Key={"PK": f"RIDE#{rid}", "SK": "STATE"})
+        state = state_resp.get("Item") or {}
+        return {
+            "ride_name": ride["ride_name"],
+            "ride_id": rid,
+            "forecast_available": False,
+            "last_forecast_at": state.get("last_forecast_at"),
+            "current_status": state.get("status"),
+            "explanation": (
+                "No forecast in DynamoDB for this ride. Common reasons: "
+                "ride is DOWN, walk-up attraction with no queue, or "
+                "the upstream API isn't predicting it today. "
+                "If last_forecast_at is set, that's when we last saw "
+                "one — the gap is itself a signal worth investigating."
+            ),
+        }
+
+    item = _convert_decimals(items[0])
+    return {
+        "ride_name": ride["ride_name"],
+        "ride_id": rid,
+        "polled_at": item.get("polled_at"),
+        "forecast_available": True,
+        "forecast_entries": len(item.get("forecast", [])),
+        "forecast": item.get("forecast", []),
     }
 
 

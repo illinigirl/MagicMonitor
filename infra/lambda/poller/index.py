@@ -184,6 +184,19 @@ def handler(event, context):
 
             db.upsert_ride(attr)
 
+            # Phase A2: persist this poll's forecast snapshot (when
+            # upstream provided one) into a FORECAST# sub-row. Wrapped
+            # so a forecast-side failure can never break the alert path
+            # — a missed forecast is a rounding error against an
+            # 8.8M-row historical baseline; a missed alert is a real
+            # demo regression. Skip cleanly when the ride has no
+            # forecast (DOWN rides, walk-up meets, transportation).
+            if attr.get("forecast"):
+                try:
+                    db.record_forecast(ride_id, attr["last_seen"], attr["forecast"])
+                except Exception as e:
+                    print(f"[poller] forecast write failed for {attr['name']}: {e}")
+
             # First time we've seen this ride — record state, no alert.
             if old_status is None:
                 continue
