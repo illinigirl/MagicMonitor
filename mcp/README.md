@@ -82,6 +82,9 @@ the other live-DDB tools:
 > Is Space Mountain operating right now, and what's the wait?
 >
 > How many times has Test Track gone down today?
+>
+> I'm at Magic Kingdom and want to ride Pirates, Big Thunder, TRON,
+> Haunted Mansion, and Space Mountain. What should I ride next?
 
 If you see "AWS credentials expired" instead, run `aws sso login
 --profile watchtower` and try again — Claude Desktop picks up the
@@ -112,6 +115,7 @@ DynamoDB table.
 | `get_live_ride_status` | DDB live | Current live status of one ride (status, wait, LL availability) |
 | `get_park_live_status` | DDB live | Current live status of every ride in one park, optionally filtered |
 | `get_ride_downtime_today` | DDB live | Count of DOWN events for one ride during one park-day (today / N days back) |
+| `get_planning_context` | mixed | One-shot trip-planner context: live status + forecast + DOWN history + lat/lon + park hours + weather, for a list of rides |
 | `find_rides_matching` | snapshot | Filter and sort rides by predicates ("low downtime, high avg wait") |
 
 Future tools (planned):

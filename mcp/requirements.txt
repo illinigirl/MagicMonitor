@@ -5,3 +5,9 @@ mcp[cli]==1.27.1
 # chain — picks up the user's `watchtower` SSO cache when Claude Desktop
 # launches the server. No keys ever land in this repo.
 boto3==1.43.6
+# get_planning_context fetches park hours from themeparks.wiki and
+# weather from Open-Meteo. requests bundles its own CA cert store
+# (certifi), which sidesteps the macOS Python urllib SSL-cert issue
+# where urlopen fails with CERTIFICATE_VERIFY_FAILED on a fresh
+# Python.org install. boto3 doesn't pull this in transitively.
+requests==2.32.5
