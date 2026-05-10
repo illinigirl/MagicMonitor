@@ -46,3 +46,7 @@ infra/lambda/*/dist/
 
 # Local-only scratch (Pi data dumps, etc — never committed)
 .scratch/
+
+# MCP server local venv (re-created via `pip install -r mcp/requirements.txt`)
+mcp/.venv/
+mcp/__pycache__/

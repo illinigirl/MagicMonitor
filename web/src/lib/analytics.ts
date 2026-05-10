@@ -32,6 +32,26 @@ export interface RideAnalytics {
   hourly_wait: { hour: number; wait: number }[];
   /** Downtime % per hour-of-day. Cells with <20 active polls are filtered out. */
   hourly_downtime: { hour: number; pct: number }[];
+  /**
+   * Full (dow, hour) breakdown for this ride. Same park-day-boundary
+   * shift as the park heatmap (12-3am attributed to previous day's
+   * row). Cells with <20 active polls filtered out, so sparse rides
+   * show only the buckets where the data is meaningful.
+   */
+  dow_hourly: RideDowHourCell[];
+}
+
+export interface RideDowHourCell {
+  /** 0=Sunday … 6=Saturday (SQLite strftime('%w') convention). */
+  dow: number;
+  /** 0-23, Eastern time. */
+  hour: number;
+  /** Downtime % at this (dow, hour) bucket. 0-100. */
+  downtime_pct: number;
+  /** Active poll count (operating + down). Used as a sample-size gate. */
+  n_active: number;
+  /** Avg operating-only wait minutes. Omitted when no operating polls. */
+  wait?: number;
 }
 
 export interface HeatmapCell {
