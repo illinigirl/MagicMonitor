@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-05-10T15:07:22.263158+00:00",
+  "generated_at": "2026-05-10T22:32:32.685159+00:00",
   "date_range": {
     "start": "2026-03-10T14:40:09.861336+00:00",
     "end": "2026-05-06T16:09:28.032041+00:00"
@@ -494,7 +494,13 @@
           "start_hour": 9,
           "start_dow": 3
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "37ae57c5-feaf-4e47-8f27-4b385be200f0",
@@ -1795,7 +1801,87 @@
           "start_hour": 14,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 292,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 32
+        },
+        {
+          "hour": 1,
+          "count": 26
+        },
+        {
+          "hour": 2,
+          "count": 9
+        },
+        {
+          "hour": 3,
+          "count": 7
+        },
+        {
+          "hour": 4,
+          "count": 8
+        },
+        {
+          "hour": 5,
+          "count": 12
+        },
+        {
+          "hour": 6,
+          "count": 35
+        },
+        {
+          "hour": 7,
+          "count": 48
+        },
+        {
+          "hour": 8,
+          "count": 74
+        },
+        {
+          "hour": 9,
+          "count": 39
+        },
+        {
+          "hour": 10,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 50
+        },
+        {
+          "dow": 1,
+          "count": 56
+        },
+        {
+          "dow": 2,
+          "count": 63
+        },
+        {
+          "dow": 3,
+          "count": 49
+        },
+        {
+          "dow": 4,
+          "count": 32
+        },
+        {
+          "dow": 5,
+          "count": 40
+        },
+        {
+          "dow": 6,
+          "count": 2
+        }
+      ],
+      "ll_typical_shift_mins": 30.0,
+      "ll_active_days": 34,
+      "ll_drops_per_active_day": 8.59
     },
     {
       "ride_id": "1a2e70d9-50d5-4140-b69e-799e950f7d18",
@@ -3126,7 +3212,91 @@
           "start_hour": 9,
           "start_dow": 3
         }
-      ]
+      ],
+      "ll_drops_total": 373,
+      "ll_drop_hours": [
+        {
+          "hour": 10,
+          "count": 14
+        },
+        {
+          "hour": 11,
+          "count": 70
+        },
+        {
+          "hour": 12,
+          "count": 49
+        },
+        {
+          "hour": 13,
+          "count": 29
+        },
+        {
+          "hour": 14,
+          "count": 16
+        },
+        {
+          "hour": 15,
+          "count": 26
+        },
+        {
+          "hour": 16,
+          "count": 54
+        },
+        {
+          "hour": 17,
+          "count": 48
+        },
+        {
+          "hour": 18,
+          "count": 36
+        },
+        {
+          "hour": 19,
+          "count": 24
+        },
+        {
+          "hour": 20,
+          "count": 5
+        },
+        {
+          "hour": 21,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 45
+        },
+        {
+          "dow": 1,
+          "count": 39
+        },
+        {
+          "dow": 2,
+          "count": 66
+        },
+        {
+          "dow": 3,
+          "count": 53
+        },
+        {
+          "dow": 4,
+          "count": 66
+        },
+        {
+          "dow": 5,
+          "count": 73
+        },
+        {
+          "dow": 6,
+          "count": 31
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 32,
+      "ll_drops_per_active_day": 11.66
     },
     {
       "ride_id": "d58d9262-ec95-4161-80a0-07ca43b2f5f3",
@@ -3924,7 +4094,115 @@
           "start_hour": 15,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 793,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 47
+        },
+        {
+          "hour": 1,
+          "count": 36
+        },
+        {
+          "hour": 2,
+          "count": 10
+        },
+        {
+          "hour": 3,
+          "count": 8
+        },
+        {
+          "hour": 4,
+          "count": 10
+        },
+        {
+          "hour": 5,
+          "count": 27
+        },
+        {
+          "hour": 6,
+          "count": 41
+        },
+        {
+          "hour": 7,
+          "count": 68
+        },
+        {
+          "hour": 8,
+          "count": 97
+        },
+        {
+          "hour": 9,
+          "count": 82
+        },
+        {
+          "hour": 10,
+          "count": 96
+        },
+        {
+          "hour": 11,
+          "count": 76
+        },
+        {
+          "hour": 12,
+          "count": 54
+        },
+        {
+          "hour": 13,
+          "count": 61
+        },
+        {
+          "hour": 14,
+          "count": 41
+        },
+        {
+          "hour": 15,
+          "count": 28
+        },
+        {
+          "hour": 16,
+          "count": 10
+        },
+        {
+          "hour": 17,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 111
+        },
+        {
+          "dow": 1,
+          "count": 77
+        },
+        {
+          "dow": 2,
+          "count": 108
+        },
+        {
+          "dow": 3,
+          "count": 150
+        },
+        {
+          "dow": 4,
+          "count": 122
+        },
+        {
+          "dow": 5,
+          "count": 121
+        },
+        {
+          "dow": 6,
+          "count": 104
+        }
+      ],
+      "ll_typical_shift_mins": 35.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 22.03
     },
     {
       "ride_id": "2551a77d-023f-4ab1-9a19-8afec0190f39",
@@ -5083,7 +5361,135 @@
           "start_hour": 9,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 1583,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 66
+        },
+        {
+          "hour": 1,
+          "count": 44
+        },
+        {
+          "hour": 2,
+          "count": 22
+        },
+        {
+          "hour": 3,
+          "count": 18
+        },
+        {
+          "hour": 4,
+          "count": 17
+        },
+        {
+          "hour": 5,
+          "count": 46
+        },
+        {
+          "hour": 6,
+          "count": 66
+        },
+        {
+          "hour": 7,
+          "count": 95
+        },
+        {
+          "hour": 8,
+          "count": 133
+        },
+        {
+          "hour": 9,
+          "count": 158
+        },
+        {
+          "hour": 10,
+          "count": 151
+        },
+        {
+          "hour": 11,
+          "count": 125
+        },
+        {
+          "hour": 12,
+          "count": 114
+        },
+        {
+          "hour": 13,
+          "count": 105
+        },
+        {
+          "hour": 14,
+          "count": 96
+        },
+        {
+          "hour": 15,
+          "count": 63
+        },
+        {
+          "hour": 16,
+          "count": 54
+        },
+        {
+          "hour": 17,
+          "count": 45
+        },
+        {
+          "hour": 18,
+          "count": 62
+        },
+        {
+          "hour": 19,
+          "count": 50
+        },
+        {
+          "hour": 20,
+          "count": 35
+        },
+        {
+          "hour": 21,
+          "count": 16
+        },
+        {
+          "hour": 22,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 238
+        },
+        {
+          "dow": 1,
+          "count": 201
+        },
+        {
+          "dow": 2,
+          "count": 243
+        },
+        {
+          "dow": 3,
+          "count": 202
+        },
+        {
+          "dow": 4,
+          "count": 230
+        },
+        {
+          "dow": 5,
+          "count": 228
+        },
+        {
+          "dow": 6,
+          "count": 241
+        }
+      ],
+      "ll_typical_shift_mins": 30.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 43.97
     },
     {
       "ride_id": "480fde8f-fe58-4bfb-b3ab-052a39d4db7c",
@@ -6296,7 +6702,127 @@
           "start_hour": 19,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 1368,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 46
+        },
+        {
+          "hour": 1,
+          "count": 31
+        },
+        {
+          "hour": 2,
+          "count": 18
+        },
+        {
+          "hour": 3,
+          "count": 8
+        },
+        {
+          "hour": 4,
+          "count": 15
+        },
+        {
+          "hour": 5,
+          "count": 35
+        },
+        {
+          "hour": 6,
+          "count": 58
+        },
+        {
+          "hour": 7,
+          "count": 83
+        },
+        {
+          "hour": 8,
+          "count": 141
+        },
+        {
+          "hour": 9,
+          "count": 166
+        },
+        {
+          "hour": 10,
+          "count": 116
+        },
+        {
+          "hour": 11,
+          "count": 98
+        },
+        {
+          "hour": 12,
+          "count": 110
+        },
+        {
+          "hour": 13,
+          "count": 102
+        },
+        {
+          "hour": 14,
+          "count": 94
+        },
+        {
+          "hour": 15,
+          "count": 76
+        },
+        {
+          "hour": 16,
+          "count": 71
+        },
+        {
+          "hour": 17,
+          "count": 56
+        },
+        {
+          "hour": 18,
+          "count": 32
+        },
+        {
+          "hour": 19,
+          "count": 10
+        },
+        {
+          "hour": 20,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 192
+        },
+        {
+          "dow": 1,
+          "count": 233
+        },
+        {
+          "dow": 2,
+          "count": 192
+        },
+        {
+          "dow": 3,
+          "count": 195
+        },
+        {
+          "dow": 4,
+          "count": 161
+        },
+        {
+          "dow": 5,
+          "count": 182
+        },
+        {
+          "dow": 6,
+          "count": 213
+        }
+      ],
+      "ll_typical_shift_mins": 35.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 36.97
     },
     {
       "ride_id": "64a6915f-a835-4226-ba5c-8389fc4cade3",
@@ -7365,7 +7891,123 @@
           "start_hour": 7,
           "start_dow": 0
         }
-      ]
+      ],
+      "ll_drops_total": 1298,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 72
+        },
+        {
+          "hour": 1,
+          "count": 37
+        },
+        {
+          "hour": 2,
+          "count": 17
+        },
+        {
+          "hour": 3,
+          "count": 15
+        },
+        {
+          "hour": 4,
+          "count": 17
+        },
+        {
+          "hour": 5,
+          "count": 35
+        },
+        {
+          "hour": 6,
+          "count": 76
+        },
+        {
+          "hour": 7,
+          "count": 123
+        },
+        {
+          "hour": 8,
+          "count": 166
+        },
+        {
+          "hour": 9,
+          "count": 140
+        },
+        {
+          "hour": 10,
+          "count": 119
+        },
+        {
+          "hour": 11,
+          "count": 124
+        },
+        {
+          "hour": 12,
+          "count": 108
+        },
+        {
+          "hour": 13,
+          "count": 59
+        },
+        {
+          "hour": 14,
+          "count": 58
+        },
+        {
+          "hour": 15,
+          "count": 54
+        },
+        {
+          "hour": 16,
+          "count": 43
+        },
+        {
+          "hour": 17,
+          "count": 25
+        },
+        {
+          "hour": 18,
+          "count": 8
+        },
+        {
+          "hour": 19,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 215
+        },
+        {
+          "dow": 1,
+          "count": 174
+        },
+        {
+          "dow": 2,
+          "count": 158
+        },
+        {
+          "dow": 3,
+          "count": 211
+        },
+        {
+          "dow": 4,
+          "count": 160
+        },
+        {
+          "dow": 5,
+          "count": 166
+        },
+        {
+          "dow": 6,
+          "count": 214
+        }
+      ],
+      "ll_typical_shift_mins": 25.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 35.08
     },
     {
       "ride_id": "73cb9445-0695-47a3-87ce-d08ae36b5f3c",
@@ -8544,7 +9186,135 @@
           "start_hour": 20,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 909,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 52
+        },
+        {
+          "hour": 1,
+          "count": 31
+        },
+        {
+          "hour": 2,
+          "count": 15
+        },
+        {
+          "hour": 3,
+          "count": 12
+        },
+        {
+          "hour": 4,
+          "count": 13
+        },
+        {
+          "hour": 5,
+          "count": 34
+        },
+        {
+          "hour": 6,
+          "count": 61
+        },
+        {
+          "hour": 7,
+          "count": 96
+        },
+        {
+          "hour": 8,
+          "count": 107
+        },
+        {
+          "hour": 9,
+          "count": 141
+        },
+        {
+          "hour": 10,
+          "count": 122
+        },
+        {
+          "hour": 11,
+          "count": 104
+        },
+        {
+          "hour": 12,
+          "count": 65
+        },
+        {
+          "hour": 13,
+          "count": 25
+        },
+        {
+          "hour": 14,
+          "count": 9
+        },
+        {
+          "hour": 15,
+          "count": 5
+        },
+        {
+          "hour": 16,
+          "count": 5
+        },
+        {
+          "hour": 17,
+          "count": 2
+        },
+        {
+          "hour": 18,
+          "count": 2
+        },
+        {
+          "hour": 19,
+          "count": 2
+        },
+        {
+          "hour": 20,
+          "count": 4
+        },
+        {
+          "hour": 21,
+          "count": 1
+        },
+        {
+          "hour": 22,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 137
+        },
+        {
+          "dow": 1,
+          "count": 122
+        },
+        {
+          "dow": 2,
+          "count": 147
+        },
+        {
+          "dow": 3,
+          "count": 113
+        },
+        {
+          "dow": 4,
+          "count": 131
+        },
+        {
+          "dow": 5,
+          "count": 113
+        },
+        {
+          "dow": 6,
+          "count": 146
+        }
+      ],
+      "ll_typical_shift_mins": 70.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 25.25
     },
     {
       "ride_id": "8d7ccdb1-a22b-4e26-8dc8-65b1938ed5f0",
@@ -9780,7 +10550,87 @@
           "start_hour": 8,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 453,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 39
+        },
+        {
+          "hour": 1,
+          "count": 28
+        },
+        {
+          "hour": 2,
+          "count": 11
+        },
+        {
+          "hour": 3,
+          "count": 9
+        },
+        {
+          "hour": 4,
+          "count": 14
+        },
+        {
+          "hour": 5,
+          "count": 23
+        },
+        {
+          "hour": 6,
+          "count": 46
+        },
+        {
+          "hour": 7,
+          "count": 82
+        },
+        {
+          "hour": 8,
+          "count": 116
+        },
+        {
+          "hour": 9,
+          "count": 76
+        },
+        {
+          "hour": 10,
+          "count": 9
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 63
+        },
+        {
+          "dow": 1,
+          "count": 70
+        },
+        {
+          "dow": 2,
+          "count": 66
+        },
+        {
+          "dow": 3,
+          "count": 70
+        },
+        {
+          "dow": 4,
+          "count": 66
+        },
+        {
+          "dow": 5,
+          "count": 61
+        },
+        {
+          "dow": 6,
+          "count": 57
+        }
+      ],
+      "ll_typical_shift_mins": 35.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 12.58
     },
     {
       "ride_id": "0d94ad60-72f0-4551-83a6-ebaecdd89737",
@@ -11287,7 +12137,111 @@
           "start_hour": 8,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 1043,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 51
+        },
+        {
+          "hour": 1,
+          "count": 29
+        },
+        {
+          "hour": 2,
+          "count": 13
+        },
+        {
+          "hour": 3,
+          "count": 9
+        },
+        {
+          "hour": 4,
+          "count": 11
+        },
+        {
+          "hour": 5,
+          "count": 33
+        },
+        {
+          "hour": 6,
+          "count": 67
+        },
+        {
+          "hour": 7,
+          "count": 98
+        },
+        {
+          "hour": 8,
+          "count": 163
+        },
+        {
+          "hour": 9,
+          "count": 132
+        },
+        {
+          "hour": 10,
+          "count": 112
+        },
+        {
+          "hour": 11,
+          "count": 118
+        },
+        {
+          "hour": 12,
+          "count": 92
+        },
+        {
+          "hour": 13,
+          "count": 58
+        },
+        {
+          "hour": 14,
+          "count": 41
+        },
+        {
+          "hour": 15,
+          "count": 15
+        },
+        {
+          "hour": 16,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 155
+        },
+        {
+          "dow": 1,
+          "count": 145
+        },
+        {
+          "dow": 2,
+          "count": 142
+        },
+        {
+          "dow": 3,
+          "count": 130
+        },
+        {
+          "dow": 4,
+          "count": 124
+        },
+        {
+          "dow": 5,
+          "count": 169
+        },
+        {
+          "dow": 6,
+          "count": 178
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 28.97
     },
     {
       "ride_id": "1e735ffb-4868-47f1-b2cd-2ac1156cd5f0",
@@ -12591,7 +13545,91 @@
           "start_hour": 9,
           "start_dow": 3
         }
-      ]
+      ],
+      "ll_drops_total": 493,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 38
+        },
+        {
+          "hour": 1,
+          "count": 31
+        },
+        {
+          "hour": 2,
+          "count": 16
+        },
+        {
+          "hour": 3,
+          "count": 9
+        },
+        {
+          "hour": 4,
+          "count": 10
+        },
+        {
+          "hour": 5,
+          "count": 22
+        },
+        {
+          "hour": 6,
+          "count": 49
+        },
+        {
+          "hour": 7,
+          "count": 94
+        },
+        {
+          "hour": 8,
+          "count": 121
+        },
+        {
+          "hour": 9,
+          "count": 74
+        },
+        {
+          "hour": 10,
+          "count": 28
+        },
+        {
+          "hour": 11,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 72
+        },
+        {
+          "dow": 1,
+          "count": 58
+        },
+        {
+          "dow": 2,
+          "count": 76
+        },
+        {
+          "dow": 3,
+          "count": 79
+        },
+        {
+          "dow": 4,
+          "count": 68
+        },
+        {
+          "dow": 5,
+          "count": 84
+        },
+        {
+          "dow": 6,
+          "count": 56
+        }
+      ],
+      "ll_typical_shift_mins": 40.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 13.69
     },
     {
       "ride_id": "b2260923-9315-40fd-9c6b-44dd811dbe64",
@@ -13890,7 +14928,131 @@
           "start_hour": 20,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 1438,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 41
+        },
+        {
+          "hour": 1,
+          "count": 30
+        },
+        {
+          "hour": 2,
+          "count": 11
+        },
+        {
+          "hour": 3,
+          "count": 9
+        },
+        {
+          "hour": 4,
+          "count": 8
+        },
+        {
+          "hour": 5,
+          "count": 23
+        },
+        {
+          "hour": 6,
+          "count": 58
+        },
+        {
+          "hour": 7,
+          "count": 104
+        },
+        {
+          "hour": 8,
+          "count": 117
+        },
+        {
+          "hour": 9,
+          "count": 141
+        },
+        {
+          "hour": 10,
+          "count": 116
+        },
+        {
+          "hour": 11,
+          "count": 112
+        },
+        {
+          "hour": 12,
+          "count": 125
+        },
+        {
+          "hour": 13,
+          "count": 115
+        },
+        {
+          "hour": 14,
+          "count": 91
+        },
+        {
+          "hour": 15,
+          "count": 77
+        },
+        {
+          "hour": 16,
+          "count": 77
+        },
+        {
+          "hour": 17,
+          "count": 66
+        },
+        {
+          "hour": 18,
+          "count": 52
+        },
+        {
+          "hour": 19,
+          "count": 34
+        },
+        {
+          "hour": 20,
+          "count": 26
+        },
+        {
+          "hour": 21,
+          "count": 5
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 209
+        },
+        {
+          "dow": 1,
+          "count": 187
+        },
+        {
+          "dow": 2,
+          "count": 242
+        },
+        {
+          "dow": 3,
+          "count": 186
+        },
+        {
+          "dow": 4,
+          "count": 205
+        },
+        {
+          "dow": 5,
+          "count": 213
+        },
+        {
+          "dow": 6,
+          "count": 196
+        }
+      ],
+      "ll_typical_shift_mins": 25.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 39.94
     },
     {
       "ride_id": "75449e85-c410-4cef-a368-9d2ea5d52b58",
@@ -15003,7 +16165,127 @@
           "start_hour": 11,
           "start_dow": 0
         }
-      ]
+      ],
+      "ll_drops_total": 830,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 20
+        },
+        {
+          "hour": 1,
+          "count": 12
+        },
+        {
+          "hour": 2,
+          "count": 11
+        },
+        {
+          "hour": 3,
+          "count": 1
+        },
+        {
+          "hour": 4,
+          "count": 8
+        },
+        {
+          "hour": 5,
+          "count": 19
+        },
+        {
+          "hour": 6,
+          "count": 18
+        },
+        {
+          "hour": 7,
+          "count": 37
+        },
+        {
+          "hour": 8,
+          "count": 50
+        },
+        {
+          "hour": 9,
+          "count": 99
+        },
+        {
+          "hour": 10,
+          "count": 73
+        },
+        {
+          "hour": 11,
+          "count": 75
+        },
+        {
+          "hour": 12,
+          "count": 82
+        },
+        {
+          "hour": 13,
+          "count": 62
+        },
+        {
+          "hour": 14,
+          "count": 60
+        },
+        {
+          "hour": 15,
+          "count": 63
+        },
+        {
+          "hour": 16,
+          "count": 45
+        },
+        {
+          "hour": 17,
+          "count": 47
+        },
+        {
+          "hour": 18,
+          "count": 30
+        },
+        {
+          "hour": 19,
+          "count": 16
+        },
+        {
+          "hour": 20,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 119
+        },
+        {
+          "dow": 1,
+          "count": 141
+        },
+        {
+          "dow": 2,
+          "count": 116
+        },
+        {
+          "dow": 3,
+          "count": 121
+        },
+        {
+          "dow": 4,
+          "count": 111
+        },
+        {
+          "dow": 5,
+          "count": 110
+        },
+        {
+          "dow": 6,
+          "count": 112
+        }
+      ],
+      "ll_typical_shift_mins": 15.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 22.43
     },
     {
       "ride_id": "399aa0a1-98e2-4d2b-b297-2b451e9665e1",
@@ -16253,7 +17535,59 @@
           "start_hour": 8,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 21,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 3
+        },
+        {
+          "hour": 1,
+          "count": 3
+        },
+        {
+          "hour": 5,
+          "count": 2
+        },
+        {
+          "hour": 6,
+          "count": 5
+        },
+        {
+          "hour": 7,
+          "count": 4
+        },
+        {
+          "hour": 8,
+          "count": 4
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 1,
+          "count": 3
+        },
+        {
+          "dow": 2,
+          "count": 3
+        },
+        {
+          "dow": 4,
+          "count": 8
+        },
+        {
+          "dow": 5,
+          "count": 3
+        },
+        {
+          "dow": 6,
+          "count": 4
+        }
+      ],
+      "ll_typical_shift_mins": 65.0,
+      "ll_active_days": 17,
+      "ll_drops_per_active_day": 1.24
     },
     {
       "ride_id": "924a3b2c-6b4b-49e5-99d3-e9dc3f2e8a48",
@@ -17519,7 +18853,131 @@
           "start_hour": 20,
           "start_dow": 0
         }
-      ]
+      ],
+      "ll_drops_total": 1311,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 31
+        },
+        {
+          "hour": 1,
+          "count": 22
+        },
+        {
+          "hour": 2,
+          "count": 5
+        },
+        {
+          "hour": 3,
+          "count": 2
+        },
+        {
+          "hour": 4,
+          "count": 2
+        },
+        {
+          "hour": 5,
+          "count": 19
+        },
+        {
+          "hour": 6,
+          "count": 40
+        },
+        {
+          "hour": 7,
+          "count": 59
+        },
+        {
+          "hour": 8,
+          "count": 105
+        },
+        {
+          "hour": 9,
+          "count": 142
+        },
+        {
+          "hour": 10,
+          "count": 123
+        },
+        {
+          "hour": 11,
+          "count": 98
+        },
+        {
+          "hour": 12,
+          "count": 94
+        },
+        {
+          "hour": 13,
+          "count": 102
+        },
+        {
+          "hour": 14,
+          "count": 106
+        },
+        {
+          "hour": 15,
+          "count": 93
+        },
+        {
+          "hour": 16,
+          "count": 83
+        },
+        {
+          "hour": 17,
+          "count": 67
+        },
+        {
+          "hour": 18,
+          "count": 46
+        },
+        {
+          "hour": 19,
+          "count": 41
+        },
+        {
+          "hour": 20,
+          "count": 23
+        },
+        {
+          "hour": 21,
+          "count": 8
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 212
+        },
+        {
+          "dow": 1,
+          "count": 184
+        },
+        {
+          "dow": 2,
+          "count": 179
+        },
+        {
+          "dow": 3,
+          "count": 171
+        },
+        {
+          "dow": 4,
+          "count": 174
+        },
+        {
+          "dow": 5,
+          "count": 183
+        },
+        {
+          "dow": 6,
+          "count": 208
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 36.42
     },
     {
       "ride_id": "e3549451-b284-453d-9c31-e3b1207abd79",
@@ -18604,7 +20062,75 @@
           "start_hour": 15,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 26,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 2
+        },
+        {
+          "hour": 1,
+          "count": 3
+        },
+        {
+          "hour": 2,
+          "count": 4
+        },
+        {
+          "hour": 3,
+          "count": 1
+        },
+        {
+          "hour": 6,
+          "count": 2
+        },
+        {
+          "hour": 7,
+          "count": 5
+        },
+        {
+          "hour": 8,
+          "count": 4
+        },
+        {
+          "hour": 9,
+          "count": 1
+        },
+        {
+          "hour": 10,
+          "count": 1
+        },
+        {
+          "hour": 11,
+          "count": 1
+        },
+        {
+          "hour": 12,
+          "count": 1
+        },
+        {
+          "hour": 14,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 1,
+          "count": 1
+        },
+        {
+          "dow": 3,
+          "count": 23
+        },
+        {
+          "dow": 4,
+          "count": 2
+        }
+      ],
+      "ll_typical_shift_mins": 7.5,
+      "ll_active_days": 6,
+      "ll_drops_per_active_day": 4.33
     },
     {
       "ride_id": "72c7343a-f7fb-4f66-95df-c91016de7338",
@@ -19697,7 +21223,115 @@
           "start_hour": 8,
           "start_dow": 0
         }
-      ]
+      ],
+      "ll_drops_total": 742,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 26
+        },
+        {
+          "hour": 1,
+          "count": 28
+        },
+        {
+          "hour": 2,
+          "count": 15
+        },
+        {
+          "hour": 3,
+          "count": 9
+        },
+        {
+          "hour": 4,
+          "count": 10
+        },
+        {
+          "hour": 5,
+          "count": 20
+        },
+        {
+          "hour": 6,
+          "count": 39
+        },
+        {
+          "hour": 7,
+          "count": 73
+        },
+        {
+          "hour": 8,
+          "count": 104
+        },
+        {
+          "hour": 9,
+          "count": 100
+        },
+        {
+          "hour": 10,
+          "count": 89
+        },
+        {
+          "hour": 11,
+          "count": 65
+        },
+        {
+          "hour": 12,
+          "count": 55
+        },
+        {
+          "hour": 13,
+          "count": 43
+        },
+        {
+          "hour": 14,
+          "count": 31
+        },
+        {
+          "hour": 15,
+          "count": 12
+        },
+        {
+          "hour": 16,
+          "count": 14
+        },
+        {
+          "hour": 17,
+          "count": 9
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 116
+        },
+        {
+          "dow": 1,
+          "count": 98
+        },
+        {
+          "dow": 2,
+          "count": 78
+        },
+        {
+          "dow": 3,
+          "count": 92
+        },
+        {
+          "dow": 4,
+          "count": 123
+        },
+        {
+          "dow": 5,
+          "count": 111
+        },
+        {
+          "dow": 6,
+          "count": 124
+        }
+      ],
+      "ll_typical_shift_mins": 30.0,
+      "ll_active_days": 33,
+      "ll_drops_per_active_day": 22.48
     },
     {
       "ride_id": "6e118e37-5002-408d-9d88-0b5d9cdb5d14",
@@ -20916,7 +22550,127 @@
           "start_hour": 17,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 1287,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 58
+        },
+        {
+          "hour": 1,
+          "count": 39
+        },
+        {
+          "hour": 2,
+          "count": 15
+        },
+        {
+          "hour": 3,
+          "count": 9
+        },
+        {
+          "hour": 4,
+          "count": 17
+        },
+        {
+          "hour": 5,
+          "count": 40
+        },
+        {
+          "hour": 6,
+          "count": 50
+        },
+        {
+          "hour": 7,
+          "count": 108
+        },
+        {
+          "hour": 8,
+          "count": 140
+        },
+        {
+          "hour": 9,
+          "count": 118
+        },
+        {
+          "hour": 10,
+          "count": 118
+        },
+        {
+          "hour": 11,
+          "count": 95
+        },
+        {
+          "hour": 12,
+          "count": 102
+        },
+        {
+          "hour": 13,
+          "count": 76
+        },
+        {
+          "hour": 14,
+          "count": 94
+        },
+        {
+          "hour": 15,
+          "count": 89
+        },
+        {
+          "hour": 16,
+          "count": 55
+        },
+        {
+          "hour": 17,
+          "count": 34
+        },
+        {
+          "hour": 18,
+          "count": 20
+        },
+        {
+          "hour": 19,
+          "count": 9
+        },
+        {
+          "hour": 20,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 194
+        },
+        {
+          "dow": 1,
+          "count": 182
+        },
+        {
+          "dow": 2,
+          "count": 182
+        },
+        {
+          "dow": 3,
+          "count": 213
+        },
+        {
+          "dow": 4,
+          "count": 168
+        },
+        {
+          "dow": 5,
+          "count": 178
+        },
+        {
+          "dow": 6,
+          "count": 170
+        }
+      ],
+      "ll_typical_shift_mins": 30.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 35.75
     },
     {
       "ride_id": "273ddb8d-e7b5-4e34-8657-1113f49262a5",
@@ -22268,7 +24022,13 @@
           "start_hour": 21,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "0f57cecf-5502-4503-8bc3-ba84d3708ace",
@@ -23269,7 +25029,13 @@
           "start_hour": 21,
           "start_dow": 3
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "f5aad2d4-a419-4384-bd9a-42f86385c750",
@@ -24413,7 +26179,135 @@
           "start_hour": 15,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 943,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 16
+        },
+        {
+          "hour": 1,
+          "count": 13
+        },
+        {
+          "hour": 2,
+          "count": 12
+        },
+        {
+          "hour": 3,
+          "count": 6
+        },
+        {
+          "hour": 4,
+          "count": 4
+        },
+        {
+          "hour": 5,
+          "count": 20
+        },
+        {
+          "hour": 6,
+          "count": 30
+        },
+        {
+          "hour": 7,
+          "count": 55
+        },
+        {
+          "hour": 8,
+          "count": 74
+        },
+        {
+          "hour": 9,
+          "count": 108
+        },
+        {
+          "hour": 10,
+          "count": 75
+        },
+        {
+          "hour": 11,
+          "count": 87
+        },
+        {
+          "hour": 12,
+          "count": 60
+        },
+        {
+          "hour": 13,
+          "count": 59
+        },
+        {
+          "hour": 14,
+          "count": 49
+        },
+        {
+          "hour": 15,
+          "count": 72
+        },
+        {
+          "hour": 16,
+          "count": 46
+        },
+        {
+          "hour": 17,
+          "count": 52
+        },
+        {
+          "hour": 18,
+          "count": 41
+        },
+        {
+          "hour": 19,
+          "count": 30
+        },
+        {
+          "hour": 20,
+          "count": 21
+        },
+        {
+          "hour": 21,
+          "count": 12
+        },
+        {
+          "hour": 22,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 127
+        },
+        {
+          "dow": 1,
+          "count": 133
+        },
+        {
+          "dow": 2,
+          "count": 163
+        },
+        {
+          "dow": 3,
+          "count": 122
+        },
+        {
+          "dow": 4,
+          "count": 120
+        },
+        {
+          "dow": 5,
+          "count": 155
+        },
+        {
+          "dow": 6,
+          "count": 123
+        }
+      ],
+      "ll_typical_shift_mins": 15.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 25.49
     },
     {
       "ride_id": "9d4d5229-7142-44b6-b4fb-528920969a2c",
@@ -25660,7 +27554,67 @@
           "start_hour": 8,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 32,
+      "ll_drop_hours": [
+        {
+          "hour": 9,
+          "count": 1
+        },
+        {
+          "hour": 10,
+          "count": 1
+        },
+        {
+          "hour": 14,
+          "count": 20
+        },
+        {
+          "hour": 15,
+          "count": 7
+        },
+        {
+          "hour": 16,
+          "count": 1
+        },
+        {
+          "hour": 17,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 3
+        },
+        {
+          "dow": 1,
+          "count": 12
+        },
+        {
+          "dow": 2,
+          "count": 3
+        },
+        {
+          "dow": 3,
+          "count": 2
+        },
+        {
+          "dow": 4,
+          "count": 3
+        },
+        {
+          "dow": 5,
+          "count": 4
+        },
+        {
+          "dow": 6,
+          "count": 5
+        }
+      ],
+      "ll_typical_shift_mins": 102.5,
+      "ll_active_days": 25,
+      "ll_drops_per_active_day": 1.28
     },
     {
       "ride_id": "352feb94-e52e-45eb-9c92-e4b44c6b1a9d",
@@ -26749,7 +28703,135 @@
           "start_hour": 17,
           "start_dow": 5
         }
-      ]
+      ],
+      "ll_drops_total": 1739,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 71
+        },
+        {
+          "hour": 1,
+          "count": 43
+        },
+        {
+          "hour": 2,
+          "count": 20
+        },
+        {
+          "hour": 3,
+          "count": 16
+        },
+        {
+          "hour": 4,
+          "count": 15
+        },
+        {
+          "hour": 5,
+          "count": 35
+        },
+        {
+          "hour": 6,
+          "count": 68
+        },
+        {
+          "hour": 7,
+          "count": 107
+        },
+        {
+          "hour": 8,
+          "count": 124
+        },
+        {
+          "hour": 9,
+          "count": 152
+        },
+        {
+          "hour": 10,
+          "count": 153
+        },
+        {
+          "hour": 11,
+          "count": 124
+        },
+        {
+          "hour": 12,
+          "count": 106
+        },
+        {
+          "hour": 13,
+          "count": 111
+        },
+        {
+          "hour": 14,
+          "count": 110
+        },
+        {
+          "hour": 15,
+          "count": 108
+        },
+        {
+          "hour": 16,
+          "count": 95
+        },
+        {
+          "hour": 17,
+          "count": 87
+        },
+        {
+          "hour": 18,
+          "count": 83
+        },
+        {
+          "hour": 19,
+          "count": 64
+        },
+        {
+          "hour": 20,
+          "count": 29
+        },
+        {
+          "hour": 21,
+          "count": 17
+        },
+        {
+          "hour": 22,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 245
+        },
+        {
+          "dow": 1,
+          "count": 219
+        },
+        {
+          "dow": 2,
+          "count": 288
+        },
+        {
+          "dow": 3,
+          "count": 231
+        },
+        {
+          "dow": 4,
+          "count": 270
+        },
+        {
+          "dow": 5,
+          "count": 236
+        },
+        {
+          "dow": 6,
+          "count": 250
+        }
+      ],
+      "ll_typical_shift_mins": 30.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 47.0
     },
     {
       "ride_id": "8183f3f2-1b59-4b9c-b634-6a863bdf8d84",
@@ -27857,7 +29939,13 @@
           "start_hour": 17,
           "start_dow": 1
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "e39b831b-7731-49bb-815b-289b4f49a9fd",
@@ -28698,7 +30786,13 @@
           "start_hour": 15,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "796b0a25-c51e-456e-9bb8-50a324e301b3",
@@ -29781,7 +31875,111 @@
           "start_hour": 15,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 837,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 37
+        },
+        {
+          "hour": 1,
+          "count": 17
+        },
+        {
+          "hour": 2,
+          "count": 5
+        },
+        {
+          "hour": 3,
+          "count": 7
+        },
+        {
+          "hour": 4,
+          "count": 8
+        },
+        {
+          "hour": 5,
+          "count": 20
+        },
+        {
+          "hour": 6,
+          "count": 44
+        },
+        {
+          "hour": 7,
+          "count": 96
+        },
+        {
+          "hour": 8,
+          "count": 112
+        },
+        {
+          "hour": 9,
+          "count": 117
+        },
+        {
+          "hour": 10,
+          "count": 103
+        },
+        {
+          "hour": 11,
+          "count": 110
+        },
+        {
+          "hour": 12,
+          "count": 78
+        },
+        {
+          "hour": 13,
+          "count": 55
+        },
+        {
+          "hour": 14,
+          "count": 21
+        },
+        {
+          "hour": 15,
+          "count": 5
+        },
+        {
+          "hour": 16,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 133
+        },
+        {
+          "dow": 1,
+          "count": 108
+        },
+        {
+          "dow": 2,
+          "count": 107
+        },
+        {
+          "dow": 3,
+          "count": 92
+        },
+        {
+          "dow": 4,
+          "count": 121
+        },
+        {
+          "dow": 5,
+          "count": 129
+        },
+        {
+          "dow": 6,
+          "count": 147
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 23.25
     },
     {
       "ride_id": "0aae716c-af13-4439-b638-d75fb1649df3",
@@ -30846,7 +33044,131 @@
           "start_hour": 7,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 545,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 7
+        },
+        {
+          "hour": 1,
+          "count": 6
+        },
+        {
+          "hour": 2,
+          "count": 2
+        },
+        {
+          "hour": 3,
+          "count": 2
+        },
+        {
+          "hour": 4,
+          "count": 1
+        },
+        {
+          "hour": 5,
+          "count": 14
+        },
+        {
+          "hour": 6,
+          "count": 19
+        },
+        {
+          "hour": 7,
+          "count": 30
+        },
+        {
+          "hour": 8,
+          "count": 55
+        },
+        {
+          "hour": 9,
+          "count": 58
+        },
+        {
+          "hour": 10,
+          "count": 37
+        },
+        {
+          "hour": 11,
+          "count": 35
+        },
+        {
+          "hour": 12,
+          "count": 35
+        },
+        {
+          "hour": 13,
+          "count": 28
+        },
+        {
+          "hour": 14,
+          "count": 39
+        },
+        {
+          "hour": 15,
+          "count": 45
+        },
+        {
+          "hour": 16,
+          "count": 33
+        },
+        {
+          "hour": 17,
+          "count": 26
+        },
+        {
+          "hour": 18,
+          "count": 28
+        },
+        {
+          "hour": 19,
+          "count": 25
+        },
+        {
+          "hour": 20,
+          "count": 15
+        },
+        {
+          "hour": 21,
+          "count": 5
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 72
+        },
+        {
+          "dow": 1,
+          "count": 75
+        },
+        {
+          "dow": 2,
+          "count": 87
+        },
+        {
+          "dow": 3,
+          "count": 70
+        },
+        {
+          "dow": 4,
+          "count": 87
+        },
+        {
+          "dow": 5,
+          "count": 87
+        },
+        {
+          "dow": 6,
+          "count": 67
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 14.73
     },
     {
       "ride_id": "e40ac396-cbac-43f4-8752-764ed60ccceb",
@@ -31668,7 +33990,13 @@
           "start_hour": 15,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "fb076275-0570-4d62-b2a9-4d6515130fa3",
@@ -32678,7 +35006,127 @@
           "start_hour": 9,
           "start_dow": 1
         }
-      ]
+      ],
+      "ll_drops_total": 660,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 26
+        },
+        {
+          "hour": 1,
+          "count": 12
+        },
+        {
+          "hour": 2,
+          "count": 9
+        },
+        {
+          "hour": 3,
+          "count": 6
+        },
+        {
+          "hour": 4,
+          "count": 7
+        },
+        {
+          "hour": 5,
+          "count": 30
+        },
+        {
+          "hour": 6,
+          "count": 27
+        },
+        {
+          "hour": 7,
+          "count": 53
+        },
+        {
+          "hour": 8,
+          "count": 86
+        },
+        {
+          "hour": 9,
+          "count": 128
+        },
+        {
+          "hour": 10,
+          "count": 76
+        },
+        {
+          "hour": 11,
+          "count": 64
+        },
+        {
+          "hour": 12,
+          "count": 54
+        },
+        {
+          "hour": 13,
+          "count": 31
+        },
+        {
+          "hour": 14,
+          "count": 19
+        },
+        {
+          "hour": 15,
+          "count": 6
+        },
+        {
+          "hour": 16,
+          "count": 7
+        },
+        {
+          "hour": 17,
+          "count": 9
+        },
+        {
+          "hour": 18,
+          "count": 4
+        },
+        {
+          "hour": 19,
+          "count": 4
+        },
+        {
+          "hour": 20,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 75
+        },
+        {
+          "dow": 1,
+          "count": 105
+        },
+        {
+          "dow": 2,
+          "count": 85
+        },
+        {
+          "dow": 3,
+          "count": 121
+        },
+        {
+          "dow": 4,
+          "count": 108
+        },
+        {
+          "dow": 5,
+          "count": 97
+        },
+        {
+          "dow": 6,
+          "count": 69
+        }
+      ],
+      "ll_typical_shift_mins": 15.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 17.84
     },
     {
       "ride_id": "5a43d1a7-ad53-4d25-abfe-25625f0da304",
@@ -33755,7 +36203,27 @@
           "start_hour": 19,
           "start_dow": 3
         }
-      ]
+      ],
+      "ll_drops_total": 3,
+      "ll_drop_hours": [
+        {
+          "hour": 12,
+          "count": 3
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 1
+        },
+        {
+          "dow": 4,
+          "count": 2
+        }
+      ],
+      "ll_typical_shift_mins": 420.0,
+      "ll_active_days": 4,
+      "ll_drops_per_active_day": 0.75
     },
     {
       "ride_id": "ffcfeaa2-1416-4920-a1ed-543c1a1695c4",
@@ -34815,7 +37283,13 @@
           "start_hour": 14,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "20b5daa8-e1ea-436f-830c-2d7d18d929b5",
@@ -35890,7 +38364,127 @@
           "start_hour": 18,
           "start_dow": 1
         }
-      ]
+      ],
+      "ll_drops_total": 986,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 50
+        },
+        {
+          "hour": 1,
+          "count": 24
+        },
+        {
+          "hour": 2,
+          "count": 14
+        },
+        {
+          "hour": 3,
+          "count": 15
+        },
+        {
+          "hour": 4,
+          "count": 16
+        },
+        {
+          "hour": 5,
+          "count": 27
+        },
+        {
+          "hour": 6,
+          "count": 48
+        },
+        {
+          "hour": 7,
+          "count": 78
+        },
+        {
+          "hour": 8,
+          "count": 149
+        },
+        {
+          "hour": 9,
+          "count": 163
+        },
+        {
+          "hour": 10,
+          "count": 103
+        },
+        {
+          "hour": 11,
+          "count": 84
+        },
+        {
+          "hour": 12,
+          "count": 47
+        },
+        {
+          "hour": 13,
+          "count": 53
+        },
+        {
+          "hour": 14,
+          "count": 42
+        },
+        {
+          "hour": 15,
+          "count": 24
+        },
+        {
+          "hour": 16,
+          "count": 30
+        },
+        {
+          "hour": 17,
+          "count": 13
+        },
+        {
+          "hour": 18,
+          "count": 3
+        },
+        {
+          "hour": 19,
+          "count": 2
+        },
+        {
+          "hour": 20,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 161
+        },
+        {
+          "dow": 1,
+          "count": 156
+        },
+        {
+          "dow": 2,
+          "count": 111
+        },
+        {
+          "dow": 3,
+          "count": 158
+        },
+        {
+          "dow": 4,
+          "count": 163
+        },
+        {
+          "dow": 5,
+          "count": 144
+        },
+        {
+          "dow": 6,
+          "count": 93
+        }
+      ],
+      "ll_typical_shift_mins": 60.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 27.39
     },
     {
       "ride_id": "8f353879-d6ac-4211-9352-4029efb47c18",
@@ -36869,7 +39463,127 @@
           "start_hour": 0,
           "start_dow": 0
         }
-      ]
+      ],
+      "ll_drops_total": 712,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 25
+        },
+        {
+          "hour": 1,
+          "count": 15
+        },
+        {
+          "hour": 2,
+          "count": 11
+        },
+        {
+          "hour": 3,
+          "count": 8
+        },
+        {
+          "hour": 4,
+          "count": 7
+        },
+        {
+          "hour": 5,
+          "count": 21
+        },
+        {
+          "hour": 6,
+          "count": 35
+        },
+        {
+          "hour": 7,
+          "count": 47
+        },
+        {
+          "hour": 8,
+          "count": 66
+        },
+        {
+          "hour": 9,
+          "count": 120
+        },
+        {
+          "hour": 10,
+          "count": 84
+        },
+        {
+          "hour": 11,
+          "count": 59
+        },
+        {
+          "hour": 12,
+          "count": 72
+        },
+        {
+          "hour": 13,
+          "count": 54
+        },
+        {
+          "hour": 14,
+          "count": 36
+        },
+        {
+          "hour": 15,
+          "count": 20
+        },
+        {
+          "hour": 16,
+          "count": 11
+        },
+        {
+          "hour": 17,
+          "count": 12
+        },
+        {
+          "hour": 18,
+          "count": 4
+        },
+        {
+          "hour": 19,
+          "count": 4
+        },
+        {
+          "hour": 20,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 101
+        },
+        {
+          "dow": 1,
+          "count": 120
+        },
+        {
+          "dow": 2,
+          "count": 106
+        },
+        {
+          "dow": 3,
+          "count": 117
+        },
+        {
+          "dow": 4,
+          "count": 106
+        },
+        {
+          "dow": 5,
+          "count": 73
+        },
+        {
+          "dow": 6,
+          "count": 89
+        }
+      ],
+      "ll_typical_shift_mins": 10.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 19.24
     },
     {
       "ride_id": "e7976e25-4322-4587-8ded-fb1d9dcbb83c",
@@ -37593,7 +40307,13 @@
           "start_hour": 15,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "d9d12438-d999-4482-894b-8955fdb20ccf",
@@ -38713,7 +41433,13 @@
           "start_hour": 16,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "3cba0cb4-e2a6-402c-93ee-c11ffcb127ef",
@@ -39822,7 +42548,135 @@
           "start_hour": 16,
           "start_dow": 5
         }
-      ]
+      ],
+      "ll_drops_total": 1218,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 30
+        },
+        {
+          "hour": 1,
+          "count": 28
+        },
+        {
+          "hour": 2,
+          "count": 11
+        },
+        {
+          "hour": 3,
+          "count": 3
+        },
+        {
+          "hour": 4,
+          "count": 8
+        },
+        {
+          "hour": 5,
+          "count": 16
+        },
+        {
+          "hour": 6,
+          "count": 31
+        },
+        {
+          "hour": 7,
+          "count": 66
+        },
+        {
+          "hour": 8,
+          "count": 111
+        },
+        {
+          "hour": 9,
+          "count": 140
+        },
+        {
+          "hour": 10,
+          "count": 114
+        },
+        {
+          "hour": 11,
+          "count": 86
+        },
+        {
+          "hour": 12,
+          "count": 65
+        },
+        {
+          "hour": 13,
+          "count": 86
+        },
+        {
+          "hour": 14,
+          "count": 70
+        },
+        {
+          "hour": 15,
+          "count": 77
+        },
+        {
+          "hour": 16,
+          "count": 81
+        },
+        {
+          "hour": 17,
+          "count": 62
+        },
+        {
+          "hour": 18,
+          "count": 60
+        },
+        {
+          "hour": 19,
+          "count": 41
+        },
+        {
+          "hour": 20,
+          "count": 26
+        },
+        {
+          "hour": 21,
+          "count": 4
+        },
+        {
+          "hour": 22,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 159
+        },
+        {
+          "dow": 1,
+          "count": 168
+        },
+        {
+          "dow": 2,
+          "count": 187
+        },
+        {
+          "dow": 3,
+          "count": 187
+        },
+        {
+          "dow": 4,
+          "count": 166
+        },
+        {
+          "dow": 5,
+          "count": 192
+        },
+        {
+          "dow": 6,
+          "count": 159
+        }
+      ],
+      "ll_typical_shift_mins": 15.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 32.92
     },
     {
       "ride_id": "61fb49f8-e62f-4e1c-ae0e-8ab9929037bc",
@@ -40569,7 +43423,13 @@
           "start_hour": 9,
           "start_dow": 5
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "96455de6-f4f1-403c-9391-bf8396979149",
@@ -41610,7 +44470,131 @@
           "start_hour": 16,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 888,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 13
+        },
+        {
+          "hour": 1,
+          "count": 9
+        },
+        {
+          "hour": 2,
+          "count": 4
+        },
+        {
+          "hour": 3,
+          "count": 2
+        },
+        {
+          "hour": 4,
+          "count": 4
+        },
+        {
+          "hour": 5,
+          "count": 10
+        },
+        {
+          "hour": 6,
+          "count": 22
+        },
+        {
+          "hour": 7,
+          "count": 28
+        },
+        {
+          "hour": 8,
+          "count": 51
+        },
+        {
+          "hour": 9,
+          "count": 60
+        },
+        {
+          "hour": 10,
+          "count": 68
+        },
+        {
+          "hour": 11,
+          "count": 71
+        },
+        {
+          "hour": 12,
+          "count": 77
+        },
+        {
+          "hour": 13,
+          "count": 82
+        },
+        {
+          "hour": 14,
+          "count": 77
+        },
+        {
+          "hour": 15,
+          "count": 81
+        },
+        {
+          "hour": 16,
+          "count": 56
+        },
+        {
+          "hour": 17,
+          "count": 57
+        },
+        {
+          "hour": 18,
+          "count": 45
+        },
+        {
+          "hour": 19,
+          "count": 38
+        },
+        {
+          "hour": 20,
+          "count": 26
+        },
+        {
+          "hour": 21,
+          "count": 7
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 135
+        },
+        {
+          "dow": 1,
+          "count": 137
+        },
+        {
+          "dow": 2,
+          "count": 130
+        },
+        {
+          "dow": 3,
+          "count": 124
+        },
+        {
+          "dow": 4,
+          "count": 127
+        },
+        {
+          "dow": 5,
+          "count": 120
+        },
+        {
+          "dow": 6,
+          "count": 115
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 24.67
     },
     {
       "ride_id": "30fe3c64-af71-4c66-a54b-aa61fd7af177",
@@ -42625,7 +45609,13 @@
           "start_hour": 16,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "1a8ea967-229a-42a0-8290-59b036c84e14",
@@ -43356,7 +46346,13 @@
           "start_hour": 16,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "2ebfb38c-5cb5-4de1-86c0-f7af14188022",
@@ -44197,7 +47193,13 @@
           "start_hour": 10,
           "start_dow": 1
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "86a41273-5f15-4b54-93b6-829f140e5161",
@@ -45247,7 +48249,107 @@
           "start_hour": 21,
           "start_dow": 1
         }
-      ]
+      ],
+      "ll_drops_total": 1026,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 65
+        },
+        {
+          "hour": 1,
+          "count": 40
+        },
+        {
+          "hour": 2,
+          "count": 16
+        },
+        {
+          "hour": 3,
+          "count": 7
+        },
+        {
+          "hour": 4,
+          "count": 9
+        },
+        {
+          "hour": 5,
+          "count": 25
+        },
+        {
+          "hour": 6,
+          "count": 74
+        },
+        {
+          "hour": 7,
+          "count": 126
+        },
+        {
+          "hour": 8,
+          "count": 152
+        },
+        {
+          "hour": 9,
+          "count": 126
+        },
+        {
+          "hour": 10,
+          "count": 125
+        },
+        {
+          "hour": 11,
+          "count": 104
+        },
+        {
+          "hour": 12,
+          "count": 76
+        },
+        {
+          "hour": 13,
+          "count": 52
+        },
+        {
+          "hour": 14,
+          "count": 26
+        },
+        {
+          "hour": 15,
+          "count": 3
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 166
+        },
+        {
+          "dow": 1,
+          "count": 121
+        },
+        {
+          "dow": 2,
+          "count": 139
+        },
+        {
+          "dow": 3,
+          "count": 140
+        },
+        {
+          "dow": 4,
+          "count": 156
+        },
+        {
+          "dow": 5,
+          "count": 151
+        },
+        {
+          "dow": 6,
+          "count": 153
+        }
+      ],
+      "ll_typical_shift_mins": 30.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 28.5
     },
     {
       "ride_id": "dae68dee-dfba-4128-b594-6aa12add1070",
@@ -46088,7 +49190,13 @@
           "start_hour": 16,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "890fa430-89c0-4a3f-96c9-11597888005e",
@@ -47163,7 +50271,131 @@
           "start_hour": 16,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 858,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 14
+        },
+        {
+          "hour": 1,
+          "count": 16
+        },
+        {
+          "hour": 2,
+          "count": 5
+        },
+        {
+          "hour": 3,
+          "count": 5
+        },
+        {
+          "hour": 4,
+          "count": 4
+        },
+        {
+          "hour": 5,
+          "count": 12
+        },
+        {
+          "hour": 6,
+          "count": 24
+        },
+        {
+          "hour": 7,
+          "count": 45
+        },
+        {
+          "hour": 8,
+          "count": 63
+        },
+        {
+          "hour": 9,
+          "count": 78
+        },
+        {
+          "hour": 10,
+          "count": 87
+        },
+        {
+          "hour": 11,
+          "count": 70
+        },
+        {
+          "hour": 12,
+          "count": 85
+        },
+        {
+          "hour": 13,
+          "count": 57
+        },
+        {
+          "hour": 14,
+          "count": 54
+        },
+        {
+          "hour": 15,
+          "count": 51
+        },
+        {
+          "hour": 16,
+          "count": 60
+        },
+        {
+          "hour": 17,
+          "count": 44
+        },
+        {
+          "hour": 18,
+          "count": 28
+        },
+        {
+          "hour": 19,
+          "count": 30
+        },
+        {
+          "hour": 20,
+          "count": 18
+        },
+        {
+          "hour": 21,
+          "count": 8
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 129
+        },
+        {
+          "dow": 1,
+          "count": 117
+        },
+        {
+          "dow": 2,
+          "count": 163
+        },
+        {
+          "dow": 3,
+          "count": 108
+        },
+        {
+          "dow": 4,
+          "count": 113
+        },
+        {
+          "dow": 5,
+          "count": 122
+        },
+        {
+          "dow": 6,
+          "count": 106
+        }
+      ],
+      "ll_typical_shift_mins": 10.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 23.19
     },
     {
       "ride_id": "6f6998e8-a629-412c-b964-2cb06af8e26b",
@@ -48135,7 +51367,127 @@
           "start_hour": 0,
           "start_dow": 1
         }
-      ]
+      ],
+      "ll_drops_total": 1098,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 45
+        },
+        {
+          "hour": 1,
+          "count": 29
+        },
+        {
+          "hour": 2,
+          "count": 12
+        },
+        {
+          "hour": 3,
+          "count": 13
+        },
+        {
+          "hour": 4,
+          "count": 9
+        },
+        {
+          "hour": 5,
+          "count": 24
+        },
+        {
+          "hour": 6,
+          "count": 55
+        },
+        {
+          "hour": 7,
+          "count": 95
+        },
+        {
+          "hour": 8,
+          "count": 129
+        },
+        {
+          "hour": 9,
+          "count": 137
+        },
+        {
+          "hour": 10,
+          "count": 119
+        },
+        {
+          "hour": 11,
+          "count": 103
+        },
+        {
+          "hour": 12,
+          "count": 82
+        },
+        {
+          "hour": 13,
+          "count": 55
+        },
+        {
+          "hour": 14,
+          "count": 40
+        },
+        {
+          "hour": 15,
+          "count": 43
+        },
+        {
+          "hour": 16,
+          "count": 31
+        },
+        {
+          "hour": 17,
+          "count": 40
+        },
+        {
+          "hour": 18,
+          "count": 19
+        },
+        {
+          "hour": 19,
+          "count": 16
+        },
+        {
+          "hour": 20,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 169
+        },
+        {
+          "dow": 1,
+          "count": 173
+        },
+        {
+          "dow": 2,
+          "count": 173
+        },
+        {
+          "dow": 3,
+          "count": 154
+        },
+        {
+          "dow": 4,
+          "count": 137
+        },
+        {
+          "dow": 5,
+          "count": 153
+        },
+        {
+          "dow": 6,
+          "count": 139
+        }
+      ],
+      "ll_typical_shift_mins": 50.0,
+      "ll_active_days": 35,
+      "ll_drops_per_active_day": 31.37
     },
     {
       "ride_id": "e8f0b426-7645-4ea3-8b41-b94ae7091a41",
@@ -48977,7 +52329,127 @@
           "start_hour": 19,
           "start_dow": 0
         }
-      ]
+      ],
+      "ll_drops_total": 352,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 14
+        },
+        {
+          "hour": 1,
+          "count": 6
+        },
+        {
+          "hour": 2,
+          "count": 7
+        },
+        {
+          "hour": 3,
+          "count": 1
+        },
+        {
+          "hour": 4,
+          "count": 3
+        },
+        {
+          "hour": 5,
+          "count": 3
+        },
+        {
+          "hour": 6,
+          "count": 10
+        },
+        {
+          "hour": 7,
+          "count": 26
+        },
+        {
+          "hour": 8,
+          "count": 35
+        },
+        {
+          "hour": 9,
+          "count": 39
+        },
+        {
+          "hour": 10,
+          "count": 24
+        },
+        {
+          "hour": 11,
+          "count": 21
+        },
+        {
+          "hour": 12,
+          "count": 17
+        },
+        {
+          "hour": 13,
+          "count": 24
+        },
+        {
+          "hour": 14,
+          "count": 21
+        },
+        {
+          "hour": 15,
+          "count": 18
+        },
+        {
+          "hour": 16,
+          "count": 21
+        },
+        {
+          "hour": 17,
+          "count": 19
+        },
+        {
+          "hour": 18,
+          "count": 18
+        },
+        {
+          "hour": 19,
+          "count": 15
+        },
+        {
+          "hour": 20,
+          "count": 10
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 38
+        },
+        {
+          "dow": 1,
+          "count": 53
+        },
+        {
+          "dow": 2,
+          "count": 46
+        },
+        {
+          "dow": 3,
+          "count": 77
+        },
+        {
+          "dow": 4,
+          "count": 75
+        },
+        {
+          "dow": 5,
+          "count": 51
+        },
+        {
+          "dow": 6,
+          "count": 12
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 9.51
     },
     {
       "ride_id": "f163ddcd-43e1-488d-8276-2381c1db0a39",
@@ -50028,7 +53500,131 @@
           "start_hour": 16,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 1282,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 30
+        },
+        {
+          "hour": 1,
+          "count": 21
+        },
+        {
+          "hour": 2,
+          "count": 10
+        },
+        {
+          "hour": 3,
+          "count": 9
+        },
+        {
+          "hour": 4,
+          "count": 5
+        },
+        {
+          "hour": 5,
+          "count": 17
+        },
+        {
+          "hour": 6,
+          "count": 32
+        },
+        {
+          "hour": 7,
+          "count": 57
+        },
+        {
+          "hour": 8,
+          "count": 97
+        },
+        {
+          "hour": 9,
+          "count": 116
+        },
+        {
+          "hour": 10,
+          "count": 108
+        },
+        {
+          "hour": 11,
+          "count": 117
+        },
+        {
+          "hour": 12,
+          "count": 101
+        },
+        {
+          "hour": 13,
+          "count": 107
+        },
+        {
+          "hour": 14,
+          "count": 92
+        },
+        {
+          "hour": 15,
+          "count": 70
+        },
+        {
+          "hour": 16,
+          "count": 92
+        },
+        {
+          "hour": 17,
+          "count": 54
+        },
+        {
+          "hour": 18,
+          "count": 58
+        },
+        {
+          "hour": 19,
+          "count": 44
+        },
+        {
+          "hour": 20,
+          "count": 32
+        },
+        {
+          "hour": 21,
+          "count": 13
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 185
+        },
+        {
+          "dow": 1,
+          "count": 200
+        },
+        {
+          "dow": 2,
+          "count": 182
+        },
+        {
+          "dow": 3,
+          "count": 149
+        },
+        {
+          "dow": 4,
+          "count": 189
+        },
+        {
+          "dow": 5,
+          "count": 185
+        },
+        {
+          "dow": 6,
+          "count": 192
+        }
+      ],
+      "ll_typical_shift_mins": 15.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 35.61
     },
     {
       "ride_id": "7a5af3b7-9bc1-4962-92d0-3ea9c9ce35f0",
@@ -50856,7 +54452,115 @@
           "start_hour": 7,
           "start_dow": 5
         }
-      ]
+      ],
+      "ll_drops_total": 996,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 47
+        },
+        {
+          "hour": 1,
+          "count": 28
+        },
+        {
+          "hour": 2,
+          "count": 16
+        },
+        {
+          "hour": 3,
+          "count": 12
+        },
+        {
+          "hour": 4,
+          "count": 17
+        },
+        {
+          "hour": 5,
+          "count": 30
+        },
+        {
+          "hour": 6,
+          "count": 39
+        },
+        {
+          "hour": 7,
+          "count": 94
+        },
+        {
+          "hour": 8,
+          "count": 188
+        },
+        {
+          "hour": 9,
+          "count": 140
+        },
+        {
+          "hour": 10,
+          "count": 112
+        },
+        {
+          "hour": 11,
+          "count": 82
+        },
+        {
+          "hour": 12,
+          "count": 60
+        },
+        {
+          "hour": 13,
+          "count": 40
+        },
+        {
+          "hour": 14,
+          "count": 31
+        },
+        {
+          "hour": 15,
+          "count": 31
+        },
+        {
+          "hour": 16,
+          "count": 20
+        },
+        {
+          "hour": 17,
+          "count": 9
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 121
+        },
+        {
+          "dow": 1,
+          "count": 126
+        },
+        {
+          "dow": 2,
+          "count": 176
+        },
+        {
+          "dow": 3,
+          "count": 170
+        },
+        {
+          "dow": 4,
+          "count": 123
+        },
+        {
+          "dow": 5,
+          "count": 123
+        },
+        {
+          "dow": 6,
+          "count": 157
+        }
+      ],
+      "ll_typical_shift_mins": 60.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 27.67
     },
     {
       "ride_id": "35ed719b-f7f0-488f-8346-4fbf8055d373",
@@ -51458,7 +55162,123 @@
           "start_hour": 18,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 178,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 15
+        },
+        {
+          "hour": 1,
+          "count": 3
+        },
+        {
+          "hour": 2,
+          "count": 2
+        },
+        {
+          "hour": 3,
+          "count": 4
+        },
+        {
+          "hour": 4,
+          "count": 3
+        },
+        {
+          "hour": 5,
+          "count": 6
+        },
+        {
+          "hour": 6,
+          "count": 18
+        },
+        {
+          "hour": 7,
+          "count": 20
+        },
+        {
+          "hour": 8,
+          "count": 24
+        },
+        {
+          "hour": 9,
+          "count": 43
+        },
+        {
+          "hour": 10,
+          "count": 17
+        },
+        {
+          "hour": 11,
+          "count": 5
+        },
+        {
+          "hour": 12,
+          "count": 2
+        },
+        {
+          "hour": 13,
+          "count": 2
+        },
+        {
+          "hour": 14,
+          "count": 4
+        },
+        {
+          "hour": 15,
+          "count": 4
+        },
+        {
+          "hour": 16,
+          "count": 1
+        },
+        {
+          "hour": 17,
+          "count": 2
+        },
+        {
+          "hour": 18,
+          "count": 1
+        },
+        {
+          "hour": 19,
+          "count": 2
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 15
+        },
+        {
+          "dow": 1,
+          "count": 19
+        },
+        {
+          "dow": 2,
+          "count": 22
+        },
+        {
+          "dow": 3,
+          "count": 42
+        },
+        {
+          "dow": 4,
+          "count": 16
+        },
+        {
+          "dow": 5,
+          "count": 38
+        },
+        {
+          "dow": 6,
+          "count": 26
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 4.81
     },
     {
       "ride_id": "1b15c77b-0311-4171-8e59-7f38e6d60754",
@@ -52298,7 +56118,123 @@
           "start_hour": 13,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 1015,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 30
+        },
+        {
+          "hour": 1,
+          "count": 23
+        },
+        {
+          "hour": 2,
+          "count": 6
+        },
+        {
+          "hour": 3,
+          "count": 8
+        },
+        {
+          "hour": 4,
+          "count": 7
+        },
+        {
+          "hour": 5,
+          "count": 21
+        },
+        {
+          "hour": 6,
+          "count": 33
+        },
+        {
+          "hour": 7,
+          "count": 91
+        },
+        {
+          "hour": 8,
+          "count": 106
+        },
+        {
+          "hour": 9,
+          "count": 108
+        },
+        {
+          "hour": 10,
+          "count": 94
+        },
+        {
+          "hour": 11,
+          "count": 86
+        },
+        {
+          "hour": 12,
+          "count": 85
+        },
+        {
+          "hour": 13,
+          "count": 90
+        },
+        {
+          "hour": 14,
+          "count": 74
+        },
+        {
+          "hour": 15,
+          "count": 64
+        },
+        {
+          "hour": 16,
+          "count": 43
+        },
+        {
+          "hour": 17,
+          "count": 28
+        },
+        {
+          "hour": 18,
+          "count": 17
+        },
+        {
+          "hour": 19,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 135
+        },
+        {
+          "dow": 1,
+          "count": 128
+        },
+        {
+          "dow": 2,
+          "count": 138
+        },
+        {
+          "dow": 3,
+          "count": 146
+        },
+        {
+          "dow": 4,
+          "count": 135
+        },
+        {
+          "dow": 5,
+          "count": 152
+        },
+        {
+          "dow": 6,
+          "count": 181
+        }
+      ],
+      "ll_typical_shift_mins": 40.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 27.43
     },
     {
       "ride_id": "e76c93df-31af-49a5-8e2f-752c76c937c9",
@@ -52921,7 +56857,13 @@
           "start_hour": 13,
           "start_dow": 1
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "7c5e1e02-3a44-4151-9005-44066d5ba1da",
@@ -53885,7 +57827,119 @@
           "start_hour": 19,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 246,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 15
+        },
+        {
+          "hour": 1,
+          "count": 9
+        },
+        {
+          "hour": 2,
+          "count": 10
+        },
+        {
+          "hour": 3,
+          "count": 8
+        },
+        {
+          "hour": 4,
+          "count": 9
+        },
+        {
+          "hour": 5,
+          "count": 14
+        },
+        {
+          "hour": 6,
+          "count": 23
+        },
+        {
+          "hour": 7,
+          "count": 25
+        },
+        {
+          "hour": 8,
+          "count": 43
+        },
+        {
+          "hour": 9,
+          "count": 37
+        },
+        {
+          "hour": 10,
+          "count": 12
+        },
+        {
+          "hour": 11,
+          "count": 5
+        },
+        {
+          "hour": 12,
+          "count": 8
+        },
+        {
+          "hour": 13,
+          "count": 4
+        },
+        {
+          "hour": 14,
+          "count": 2
+        },
+        {
+          "hour": 15,
+          "count": 5
+        },
+        {
+          "hour": 16,
+          "count": 6
+        },
+        {
+          "hour": 17,
+          "count": 6
+        },
+        {
+          "hour": 18,
+          "count": 5
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 32
+        },
+        {
+          "dow": 1,
+          "count": 24
+        },
+        {
+          "dow": 2,
+          "count": 45
+        },
+        {
+          "dow": 3,
+          "count": 50
+        },
+        {
+          "dow": 4,
+          "count": 44
+        },
+        {
+          "dow": 5,
+          "count": 19
+        },
+        {
+          "dow": 6,
+          "count": 32
+        }
+      ],
+      "ll_typical_shift_mins": 5.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 6.65
     },
     {
       "ride_id": "34c4916b-989b-4ff1-a7e3-a6a846a3484f",
@@ -54844,7 +58898,127 @@
           "start_hour": 17,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 1240,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 40
+        },
+        {
+          "hour": 1,
+          "count": 22
+        },
+        {
+          "hour": 2,
+          "count": 6
+        },
+        {
+          "hour": 3,
+          "count": 4
+        },
+        {
+          "hour": 4,
+          "count": 5
+        },
+        {
+          "hour": 5,
+          "count": 25
+        },
+        {
+          "hour": 6,
+          "count": 39
+        },
+        {
+          "hour": 7,
+          "count": 89
+        },
+        {
+          "hour": 8,
+          "count": 132
+        },
+        {
+          "hour": 9,
+          "count": 106
+        },
+        {
+          "hour": 10,
+          "count": 126
+        },
+        {
+          "hour": 11,
+          "count": 103
+        },
+        {
+          "hour": 12,
+          "count": 103
+        },
+        {
+          "hour": 13,
+          "count": 106
+        },
+        {
+          "hour": 14,
+          "count": 103
+        },
+        {
+          "hour": 15,
+          "count": 78
+        },
+        {
+          "hour": 16,
+          "count": 55
+        },
+        {
+          "hour": 17,
+          "count": 38
+        },
+        {
+          "hour": 18,
+          "count": 34
+        },
+        {
+          "hour": 19,
+          "count": 19
+        },
+        {
+          "hour": 20,
+          "count": 7
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 203
+        },
+        {
+          "dow": 1,
+          "count": 187
+        },
+        {
+          "dow": 2,
+          "count": 172
+        },
+        {
+          "dow": 3,
+          "count": 129
+        },
+        {
+          "dow": 4,
+          "count": 136
+        },
+        {
+          "dow": 5,
+          "count": 171
+        },
+        {
+          "dow": 6,
+          "count": 242
+        }
+      ],
+      "ll_typical_shift_mins": 25.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 34.44
     },
     {
       "ride_id": "ee070d46-6a64-41c0-9f12-69dcfcca10a0",
@@ -55578,7 +59752,13 @@
           "start_hour": 17,
           "start_dow": 0
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "22f48b73-01df-460e-8969-9eb2b4ae836c",
@@ -56402,7 +60582,13 @@
           "wait": 7
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "24cf863c-b6ba-4826-a056-0b698989cbf7",
@@ -57208,7 +61394,123 @@
           "start_hour": 14,
           "start_dow": 4
         }
-      ]
+      ],
+      "ll_drops_total": 838,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 49
+        },
+        {
+          "hour": 1,
+          "count": 39
+        },
+        {
+          "hour": 2,
+          "count": 22
+        },
+        {
+          "hour": 3,
+          "count": 19
+        },
+        {
+          "hour": 4,
+          "count": 20
+        },
+        {
+          "hour": 5,
+          "count": 24
+        },
+        {
+          "hour": 6,
+          "count": 47
+        },
+        {
+          "hour": 7,
+          "count": 82
+        },
+        {
+          "hour": 8,
+          "count": 104
+        },
+        {
+          "hour": 9,
+          "count": 100
+        },
+        {
+          "hour": 10,
+          "count": 69
+        },
+        {
+          "hour": 11,
+          "count": 51
+        },
+        {
+          "hour": 12,
+          "count": 48
+        },
+        {
+          "hour": 13,
+          "count": 43
+        },
+        {
+          "hour": 14,
+          "count": 28
+        },
+        {
+          "hour": 15,
+          "count": 31
+        },
+        {
+          "hour": 16,
+          "count": 25
+        },
+        {
+          "hour": 17,
+          "count": 24
+        },
+        {
+          "hour": 18,
+          "count": 12
+        },
+        {
+          "hour": 19,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 127
+        },
+        {
+          "dow": 1,
+          "count": 94
+        },
+        {
+          "dow": 2,
+          "count": 106
+        },
+        {
+          "dow": 3,
+          "count": 171
+        },
+        {
+          "dow": 4,
+          "count": 86
+        },
+        {
+          "dow": 5,
+          "count": 124
+        },
+        {
+          "dow": 6,
+          "count": 130
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 35,
+      "ll_drops_per_active_day": 23.94
     },
     {
       "ride_id": "3b290419-8ca2-44bc-a710-a6c83fca76ec",
@@ -58131,7 +62433,127 @@
           "start_hour": 8,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 586,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 31
+        },
+        {
+          "hour": 1,
+          "count": 18
+        },
+        {
+          "hour": 2,
+          "count": 7
+        },
+        {
+          "hour": 3,
+          "count": 11
+        },
+        {
+          "hour": 4,
+          "count": 6
+        },
+        {
+          "hour": 5,
+          "count": 13
+        },
+        {
+          "hour": 6,
+          "count": 29
+        },
+        {
+          "hour": 7,
+          "count": 70
+        },
+        {
+          "hour": 8,
+          "count": 85
+        },
+        {
+          "hour": 9,
+          "count": 112
+        },
+        {
+          "hour": 10,
+          "count": 37
+        },
+        {
+          "hour": 11,
+          "count": 26
+        },
+        {
+          "hour": 12,
+          "count": 26
+        },
+        {
+          "hour": 13,
+          "count": 25
+        },
+        {
+          "hour": 14,
+          "count": 32
+        },
+        {
+          "hour": 15,
+          "count": 27
+        },
+        {
+          "hour": 16,
+          "count": 11
+        },
+        {
+          "hour": 17,
+          "count": 13
+        },
+        {
+          "hour": 18,
+          "count": 3
+        },
+        {
+          "hour": 19,
+          "count": 1
+        },
+        {
+          "hour": 20,
+          "count": 3
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 48
+        },
+        {
+          "dow": 1,
+          "count": 73
+        },
+        {
+          "dow": 2,
+          "count": 92
+        },
+        {
+          "dow": 3,
+          "count": 106
+        },
+        {
+          "dow": 4,
+          "count": 93
+        },
+        {
+          "dow": 5,
+          "count": 105
+        },
+        {
+          "dow": 6,
+          "count": 69
+        }
+      ],
+      "ll_typical_shift_mins": 15.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 15.84
     },
     {
       "ride_id": "6fd1e225-53a0-4a80-a577-4bbc9a471075",
@@ -59042,7 +63464,13 @@
           "start_hour": 11,
           "start_dow": 1
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "5b6475ad-4e9a-4793-b841-501aa382c9c0",
@@ -59953,7 +64381,127 @@
           "start_hour": 13,
           "start_dow": 2
         }
-      ]
+      ],
+      "ll_drops_total": 1263,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 36
+        },
+        {
+          "hour": 1,
+          "count": 26
+        },
+        {
+          "hour": 2,
+          "count": 11
+        },
+        {
+          "hour": 3,
+          "count": 12
+        },
+        {
+          "hour": 4,
+          "count": 5
+        },
+        {
+          "hour": 5,
+          "count": 23
+        },
+        {
+          "hour": 6,
+          "count": 49
+        },
+        {
+          "hour": 7,
+          "count": 68
+        },
+        {
+          "hour": 8,
+          "count": 103
+        },
+        {
+          "hour": 9,
+          "count": 127
+        },
+        {
+          "hour": 10,
+          "count": 108
+        },
+        {
+          "hour": 11,
+          "count": 125
+        },
+        {
+          "hour": 12,
+          "count": 112
+        },
+        {
+          "hour": 13,
+          "count": 92
+        },
+        {
+          "hour": 14,
+          "count": 89
+        },
+        {
+          "hour": 15,
+          "count": 87
+        },
+        {
+          "hour": 16,
+          "count": 74
+        },
+        {
+          "hour": 17,
+          "count": 62
+        },
+        {
+          "hour": 18,
+          "count": 42
+        },
+        {
+          "hour": 19,
+          "count": 11
+        },
+        {
+          "hour": 20,
+          "count": 1
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 175
+        },
+        {
+          "dow": 1,
+          "count": 189
+        },
+        {
+          "dow": 2,
+          "count": 183
+        },
+        {
+          "dow": 3,
+          "count": 172
+        },
+        {
+          "dow": 4,
+          "count": 173
+        },
+        {
+          "dow": 5,
+          "count": 174
+        },
+        {
+          "dow": 6,
+          "count": 197
+        }
+      ],
+      "ll_typical_shift_mins": 55.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 34.14
     },
     {
       "ride_id": "9211adc9-b296-4667-8e97-b40cf76108e4",
@@ -60713,7 +65261,13 @@
           "start_hour": 10,
           "start_dow": 5
         }
-      ]
+      ],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "482169b9-2889-4747-8aef-f9d13a37d940",
@@ -61290,7 +65844,13 @@
           "n_active": 500
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "57acb522-a6fc-4aa4-a80e-21f21f317250",
@@ -61996,7 +66556,123 @@
           "wait": 15
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": 564,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 8
+        },
+        {
+          "hour": 1,
+          "count": 2
+        },
+        {
+          "hour": 2,
+          "count": 2
+        },
+        {
+          "hour": 3,
+          "count": 3
+        },
+        {
+          "hour": 4,
+          "count": 3
+        },
+        {
+          "hour": 5,
+          "count": 10
+        },
+        {
+          "hour": 6,
+          "count": 11
+        },
+        {
+          "hour": 7,
+          "count": 20
+        },
+        {
+          "hour": 8,
+          "count": 39
+        },
+        {
+          "hour": 9,
+          "count": 85
+        },
+        {
+          "hour": 10,
+          "count": 90
+        },
+        {
+          "hour": 11,
+          "count": 93
+        },
+        {
+          "hour": 12,
+          "count": 52
+        },
+        {
+          "hour": 13,
+          "count": 39
+        },
+        {
+          "hour": 14,
+          "count": 29
+        },
+        {
+          "hour": 15,
+          "count": 21
+        },
+        {
+          "hour": 16,
+          "count": 28
+        },
+        {
+          "hour": 17,
+          "count": 18
+        },
+        {
+          "hour": 18,
+          "count": 7
+        },
+        {
+          "hour": 19,
+          "count": 4
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 48
+        },
+        {
+          "dow": 1,
+          "count": 89
+        },
+        {
+          "dow": 2,
+          "count": 75
+        },
+        {
+          "dow": 3,
+          "count": 113
+        },
+        {
+          "dow": 4,
+          "count": 91
+        },
+        {
+          "dow": 5,
+          "count": 86
+        },
+        {
+          "dow": 6,
+          "count": 62
+        }
+      ],
+      "ll_typical_shift_mins": 20.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 15.24
     },
     {
       "ride_id": "d56506e2-6ad3-443a-8065-fea37987248d",
@@ -62923,7 +67599,127 @@
           "start_hour": 13,
           "start_dow": 6
         }
-      ]
+      ],
+      "ll_drops_total": 1604,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 49
+        },
+        {
+          "hour": 1,
+          "count": 19
+        },
+        {
+          "hour": 2,
+          "count": 5
+        },
+        {
+          "hour": 3,
+          "count": 7
+        },
+        {
+          "hour": 4,
+          "count": 10
+        },
+        {
+          "hour": 5,
+          "count": 31
+        },
+        {
+          "hour": 6,
+          "count": 51
+        },
+        {
+          "hour": 7,
+          "count": 79
+        },
+        {
+          "hour": 8,
+          "count": 150
+        },
+        {
+          "hour": 9,
+          "count": 198
+        },
+        {
+          "hour": 10,
+          "count": 155
+        },
+        {
+          "hour": 11,
+          "count": 145
+        },
+        {
+          "hour": 12,
+          "count": 131
+        },
+        {
+          "hour": 13,
+          "count": 132
+        },
+        {
+          "hour": 14,
+          "count": 102
+        },
+        {
+          "hour": 15,
+          "count": 98
+        },
+        {
+          "hour": 16,
+          "count": 90
+        },
+        {
+          "hour": 17,
+          "count": 77
+        },
+        {
+          "hour": 18,
+          "count": 49
+        },
+        {
+          "hour": 19,
+          "count": 22
+        },
+        {
+          "hour": 20,
+          "count": 4
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 223
+        },
+        {
+          "dow": 1,
+          "count": 230
+        },
+        {
+          "dow": 2,
+          "count": 247
+        },
+        {
+          "dow": 3,
+          "count": 224
+        },
+        {
+          "dow": 4,
+          "count": 224
+        },
+        {
+          "dow": 5,
+          "count": 225
+        },
+        {
+          "dow": 6,
+          "count": 231
+        }
+      ],
+      "ll_typical_shift_mins": 50.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 44.56
     },
     {
       "ride_id": "81b15dfd-cf6a-466f-be59-3dd65d2a2807",
@@ -63823,7 +68619,127 @@
           "wait": 28
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": 1638,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 54
+        },
+        {
+          "hour": 1,
+          "count": 47
+        },
+        {
+          "hour": 2,
+          "count": 27
+        },
+        {
+          "hour": 3,
+          "count": 19
+        },
+        {
+          "hour": 4,
+          "count": 22
+        },
+        {
+          "hour": 5,
+          "count": 33
+        },
+        {
+          "hour": 6,
+          "count": 69
+        },
+        {
+          "hour": 7,
+          "count": 84
+        },
+        {
+          "hour": 8,
+          "count": 137
+        },
+        {
+          "hour": 9,
+          "count": 191
+        },
+        {
+          "hour": 10,
+          "count": 135
+        },
+        {
+          "hour": 11,
+          "count": 130
+        },
+        {
+          "hour": 12,
+          "count": 131
+        },
+        {
+          "hour": 13,
+          "count": 123
+        },
+        {
+          "hour": 14,
+          "count": 118
+        },
+        {
+          "hour": 15,
+          "count": 112
+        },
+        {
+          "hour": 16,
+          "count": 82
+        },
+        {
+          "hour": 17,
+          "count": 57
+        },
+        {
+          "hour": 18,
+          "count": 40
+        },
+        {
+          "hour": 19,
+          "count": 24
+        },
+        {
+          "hour": 20,
+          "count": 3
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 261
+        },
+        {
+          "dow": 1,
+          "count": 231
+        },
+        {
+          "dow": 2,
+          "count": 279
+        },
+        {
+          "dow": 3,
+          "count": 203
+        },
+        {
+          "dow": 4,
+          "count": 207
+        },
+        {
+          "dow": 5,
+          "count": 208
+        },
+        {
+          "dow": 6,
+          "count": 249
+        }
+      ],
+      "ll_typical_shift_mins": 70.0,
+      "ll_active_days": 36,
+      "ll_drops_per_active_day": 45.5
     },
     {
       "ride_id": "32e01181-9a5f-4936-8a77-0dace1de836c",
@@ -64497,7 +69413,115 @@
           "wait": 10
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": 1322,
+      "ll_drop_hours": [
+        {
+          "hour": 0,
+          "count": 86
+        },
+        {
+          "hour": 1,
+          "count": 64
+        },
+        {
+          "hour": 2,
+          "count": 23
+        },
+        {
+          "hour": 3,
+          "count": 27
+        },
+        {
+          "hour": 4,
+          "count": 22
+        },
+        {
+          "hour": 5,
+          "count": 42
+        },
+        {
+          "hour": 6,
+          "count": 84
+        },
+        {
+          "hour": 7,
+          "count": 120
+        },
+        {
+          "hour": 8,
+          "count": 188
+        },
+        {
+          "hour": 9,
+          "count": 195
+        },
+        {
+          "hour": 10,
+          "count": 125
+        },
+        {
+          "hour": 11,
+          "count": 126
+        },
+        {
+          "hour": 12,
+          "count": 99
+        },
+        {
+          "hour": 13,
+          "count": 55
+        },
+        {
+          "hour": 14,
+          "count": 37
+        },
+        {
+          "hour": 15,
+          "count": 18
+        },
+        {
+          "hour": 16,
+          "count": 6
+        },
+        {
+          "hour": 17,
+          "count": 5
+        }
+      ],
+      "ll_drop_dow": [
+        {
+          "dow": 0,
+          "count": 185
+        },
+        {
+          "dow": 1,
+          "count": 190
+        },
+        {
+          "dow": 2,
+          "count": 170
+        },
+        {
+          "dow": 3,
+          "count": 193
+        },
+        {
+          "dow": 4,
+          "count": 177
+        },
+        {
+          "dow": 5,
+          "count": 188
+        },
+        {
+          "dow": 6,
+          "count": 219
+        }
+      ],
+      "ll_typical_shift_mins": 40.0,
+      "ll_active_days": 37,
+      "ll_drops_per_active_day": 35.73
     },
     {
       "ride_id": "f010bc01-b450-4476-a5f3-a5f2813104b2",
@@ -65616,7 +70640,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "90d79335-c907-4069-a021-d0fe1ec73ae2",
@@ -66735,7 +71765,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "888fb4a4-7adf-47a1-8ba2-c258cc64fd75",
@@ -67076,7 +72112,13 @@
           "n_active": 449
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "de737ffc-306b-4f32-8bbb-34e5d370ec8f",
@@ -67367,7 +72409,13 @@
           "n_active": 65
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "8f8746cb-c714-4c60-848d-e2dc4e6f586b",
@@ -68486,7 +73534,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "3e5f26ee-c02d-47fd-891e-5e4479073444",
@@ -69605,7 +74659,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "2ecc4fff-2994-476f-9926-24a4af173838",
@@ -70724,7 +75784,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "1f542745-cda1-4786-a536-5fff373e5964",
@@ -71843,7 +76909,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "66ff36de-9cb3-4d9a-b891-1665d19ffb3e",
@@ -72962,7 +78034,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "3d8f8f8f-f984-4d2e-8dea-5a79432bdf05",
@@ -74081,7 +79159,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "4f0df9e7-d4c1-45b5-93e2-4a7bc92547b0",
@@ -75200,7 +80284,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "9053240b-7f7f-44fe-970b-bd7956cd5d4f",
@@ -76319,7 +81409,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "6f1d3b25-42c9-4e99-9dce-6c20d7a5deea",
@@ -77438,7 +82534,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "18c533d6-a395-4ae4-9488-80fce9c497fe",
@@ -78557,7 +83659,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "7969166f-feef-4350-b26e-6a6c745528f4",
@@ -79676,7 +84784,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "07dbeaea-85fa-45f2-872f-02f9e7510419",
@@ -80795,7 +85909,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "0f40274d-420a-425a-9377-29fd6e49484f",
@@ -81914,7 +87034,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "3ace01d1-15fc-4fbb-99e4-81a696cb2d05",
@@ -83033,7 +88159,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "d7669edc-eaa1-4af2-bbb5-6e98df564166",
@@ -83640,7 +88772,13 @@
           "n_active": 302
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "bc1ffa86-9b1a-4ce9-84a5-b479dfa3cb53",
@@ -84759,7 +89897,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "6ef1b126-5b0b-46a1-8608-4fcf98ab92c8",
@@ -85878,7 +91022,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "bc997600-fcc0-4f6f-b908-a1419b26cfd8",
@@ -86997,7 +92147,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     },
     {
       "ride_id": "4d27b0d7-2b0a-4569-90fa-e79f117ec7ef",
@@ -88116,7 +93272,13 @@
           "n_active": 445
         }
       ],
-      "down_clusters": []
+      "down_clusters": [],
+      "ll_drops_total": null,
+      "ll_drop_hours": null,
+      "ll_drop_dow": null,
+      "ll_typical_shift_mins": null,
+      "ll_active_days": null,
+      "ll_drops_per_active_day": null
     }
   ],
   "heatmaps": {

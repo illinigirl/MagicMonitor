@@ -159,6 +159,22 @@ def main() -> None:
         f"({n_long:,} long ≥{LONG_CLUSTER_MINUTES}m, the rest flap-style)"
     )
 
+    # --- pass 1c: Lightning Lane drop patterns per ride ---
+    # An LL "drop" is a same-day event where Disney moves a ride's
+    # next-available return time earlier (cancellations / no-shows /
+    # refreshes). These are the moments a guest can grab a better
+    # slot through the app. The Pi captures every LL state change to
+    # ll_history; here we aggregate into drop hours, dow patterns, and
+    # typical shift size so the MCP planner can advise guests when to
+    # check for swap opportunities.
+    ll_drops_by_ride = _compute_ll_drop_analytics(con)
+    n_rides_with_drops = len(ll_drops_by_ride)
+    n_drops_total = sum(d["ll_drops_total"] for d in ll_drops_by_ride.values())
+    print(
+        f"  LL drop analytics: {n_drops_total:,} drops across "
+        f"{n_rides_with_drops} rides"
+    )
+
     # --- pass 2: stream wait_history, bucket in Python ---
     # Per-ride accumulators
     ride_total = defaultdict(int)
@@ -330,6 +346,7 @@ def main() -> None:
                     )
                 dow_hourly.append(cell)
 
+        ll_drops = ll_drops_by_ride.get(ride_id, {})
         rides_list.append(
             {
                 "ride_id": ride_id,
@@ -345,6 +362,18 @@ def main() -> None:
                 "hourly_downtime": hourly_downtime,
                 "dow_hourly": dow_hourly,
                 "down_clusters": clusters_by_ride.get(ride_id, []),
+                # LL drop analytics: present only for rides that had
+                # any drops in the window. Rides without LL offerings
+                # (or with too few drops to characterize) omit the
+                # whole block rather than emitting zeros.
+                "ll_drops_total": ll_drops.get("ll_drops_total"),
+                "ll_drop_hours": ll_drops.get("ll_drop_hours"),
+                "ll_drop_dow": ll_drops.get("ll_drop_dow"),
+                "ll_typical_shift_mins": ll_drops.get("ll_typical_shift_mins"),
+                "ll_active_days": ll_drops.get("ll_active_days"),
+                "ll_drops_per_active_day": ll_drops.get(
+                    "ll_drops_per_active_day"
+                ),
             }
         )
 
@@ -618,6 +647,117 @@ def _detect_down_clusters(
 
     close()
     return dict(clusters_by_ride), dict(long_cluster_polls)
+
+
+def _compute_ll_drop_analytics(con: sqlite3.Connection) -> dict[str, dict]:
+    """Per-ride Lightning Lane drop pattern aggregations.
+
+    A "drop" is an LL state change where Disney moves a ride's
+    next-available return time EARLIER on the same calendar day:
+      - both old_return_time and new_return_time present
+      - new_return_time < old_return_time
+      - both states are AVAILABLE (filters out SOLD_OUT transitions
+        and other state-only changes that aren't actionable for guests)
+      - all three timestamps (changed_at, old return, new return)
+        fall on the same ET calendar date (excludes overnight resets
+        where yesterday's late slot rolls to today's morning slot —
+        those aren't actionable drops a guest can grab)
+
+    For each ride that had any drops in the snapshot window, returns:
+      ll_drops_total: total same-day drops observed
+      ll_drop_hours: histogram by ET hour of day [{hour, count}, ...]
+      ll_drop_dow: histogram by day of week (0=Sun..6=Sat to match
+        the rest of the snapshot's dow convention) [{dow, count}, ...]
+      ll_typical_shift_mins: median time-shift in minutes (how much
+        earlier the slot typically moves on a drop)
+      ll_active_days: distinct ET days the ride had any LL data
+      ll_drops_per_active_day: drops_total / active_days, a rough
+        "how often does this ride's LL refresh on a given day" baseline
+
+    Rides with zero drops are absent from the returned dict — caller
+    treats absence as "no drop data" rather than "zero drops" (could
+    mean no LL offering at all, not necessarily that Disney never
+    refreshes the slot).
+    """
+    out: dict[str, dict] = defaultdict(lambda: {
+        "ll_drops_total": 0,
+        "drop_hours": defaultdict(int),
+        "drop_dow": defaultdict(int),
+        "shifts": [],
+    })
+    active_days_by_ride: dict[str, set] = defaultdict(set)
+
+    cursor = con.execute("""
+        SELECT ride_id, old_state, new_state,
+               old_return_time, new_return_time, changed_at
+        FROM ll_history
+        WHERE old_return_time IS NOT NULL AND new_return_time IS NOT NULL
+    """)
+
+    for ride_id, old_state, new_state, old_rt, new_rt, changed_at in cursor:
+        try:
+            changed_dt = datetime.fromisoformat(changed_at).astimezone(EASTERN)
+        except (ValueError, AttributeError):
+            continue
+        # Track "active days" using every LL row, not just drops —
+        # gives us a rate-per-day denominator that reflects how
+        # often the ride's LL system was active at all.
+        active_days_by_ride[ride_id].add(changed_dt.date())
+
+        # Only AVAILABLE→AVAILABLE return-time changes count as drops.
+        if old_state != "AVAILABLE" or new_state != "AVAILABLE":
+            continue
+        try:
+            old_dt = datetime.fromisoformat(old_rt).astimezone(EASTERN)
+            new_dt = datetime.fromisoformat(new_rt).astimezone(EASTERN)
+        except ValueError:
+            continue
+        if new_dt >= old_dt:
+            continue  # not a drop (slot moved later or unchanged)
+        # All three timestamps must be the same ET date
+        if not (
+            old_dt.date() == new_dt.date() == changed_dt.date()
+        ):
+            continue
+
+        d = out[ride_id]
+        d["ll_drops_total"] += 1
+        d["drop_hours"][changed_dt.hour] += 1
+        # Python weekday(): Mon=0..Sun=6. Convert to SQLite strftime
+        # convention 0=Sun..6=Sat to match the rest of the snapshot.
+        sqlite_dow = (changed_dt.weekday() + 1) % 7
+        d["drop_dow"][sqlite_dow] += 1
+        shift_mins = (old_dt - new_dt).total_seconds() / 60
+        d["shifts"].append(shift_mins)
+
+    finalized: dict[str, dict] = {}
+    for ride_id, d in out.items():
+        if d["ll_drops_total"] == 0:
+            continue
+        shifts = sorted(d["shifts"])
+        mid = len(shifts) // 2
+        median_shift = (
+            shifts[mid] if len(shifts) % 2 == 1
+            else (shifts[mid - 1] + shifts[mid]) / 2
+        )
+        active = len(active_days_by_ride[ride_id])
+        finalized[ride_id] = {
+            "ll_drops_total": d["ll_drops_total"],
+            "ll_drop_hours": [
+                {"hour": h, "count": c}
+                for h, c in sorted(d["drop_hours"].items())
+            ],
+            "ll_drop_dow": [
+                {"dow": dow, "count": c}
+                for dow, c in sorted(d["drop_dow"].items())
+            ],
+            "ll_typical_shift_mins": round(median_shift, 1),
+            "ll_active_days": active,
+            "ll_drops_per_active_day": round(
+                d["ll_drops_total"] / active, 2
+            ) if active > 0 else None,
+        }
+    return finalized
 
 
 def _write_short_wait_baselines(rides_list: list, generated_at: str) -> None:

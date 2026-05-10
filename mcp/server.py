@@ -204,10 +204,10 @@ def hello_magic_monitor() -> str:
         "Hello from Magic Monitor — MCP wiring works. "
         "Available tools: get_park_heatmap, get_ride_analytics, "
         "get_ride_dow_pattern, get_ride_down_clusters, "
-        "get_short_wait_baseline, get_ride_forecast, "
-        "get_live_ride_status, get_park_live_status, "
-        "get_ride_downtime_today, get_planning_context, "
-        "find_rides_matching."
+        "get_ride_ll_drops, get_short_wait_baseline, "
+        "get_ride_forecast, get_live_ride_status, "
+        "get_park_live_status, get_ride_downtime_today, "
+        "get_planning_context, find_rides_matching."
     )
 
 
@@ -428,6 +428,97 @@ def get_ride_down_clusters(ride_name: str) -> dict[str, Any]:
         "total_downtime_minutes": total_downtime,
         "most_common_start": most_common_start,
         "clusters": clusters,
+    }
+
+
+@mcp.tool()
+def get_ride_ll_drops(ride_name: str) -> dict[str, Any]:
+    """Return Lightning Lane drop pattern analytics for one ride.
+
+    Use this to answer trip-planning questions about when LL slots
+    typically refresh — i.e., "when should I check the Disney app to
+    try to grab a better TRON LL slot?" A "drop" is a same-day event
+    where Disney moves the next-available return time earlier
+    (cancellations, no-shows, or system refreshes). Each drop is an
+    opportunity for a guest to swap their current LL for a better
+    slot through the app.
+
+    Sourced from the historical analytics snapshot — currently
+    represents ~5 weeks of poll data. Future enhancement (PROJECT.md):
+    captures LL transitions live in MM's DDB so the pattern stays
+    current beyond the Pi snapshot window.
+
+    For rides that don't have an LL offering (walk-up attractions,
+    no-queue rides, shows) or that didn't accumulate enough drops in
+    the snapshot window to characterize, returns
+    `data_available: false`.
+
+    Args:
+        ride_name: Substring match (case-insensitive). 'big thunder'
+            matches 'Big Thunder Mountain Railroad'.
+
+    Returns:
+        Dict with ride_name, ride_id, total drops in the window,
+        active_days (distinct days the ride had any LL data),
+        drops_per_active_day (rough rate baseline),
+        typical_shift_minutes (median minutes the slot moves earlier
+        on a drop), drop_hours (histogram by ET hour of day), and
+        drop_dow (histogram by day of week, 0=Sun..6=Sat). On no
+        data: ride_name, ride_id, data_available: false.
+    """
+    ride = _find_ride(ride_name)
+    drops_total = ride.get("ll_drops_total")
+    if not drops_total:
+        return {
+            "ride_name": ride["ride_name"],
+            "ride_id": ride["ride_id"],
+            "data_available": False,
+            "explanation": (
+                "No LL drop data in the snapshot for this ride. Most "
+                "likely the ride doesn't offer Lightning Lane (walk-up "
+                "attraction, no-queue ride, or show), or it had too few "
+                "drops to characterize. Rides like Test Track or "
+                "Slinky Dog Dash typically have hundreds of drops in a "
+                "5-week window."
+            ),
+        }
+
+    # Identify top drop hours/dows so the response carries the
+    # interpretive signal Claude needs without it having to re-sort
+    # the histograms itself.
+    drop_hours = ride.get("ll_drop_hours") or []
+    drop_dow = ride.get("ll_drop_dow") or []
+    top_hours = sorted(drop_hours, key=lambda x: -x["count"])[:3]
+    top_dows = sorted(drop_dow, key=lambda x: -x["count"])[:3]
+    dow_names = ["Sunday", "Monday", "Tuesday", "Wednesday",
+                 "Thursday", "Friday", "Saturday"]
+
+    return {
+        "ride_name": ride["ride_name"],
+        "ride_id": ride["ride_id"],
+        "data_available": True,
+        "total_drops": drops_total,
+        "active_days": ride.get("ll_active_days"),
+        "drops_per_active_day": ride.get("ll_drops_per_active_day"),
+        "typical_shift_minutes": ride.get("ll_typical_shift_mins"),
+        "drop_hours": drop_hours,
+        "top_drop_hours": [
+            {"hour": h["hour"], "count": h["count"]}
+            for h in top_hours
+        ],
+        "drop_dow": drop_dow,
+        "top_drop_days": [
+            {"dow": d["dow"], "day_name": dow_names[d["dow"]], "count": d["count"]}
+            for d in top_dows
+        ],
+        "explanation": (
+            "drops_per_active_day tells you how frequently this ride's "
+            "LL slot refreshes earlier. typical_shift_minutes tells you "
+            "how big the typical refresh is (median). top_drop_hours "
+            "is when in the ET day refreshes most commonly happen — "
+            "useful for suggesting when a guest should check the app "
+            "if they want a better slot."
+        ),
     }
 
 
@@ -1416,6 +1507,20 @@ def get_planning_context(
          "specifically 7:15 PM is open." Phrase suggestions
          accordingly.
 
+         When no better slot is currently available, fall back to
+         the historical drop pattern in `ll_drop_pattern.top_drop_hours_et`
+         — these are the ET hours when this ride's LL slot most
+         commonly refreshes (cancellations / no-shows / system
+         refreshes that move return times earlier). Concrete
+         suggestion shape: "Test Track's LL refreshes typically
+         happen around 11 AM, 2 PM, and 5 PM ET — if no better slot
+         is available right now, check the app at those times."
+         `drops_per_active_day` tells you how frequently to expect
+         refreshes (8+ per day is "very active," <1 is "rare").
+         `typical_shift_minutes` tells you how big a refresh
+         usually is — if it's 30 min, the swap window opens up
+         half an hour; if it's 4 hours, the slot can jump dramatically.
+
     1. **Cost-of-delay rule** (most important). The fields you want:
        `forecast_peak_next_3h_mins` (worst forecasted wait in the next
        3 hours) and `forecast_minutes_until_peak` (how soon that peak
@@ -1642,6 +1747,21 @@ def get_planning_context(
         loc = locations.get(rid)
         if loc:
             out["location"] = {"lat": loc["lat"], "lon": loc["lon"]}
+
+        # LL drop pattern (from the historical snapshot) — used by the
+        # planner to suggest when to check the app for a better slot.
+        # Surface a compact summary; full histograms available via
+        # get_ride_ll_drops if Claude wants the breakdown.
+        ll_drops_total = ride.get("ll_drops_total")
+        if ll_drops_total:
+            drop_hours = ride.get("ll_drop_hours") or []
+            top_hours = sorted(drop_hours, key=lambda x: -x["count"])[:3]
+            out["ll_drop_pattern"] = {
+                "drops_per_active_day": ride.get("ll_drops_per_active_day"),
+                "typical_shift_minutes": ride.get("ll_typical_shift_mins"),
+                "top_drop_hours_et": [h["hour"] for h in top_hours],
+                "sample_size_days": ride.get("ll_active_days"),
+            }
 
         if table_error is not None or table is None:
             out.update(table_error or {"error": "DDB unavailable"})
