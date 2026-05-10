@@ -159,6 +159,7 @@ def hello_magic_monitor() -> str:
         "Available tools: get_park_heatmap, get_ride_analytics, "
         "get_ride_dow_pattern, get_ride_down_clusters, "
         "get_short_wait_baseline, get_ride_forecast, "
+        "get_live_ride_status, get_park_live_status, "
         "find_rides_matching."
     )
 
@@ -434,23 +435,14 @@ def get_ride_forecast(ride_name: str) -> dict[str, Any]:
             Limit=1,
         )
     except Exception as e:
-        # Surface the auth-expired case explicitly — by far the most
-        # common failure mode on a personal-dev MCP server. Other
-        # errors fall through with their boto3 message intact so the
-        # client can see what broke.
-        msg = str(e)
-        if "Token has expired" in msg or "ExpiredToken" in msg or "InvalidClientTokenId" in msg:
-            return {
-                "ride_name": ride["ride_name"],
-                "ride_id": rid,
-                "error": "AWS credentials expired",
-                "error_hint": "Run `aws sso login --profile watchtower` and retry.",
-            }
+        err = _aws_error_payload(e)
+        if err is not None:
+            return {"ride_name": ride["ride_name"], "ride_id": rid, **err}
         return {
             "ride_name": ride["ride_name"],
             "ride_id": rid,
             "error": "DynamoDB query failed",
-            "error_message": msg,
+            "error_message": str(e),
         }
 
     items = resp.get("Items", [])
@@ -484,6 +476,203 @@ def get_ride_forecast(ride_name: str) -> dict[str, Any]:
         "forecast_available": True,
         "forecast_entries": len(item.get("forecast", [])),
         "forecast": item.get("forecast", []),
+    }
+
+
+def _aws_error_payload(e: Exception) -> dict[str, Any] | None:
+    """If `e` is a recognizable AWS-auth failure, return a friendly
+    error dict for the tool to surface. Otherwise return None so the
+    caller can re-raise or wrap with its own context.
+
+    Centralized so all live-DDB tools surface the same `aws sso login`
+    hint instead of opaque tracebacks. Personal-dev SSO expiry is by
+    far the most common failure mode here.
+    """
+    msg = str(e)
+    if "Token has expired" in msg or "ExpiredToken" in msg or "InvalidClientTokenId" in msg:
+        return {
+            "error": "AWS credentials expired",
+            "error_hint": "Run `aws sso login --profile watchtower` and retry.",
+        }
+    return None
+
+
+@mcp.tool()
+def get_live_ride_status(ride_name: str) -> dict[str, Any]:
+    """Return the most recent live status of a single ride.
+
+    Live tool — GetItem on the RIDE#<id>/STATE row written by the
+    poller every 2 minutes. Use this when the question is about ONE
+    ride: 'is Space Mountain operating right now?' / 'what's the
+    current wait for Big Thunder?' / 'when did this ride last update?'
+
+    For park-wide queries ('what's down at Magic Kingdom?') use
+    `get_park_live_status` instead — it's a single Scan vs N GetItems.
+
+    Args:
+        ride_name: Substring match (case-insensitive). 'space mountain'
+            matches 'Space Mountain'.
+
+    Returns:
+        Dict with ride_name, ride_id, status, wait_mins, park_name,
+        last_seen (UTC iso), last_forecast_at (when present), and
+        Lightning Lane info when offered. On absence (ride exists in
+        the historical snapshot but the poller hasn't seen it yet,
+        e.g. a brand-new attraction): `live_state_available: false`.
+        On AWS auth failure: a clear error_hint pointing at SSO refresh.
+    """
+    ride = _find_ride(ride_name)
+    rid = ride["ride_id"]
+
+    try:
+        table = _ddb_table()
+        resp = table.get_item(Key={"PK": f"RIDE#{rid}", "SK": "STATE"})
+    except Exception as e:
+        err = _aws_error_payload(e)
+        if err is not None:
+            return {"ride_name": ride["ride_name"], "ride_id": rid, **err}
+        return {
+            "ride_name": ride["ride_name"],
+            "ride_id": rid,
+            "error": "DynamoDB read failed",
+            "error_message": str(e),
+        }
+
+    item = resp.get("Item")
+    if not item:
+        return {
+            "ride_name": ride["ride_name"],
+            "ride_id": rid,
+            "live_state_available": False,
+            "explanation": (
+                "This ride exists in the historical analytics snapshot "
+                "but no STATE row is in DynamoDB yet. The poller writes "
+                "STATE on every 2-min cycle, so a missing row usually "
+                "means the upstream API hasn't returned this attraction "
+                "in any recent poll (could be brand-new or temporarily "
+                "removed from /live)."
+            ),
+        }
+
+    item = _convert_decimals(item)
+    return {
+        "ride_name": item.get("name") or ride["ride_name"],
+        "ride_id": rid,
+        "park_key": item.get("park_key"),
+        "park_name": item.get("park_name"),
+        "status": item.get("status"),
+        "wait_mins": item.get("wait_mins"),
+        "ll": item.get("ll"),
+        "last_seen": item.get("last_seen"),
+        "last_forecast_at": item.get("last_forecast_at"),
+        "live_state_available": True,
+    }
+
+
+@mcp.tool()
+def get_park_live_status(
+    park: str, status_filter: str | None = None
+) -> dict[str, Any]:
+    """Return the current live status of every ride in one park.
+
+    Live tool — Scan with FilterExpression on the DDB table. Use this
+    when the question is about a park or a status across rides:
+    'what's down at Magic Kingdom?' / 'which EPCOT rides have waits
+    over 60 min?' / 'is anything operating at Animal Kingdom right now?'
+
+    Returns rides sorted DOWN-first, then OPERATING by descending wait,
+    then CLOSED/REFURBISHMENT — same order the live web UI uses so
+    the model's response matches what a user sees on
+    magicmonitor.megillini.dev.
+
+    Implementation note (interview-relevant): this is a Scan + filter
+    rather than a Query against a GSI on park_key. At MM's scale (~88
+    rides total across all parks), the entire STATE corpus fits well
+    within DynamoDB's 1MB scan page, so a single round trip beats the
+    GSI's storage + write-amplification cost. A production scale-out
+    (thousands of attractions, multi-tenant) would warrant the GSI.
+
+    Args:
+        park: Park key or human name. Accepts 'magic_kingdom',
+            'Magic Kingdom', 'MK', etc. (See _normalize_park aliases.)
+        status_filter: Optional. One of 'OPERATING', 'DOWN', 'CLOSED',
+            'REFURBISHMENT'. Case-insensitive.
+
+    Returns:
+        Dict with park, optional status_filter echoed back, count of
+        rides matched, and a list of rides each with ride_id, name,
+        status, wait_mins, last_seen. On AWS auth failure: a clear
+        error_hint pointing at SSO refresh.
+    """
+    park_key = _normalize_park(park)
+    valid_statuses = {"OPERATING", "DOWN", "CLOSED", "REFURBISHMENT"}
+    status_norm: str | None = None
+    if status_filter is not None:
+        status_norm = status_filter.strip().upper()
+        if status_norm not in valid_statuses:
+            raise ValueError(
+                f"Unknown status_filter '{status_filter}'. "
+                f"Use one of: {', '.join(sorted(valid_statuses))}."
+            )
+
+    try:
+        table = _ddb_table()
+        # Scan all STATE rows for this park. begins_with on PK isn't
+        # supported by Scan (PK isn't an index here), but FilterExpression
+        # on park_key + SK works and at our scale fits in one page.
+        # Pagination defensively: if MM ever grows past 1MB of STATE
+        # rows we'll see truncation rather than silently dropping rides.
+        items: list[dict] = []
+        scan_kwargs = {
+            "FilterExpression": "SK = :sk AND park_key = :pk",
+            "ExpressionAttributeValues": {":sk": "STATE", ":pk": park_key},
+        }
+        while True:
+            resp = table.scan(**scan_kwargs)
+            items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    except Exception as e:
+        err = _aws_error_payload(e)
+        if err is not None:
+            return {"park": park_key, **err}
+        return {
+            "park": park_key,
+            "error": "DynamoDB scan failed",
+            "error_message": str(e),
+        }
+
+    items = _convert_decimals(items)
+    if status_norm is not None:
+        items = [r for r in items if r.get("status") == status_norm]
+
+    # Sort DOWN-first, then OPERATING desc-by-wait, then CLOSED last —
+    # mirrors the web UI's ordering so the LLM's response feels
+    # consistent with what someone sees on the live site.
+    status_rank = {"DOWN": 0, "REFURBISHMENT": 1, "OPERATING": 2, "CLOSED": 3}
+    def _sort_key(r: dict) -> tuple:
+        rank = status_rank.get(r.get("status", ""), 99)
+        # Negative wait so OPERATING rides sort by descending wait
+        # (longest line first — what guests usually care about).
+        wait = r.get("wait_mins")
+        return (rank, -(wait if isinstance(wait, (int, float)) else -1))
+    items.sort(key=_sort_key)
+
+    return {
+        "park": park_key,
+        "status_filter": status_norm,
+        "count": len(items),
+        "rides": [
+            {
+                "ride_id": r.get("ride_id"),
+                "name": r.get("name"),
+                "status": r.get("status"),
+                "wait_mins": r.get("wait_mins"),
+                "last_seen": r.get("last_seen"),
+            }
+            for r in items
+        ],
     }
 
 

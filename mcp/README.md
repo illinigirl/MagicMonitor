@@ -67,10 +67,16 @@ string. To verify the live-DDB path:
 > What's the wait-time forecast for Big Thunder Mountain right now?
 
 Claude should call `get_ride_forecast`, return the latest forecast
-snapshot, and (with luck) tell you when the wait peaks. If you see
-"AWS credentials expired" instead, run `aws sso login --profile
-watchtower` and try again — Claude Desktop picks up the refreshed
-SSO cache on the next tool call. If you don't see the tool show up at all, common causes:
+snapshot, and (with luck) tell you when the wait peaks. To exercise
+the other live-DDB tools:
+
+> What's currently down at EPCOT?
+>
+> Is Space Mountain operating right now, and what's the wait?
+
+If you see "AWS credentials expired" instead, run `aws sso login
+--profile watchtower` and try again — Claude Desktop picks up the
+refreshed SSO cache on the next tool call. If you don't see the tool show up at all, common causes:
 
 - Forgot to restart Claude Desktop after editing the config.
 - JSON syntax error in `claude_desktop_config.json` (trailing
@@ -94,11 +100,12 @@ DynamoDB table.
 | `get_ride_down_clusters` | snapshot | Contiguous DOWN runs for one ride; flap-style vs structural signal |
 | `get_short_wait_baseline` | snapshot | Per-hour SHORT_WAIT alert thresholds for one ride |
 | `get_ride_forecast` | DDB live | Latest themeparks.wiki forecast snapshot for one ride |
+| `get_live_ride_status` | DDB live | Current live status of one ride (status, wait, LL availability) |
+| `get_park_live_status` | DDB live | Current live status of every ride in one park, optionally filtered |
 | `find_rides_matching` | snapshot | Filter and sort rides by predicates ("low downtime, high avg wait") |
 
 Future tools (planned):
 
-- `get_live_ride_status` — current STATE rows from DynamoDB
 - `get_ride_forecast_history` — multiple poll-snapshots for a ride
   (Phase C: forecast-vs-actual accuracy analysis)
 
