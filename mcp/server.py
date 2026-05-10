@@ -1169,16 +1169,20 @@ def get_planning_context(
        Claude might not naturally know):**
        - The 1-hour window has informal buffers: Disney typically
          allows entry ~5 min before the window opens and ~15 min
-         after it closes, though enforcement varies. Treat the
-         nominal window as the default plan. USE the buffers when
-         it materially improves the plan (saves a cross-park walk,
-         fits an extra ride, etc.) — but when you do, FLAG IT
-         explicitly so the user can decide whether to accept the
-         risk: "This plan uses the late grace for your Pirates LL
-         (you'd tap in at 5:08 PM for a window that closed at
-         5:00). Disney usually allows this but doesn't guarantee
-         it — small chance of being turned away." Don't silently
-         bake buffers in; the user picks risk tolerance.
+         after it closes, though enforcement varies. **Default
+         policy: use these buffers strategically when they
+         materially improve the plan** (saves a cross-park walk,
+         fits an extra ride, avoids skipping a marquee attraction).
+         Most experienced guests routinely use the grace and it's
+         reliable enough to plan against. NOTE the assumption ONCE
+         per itinerary: "Plan assumes typical Disney grace on LL
+         windows (~5 min early / ~15 min late). If grace tightens
+         on a given day, fall back to the nominal windows."
+         Don't re-flag for every individual ride — that's noise.
+         Switch to conservative-only (nominal windows, no grace)
+         only when the user explicitly asks, OR when the buffer
+         use is unusually aggressive (more than 10 min outside the
+         nominal window on either side).
        - The LL line itself is NOT zero-wait. Plan ~10-15 min for
          the LL queue (can hit 20-25 min during peak hours). Total
          time from "tap in" to "off the ride" is usually ~25-30 min.
