@@ -112,7 +112,8 @@ def hello_magic_monitor() -> str:
     return (
         "Hello from Magic Monitor — MCP wiring works. "
         "Available tools: get_park_heatmap, get_ride_analytics, "
-        "get_ride_dow_pattern, get_short_wait_baseline, find_rides_matching."
+        "get_ride_dow_pattern, get_ride_down_clusters, "
+        "get_short_wait_baseline, find_rides_matching."
     )
 
 
@@ -273,6 +274,66 @@ def get_ride_dow_pattern(
         "day_of_week": _DOW_NAMES[dow_filter] if dow_filter is not None else None,
         "cell_count": len(cells),
         "cells": cells,
+    }
+
+
+@mcp.tool()
+def get_ride_down_clusters(ride_name: str) -> dict[str, Any]:
+    """Return the contiguous DOWN runs ('clusters') detected for a ride.
+
+    Use this to investigate whether a ride's downtime looks 'structural'
+    (long sustained DOWN periods recurring at consistent times) or
+    'flap-style' (many short DOWN events scattered throughout the data
+    window). High clustering at consistent (dow, hour) IS a signal,
+    not a diagnosis — possible causes include scheduled maintenance,
+    inspections, multi-week mechanical issues right before refurb, or
+    upstream API quirks. The data alone can't determine which.
+
+    Companion to get_ride_dow_pattern: each cell's
+    `recurring_down_fraction` tells you what fraction of that bucket's
+    DOWN polls were part of a long cluster.
+
+    Args:
+        ride_name: Substring match (case-insensitive).
+
+    Returns:
+        Dict with ride_name, ride_id, cluster_count, and a list of
+        clusters each with start_ts, end_ts, duration_minutes,
+        poll_count, start_hour (0-23 ET), and start_dow (0=Sun..6=Sat,
+        park-day-shifted). Includes summary stats: total downtime
+        across clusters, count of long clusters (≥2h), and the most
+        common (dow, hour) start pair if one exists.
+    """
+    ride = _find_ride(ride_name)
+    clusters = ride.get("down_clusters", [])
+
+    # Compute simple summary stats so the model has a header it can
+    # reason about without iterating the full cluster list itself.
+    total_downtime = sum(c["duration_minutes"] for c in clusters)
+    long_count = sum(1 for c in clusters if c["duration_minutes"] >= 120)
+    # Most common (dow, hour) start — recurring-time signal.
+    from collections import Counter
+    start_counter = Counter(
+        (c["start_dow"], c["start_hour"]) for c in clusters
+    )
+    most_common_start = None
+    if start_counter:
+        (top_dow, top_hour), top_n = start_counter.most_common(1)[0]
+        if top_n >= 2:  # only meaningful if it repeats
+            most_common_start = {
+                "dow": top_dow,
+                "hour": top_hour,
+                "occurrences": top_n,
+                "out_of_total_clusters": len(clusters),
+            }
+    return {
+        "ride_name": ride["ride_name"],
+        "ride_id": ride["ride_id"],
+        "cluster_count": len(clusters),
+        "long_cluster_count": long_count,
+        "total_downtime_minutes": total_downtime,
+        "most_common_start": most_common_start,
+        "clusters": clusters,
     }
 
 

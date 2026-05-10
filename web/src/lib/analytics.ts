@@ -39,6 +39,13 @@ export interface RideAnalytics {
    * show only the buckets where the data is meaningful.
    */
   dow_hourly: RideDowHourCell[];
+  /**
+   * Contiguous DOWN runs detected for this ride, sorted by start_ts.
+   * Only clusters lasting ≥30 min are included; single-poll flaps are
+   * not "clusters." See PROJECT.md M6 cluster-detection notes for the
+   * filtering criteria.
+   */
+  down_clusters: RideDownCluster[];
 }
 
 export interface RideDowHourCell {
@@ -52,6 +59,29 @@ export interface RideDowHourCell {
   n_active: number;
   /** Avg operating-only wait minutes. Omitted when no operating polls. */
   wait?: number;
+  /**
+   * Of the DOWN polls in this bucket, what fraction were part of a
+   * "long" cluster (≥2h)? 1.0 = sustained recurring-looking pattern;
+   * 0.0 = all DOWN polls were flap-style. Omitted when n_down=0.
+   * Critically, this is a SIGNAL, not a label — a high value means
+   * "this looks structural" not "this is scheduled maintenance."
+   */
+  recurring_down_fraction?: number;
+}
+
+export interface RideDownCluster {
+  /** ISO datetime UTC at the start of the DOWN run. */
+  start_ts: string;
+  /** ISO datetime UTC at the last DOWN poll in the run. */
+  end_ts: string;
+  /** Duration from start to end in minutes (rounded). */
+  duration_minutes: number;
+  /** Number of DOWN polls within the cluster. */
+  poll_count: number;
+  /** Hour-of-day (0-23 ET) at start_ts. */
+  start_hour: number;
+  /** Park-day-shifted dow (0=Sun..6=Sat) at start_ts. */
+  start_dow: number;
 }
 
 export interface HeatmapCell {

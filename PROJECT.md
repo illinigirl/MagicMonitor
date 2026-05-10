@@ -205,6 +205,48 @@ Each milestone ships something demo-able; even partial completion
 - Public read-only stats page (no sign-in needed)
 - Mobile push notifications via Web Push (alternative to Pushover)
 
+#### M8 — Calendar Intelligence (~1 week, scoped post-M6-B)
+
+Extend the analytics dimensional model with calendar context so
+"Sunday at 2pm" stops being a 57-day-window average and becomes
+filterable by month, season, US holidays, school breaks, and
+Disney-specific events (EPCOT festivals, Halloween/Christmas
+parties). Real-world wait patterns vary dramatically with these
+factors — a Sunday-2pm in March is structurally different from a
+Sunday-2pm in July or in mid-December.
+
+Schema additions:
+- Calendar dimension: `(date, dow, week_of_year, month, season,
+  is_weekend)` — pure derivation.
+- US holiday flags via Python's `holidays` package.
+- School-cycle flags: spring break (state-by-state hardcoded
+  ranges), summer break, winter break, Jersey Week.
+- Disney-event ranges: Festival of the Arts, Flower & Garden, Food
+  & Wine, Festival of the Holidays, MNSSHP, MVMCP. ~12 rows/year,
+  manual but stable.
+- Optional: Touring Plans crowd-calendar score (external dataset).
+- Optional: NWS historical weather (free).
+
+Aggregator extension: per-(ride, dow, hour, calendar-cohort) cells
+*when sample size justifies*, falling back to coarser cells when
+not. The data-engineering judgment call here — over-segmenting
+thin data produces confident-looking but unreliable answers — is
+worth surfacing in interviews.
+
+MCP tool: `get_ride_pattern(ride_name, cohort_filter)` accepting
+cohort predicates like `{"month": "july"}` or
+`{"festival": "food_and_wine"}` or `{"holiday_week": true}`.
+
+Date-segmented heatmap UI: toggle "all data" / "summer only" /
+"non-holiday weekends" / etc.
+
+**Blocked on dataset depth.** With <1 year of data, fine-grained
+cohort filtering produces statistically thin cells. M8 is shippable
+when the union of Pi-historical + MM-native data covers ≥12 months
+across the right mix of seasons / holidays / events. M6-B (live
+data plane) is what gets MM-native data accumulating; M8 follows
+naturally a few months later.
+
 ## Recommended ordering rationale
 
 - **M2-B before M3:** M3 (per-user toggles) requires auth. M2-B

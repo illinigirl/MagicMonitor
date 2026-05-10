@@ -87,6 +87,17 @@ MIN_HEATMAP_CELL_POLLS = 20
 # safe cutoff — no WDW park has ever operated past 3am.
 PARK_DAY_BOUNDARY_HOUR = 4
 
+# DOWN-cluster detection. A "cluster" is a contiguous run of DOWN
+# polls (gaps up to GAP_TOLERANCE_MINUTES allowed — 2-min poll cadence
+# means a single missed poll shouldn't break a cluster) lasting at
+# least MIN_CLUSTER_MINUTES. Single 2-min DOWN flaps aren't clusters.
+# Clusters lasting >= LONG_CLUSTER_MINUTES are "structural" — the
+# kind of pattern the BTM Sunday-evening anomaly looks like — and
+# get attributed to recurring_down_fraction in the heatmap cells.
+MIN_CLUSTER_MINUTES = 30
+LONG_CLUSTER_MINUTES = 120
+GAP_TOLERANCE_MINUTES = 4
+
 
 def main() -> None:
     if not DB_PATH.exists():
@@ -125,6 +136,28 @@ def main() -> None:
     # not open." See README "Engineering judgment moments" for context.
     park_hours = _derive_park_hours(con, rides_meta)
     print(f"  derived park hours for {len(park_hours)} (park, park-day) keys")
+
+    # --- pass 1b: detect DOWN clusters per ride ---
+    # Contiguous runs of DOWN polls per ride. Park-hours filter applied
+    # — a DOWN run that spans from inside operating hours into a closed
+    # window terminates at the boundary. The clusters list is exposed
+    # via the MCP get_ride_down_clusters tool; the long-cluster poll
+    # counts feed back into the per-(ride, dow, hour) cells as a
+    # `recurring_down_fraction` so the heatmap can distinguish flap-
+    # style breakdowns (low fraction) from structural patterns like
+    # BTM's Sunday-evening recurrence (high fraction).
+    clusters_by_ride, long_cluster_polls = _detect_down_clusters(
+        con, rides_meta, park_hours
+    )
+    n_clusters = sum(len(v) for v in clusters_by_ride.values())
+    n_long = sum(
+        1 for cs in clusters_by_ride.values()
+        for c in cs if c["duration_minutes"] >= LONG_CLUSTER_MINUTES
+    )
+    print(
+        f"  detected {n_clusters:,} DOWN clusters "
+        f"({n_long:,} long ≥{LONG_CLUSTER_MINUTES}m, the rest flap-style)"
+    )
 
     # --- pass 2: stream wait_history, bucket in Python ---
     # Per-ride accumulators
@@ -272,10 +305,11 @@ def main() -> None:
                 if ha < MIN_HEATMAP_CELL_POLLS:
                     continue
                 wn = rdh_wait_n[key]
+                n_down = rdh_down[key]
                 cell = {
                     "dow": dow,
                     "hour": h,
-                    "downtime_pct": round(100.0 * rdh_down[key] / ha, 1),
+                    "downtime_pct": round(100.0 * n_down / ha, 1),
                     "n_active": ha,
                 }
                 # Only include `wait` when there's at least one operating
@@ -283,6 +317,17 @@ def main() -> None:
                 # when the ride was 100% DOWN at that (dow, hour).
                 if wn > 0:
                     cell["wait"] = round(rdh_wait_sum[key] / wn)
+                # `recurring_down_fraction`: of the DOWN polls in this
+                # bucket, what fraction belonged to a long (>=2h) cluster?
+                # 1.0 means every DOWN poll was part of a sustained
+                # recurring-looking pattern; 0.0 means all DOWN polls
+                # were flap-style. Omit when n_down=0 (no DOWN polls
+                # to characterize).
+                if n_down > 0:
+                    long_count = long_cluster_polls.get(key, 0)
+                    cell["recurring_down_fraction"] = round(
+                        long_count / n_down, 2
+                    )
                 dow_hourly.append(cell)
 
         rides_list.append(
@@ -299,6 +344,7 @@ def main() -> None:
                 "hourly_wait": hourly_wait,
                 "hourly_downtime": hourly_downtime,
                 "dow_hourly": dow_hourly,
+                "down_clusters": clusters_by_ride.get(ride_id, []),
             }
         )
 
@@ -435,6 +481,143 @@ def _within_park_hours(
         # any poll from this date as "active."
         return False
     return bounds[0] <= polled_at <= bounds[1]
+
+
+def _detect_down_clusters(
+    con: sqlite3.Connection, rides_meta: dict, park_hours: dict
+) -> tuple[dict, dict]:
+    """Detect contiguous DOWN runs per ride.
+
+    Streams wait_history ordered by (ride_id, polled_at). Within a
+    ride, a "cluster" is a sequence of DOWN polls with gaps no larger
+    than GAP_TOLERANCE_MINUTES (handles the occasional missed poll on
+    the 2-min cadence). When the status flips to non-DOWN, the gap
+    grows too large, the ride changes, or the poll falls outside park
+    hours, the current cluster closes.
+
+    Only clusters lasting >= MIN_CLUSTER_MINUTES are emitted — single-
+    poll DOWN events are flap-style, not "clusters." Clusters lasting
+    >= LONG_CLUSTER_MINUTES contribute to the per-(ride, dow, hour)
+    long-cluster poll counts so cells can compute a
+    `recurring_down_fraction` signal.
+
+    Returns:
+        (clusters_by_ride, long_cluster_polls)
+
+        clusters_by_ride: {ride_id: [cluster_dict, ...]} where each
+            cluster_dict has start_ts, end_ts, duration_minutes,
+            poll_count, start_hour (ET), start_dow (heatmap-shifted).
+
+        long_cluster_polls: {(ride_id, heatmap_dow, hour): int} —
+            counts of DOWN polls inside long clusters, keyed by the
+            same (ride, dow, hour) buckets as the heatmap cells.
+    """
+    fromiso = datetime.fromisoformat
+    clusters_by_ride: dict = defaultdict(list)
+    long_cluster_polls: dict = defaultdict(int)
+
+    state = {
+        "ride_id": None,
+        "park_id": None,
+        "start_ts": None,   # raw UTC ISO string of first DOWN poll
+        "start_dt": None,   # ET datetime of first DOWN poll (for hour/dow)
+        "last_ts": None,    # raw UTC ISO string of latest DOWN poll
+        "last_dt": None,    # ET datetime of latest (for time-gap calc)
+        "poll_count": 0,
+        # Per-poll (ride_id, heatmap_dow, hour) keys, buffered so we
+        # only attribute to long_cluster_polls if the cluster actually
+        # ends up long.
+        "pending_keys": [],
+    }
+
+    def close():
+        if state["start_dt"] is None:
+            return
+        duration = (state["last_dt"] - state["start_dt"]).total_seconds() / 60
+        if duration >= MIN_CLUSTER_MINUTES and state["ride_id"]:
+            start_hour = state["start_dt"].hour
+            start_dow = (state["start_dt"].weekday() + 1) % 7
+            heatmap_dow = (
+                (start_dow - 1) % 7
+                if start_hour < PARK_DAY_BOUNDARY_HOUR
+                else start_dow
+            )
+            clusters_by_ride[state["ride_id"]].append({
+                # Both timestamps in raw UTC ISO so they're directly
+                # comparable. Consumers can convert to ET if they want
+                # to display them — duration_minutes is already
+                # tz-agnostic.
+                "start_ts": state["start_ts"],
+                "end_ts": state["last_ts"],
+                "duration_minutes": int(round(duration)),
+                "poll_count": state["poll_count"],
+                "start_hour": start_hour,
+                "start_dow": heatmap_dow,
+            })
+            if duration >= LONG_CLUSTER_MINUTES:
+                for k in state["pending_keys"]:
+                    long_cluster_polls[k] += 1
+        state["start_ts"] = None
+        state["start_dt"] = None
+        state["last_ts"] = None
+        state["last_dt"] = None
+        state["poll_count"] = 0
+        state["pending_keys"] = []
+
+    for ride_id, status, polled_at in con.execute(
+        "SELECT ride_id, status, polled_at FROM wait_history "
+        "ORDER BY ride_id, polled_at"
+    ):
+        if ride_id != state["ride_id"]:
+            close()
+            state["ride_id"] = ride_id
+            meta = rides_meta.get(ride_id)
+            state["park_id"] = meta["park_id"] if meta else None
+
+        if not state["park_id"]:
+            continue
+
+        try:
+            dt_et = fromiso(polled_at).astimezone(EASTERN)
+        except ValueError:
+            continue
+
+        # Park-hours filter — same as the main aggregator. A cluster
+        # spanning into a closed window terminates at the boundary.
+        if not _within_park_hours(
+            park_hours, state["park_id"], dt_et, polled_at
+        ):
+            close()
+            continue
+
+        if status == "DOWN":
+            # Time-gap check before extending an open cluster.
+            if state["start_dt"] is not None:
+                gap = (dt_et - state["last_dt"]).total_seconds() / 60
+                if gap > GAP_TOLERANCE_MINUTES:
+                    close()
+            if state["start_dt"] is None:
+                state["start_ts"] = polled_at
+                state["start_dt"] = dt_et
+            state["last_ts"] = polled_at
+            state["last_dt"] = dt_et
+            state["poll_count"] += 1
+            # Record the (ride, heatmap_dow, hour) bucket this poll
+            # belongs to so we can attribute to long_cluster_polls
+            # later if the cluster ends up long.
+            hour = dt_et.hour
+            dow_raw = (dt_et.weekday() + 1) % 7
+            heatmap_dow = (
+                (dow_raw - 1) % 7
+                if hour < PARK_DAY_BOUNDARY_HOUR
+                else dow_raw
+            )
+            state["pending_keys"].append((ride_id, heatmap_dow, hour))
+        else:
+            close()
+
+    close()
+    return dict(clusters_by_ride), dict(long_cluster_polls)
 
 
 def _write_short_wait_baselines(rides_list: list, generated_at: str) -> None:
