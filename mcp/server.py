@@ -1165,6 +1165,23 @@ def get_planning_context(
        around it. When the user has an LL/ILL for a ride, note that
        you're skipping the standby line entirely for that ride.
 
+       **Lightning Lane scheduling mechanics (practical detail
+       Claude might not naturally know):**
+       - The 1-hour window has informal buffers: Disney typically
+         allows entry ~5 min before the window opens and ~15 min
+         after it closes. Treat the window as starting on time and
+         ending on time when planning — don't bank on the late
+         grace as if it's guaranteed, since enforcement varies.
+       - The LL line itself is NOT zero-wait. Plan ~10-15 min for
+         the LL queue (can hit 20-25 min during peak hours). Total
+         time from "tap in" to "off the ride" is usually ~25-30 min.
+       - Factor in walking time to reach the LL window. If the user
+         is across the park (>500m by the lat/lon data) when the
+         window opens, build in the walk — don't have them book-end
+         the window with travel time on both sides.
+       - If two LL windows overlap, the user has to pick one. Flag
+         the conflict and ask which is the priority.
+
     1. **Cost-of-delay rule** (most important). The fields you want:
        `forecast_peak_next_3h_mins` (worst forecasted wait in the next
        3 hours) and `forecast_minutes_until_peak` (how soon that peak
