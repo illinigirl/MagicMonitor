@@ -551,6 +551,25 @@ def get_live_ride_status(ride_name: str) -> dict[str, Any]:
     For park-wide queries ('what's down at Magic Kingdom?') use
     `get_park_live_status` instead — it's a single Scan vs N GetItems.
 
+    IMPORTANT: how to read the response when status="DOWN":
+    - `down_since` + `down_duration_mins` = how long this current DOWN
+      has been going (right now).
+    - `typical_down_cluster_mins` = median historical cluster duration
+      for this ride (from the snapshot). `historical_cluster_count`
+      tells you how many past clusters that median was computed from
+      — small samples mean a noisy estimate.
+    - `cluster_progress_pct` = current duration as a percentage of the
+      historical median. <50% → probably still early, plan for more
+      downtime. ~80-120% → could come back any minute. >>150% → this
+      DOWN is unusually long, possibly a structural issue today.
+    - `ll` is the LIGHTNING LANE OFFER currently being sold by Disney.
+      `ll.return_start` is the time on the LL ticket — NOT a prediction
+      of when the ride will be operating again. Disney sometimes keeps
+      offering LL slots on a DOWN ride (betting on quick recovery, or
+      the queue system has stale state). Do not infer "ride will be
+      back at X PM" from `ll.return_start = X PM`. They are unrelated
+      systems.
+
     Args:
         ride_name: Substring match (case-insensitive). 'space mountain'
             matches 'Space Mountain'.
@@ -558,10 +577,12 @@ def get_live_ride_status(ride_name: str) -> dict[str, Any]:
     Returns:
         Dict with ride_name, ride_id, status, wait_mins, park_name,
         last_seen (UTC iso), last_forecast_at (when present), and
-        Lightning Lane info when offered. On absence (ride exists in
-        the historical snapshot but the poller hasn't seen it yet,
-        e.g. a brand-new attraction): `live_state_available: false`.
-        On AWS auth failure: a clear error_hint pointing at SSO refresh.
+        Lightning Lane info when offered. When status="DOWN", also
+        includes `down_since` (UTC iso) and `down_duration_mins`. On
+        absence (ride exists in the historical snapshot but the poller
+        hasn't seen it yet, e.g. a brand-new attraction):
+        `live_state_available: false`. On AWS auth failure: a clear
+        error_hint pointing at SSO refresh.
     """
     ride = _find_ride(ride_name)
     rid = ride["ride_id"]
@@ -597,7 +618,7 @@ def get_live_ride_status(ride_name: str) -> dict[str, Any]:
         }
 
     item = _convert_decimals(item)
-    return {
+    response: dict[str, Any] = {
         "ride_name": item.get("name") or ride["ride_name"],
         "ride_id": rid,
         "park_key": item.get("park_key"),
@@ -609,6 +630,63 @@ def get_live_ride_status(ride_name: str) -> dict[str, Any]:
         "last_forecast_at": item.get("last_forecast_at"),
         "live_state_available": True,
     }
+
+    # When the ride is currently DOWN, enrich with both the current
+    # down duration AND the ride's historical-typical cluster length,
+    # so the planner can reason about progress through the cluster
+    # ("16 min in vs ~40 min typical → maybe 20 more") instead of
+    # guessing from the (unrelated) LL offer.
+    if item.get("status") == "DOWN":
+        try:
+            ds_resp = table.get_item(
+                Key={"PK": f"RIDE#{rid}", "SK": "DOWN_SINCE"}
+            )
+            ds_item = ds_resp.get("Item")
+            if ds_item and ds_item.get("down_since"):
+                down_since_iso = ds_item["down_since"]
+                response["down_since"] = down_since_iso
+                # Compute duration from the DOWN_SINCE timestamp to now.
+                # Wrapped so a parse failure doesn't drop the field.
+                try:
+                    down_dt = datetime.fromisoformat(down_since_iso)
+                    elapsed = datetime.now(timezone.utc) - down_dt
+                    response["down_duration_mins"] = round(
+                        elapsed.total_seconds() / 60, 1
+                    )
+                except ValueError:
+                    pass
+        except Exception:
+            # Failing to fetch DOWN_SINCE shouldn't fail the whole tool.
+            # Status + timestamps are still useful without it.
+            pass
+
+        # Pull historical-typical cluster duration from the snapshot.
+        # Median is robust to long-refurb outliers that would skew a
+        # mean; if a ride has only a handful of clusters we still
+        # surface the median because it's what we have.
+        clusters = ride.get("down_clusters", [])
+        if clusters:
+            durations = sorted(
+                c["duration_minutes"] for c in clusters
+                if isinstance(c.get("duration_minutes"), (int, float))
+            )
+            if durations:
+                mid = len(durations) // 2
+                if len(durations) % 2 == 1:
+                    median = durations[mid]
+                else:
+                    median = (durations[mid - 1] + durations[mid]) / 2
+                response["typical_down_cluster_mins"] = round(median, 1)
+                response["historical_cluster_count"] = len(durations)
+                # Only emit a progress signal when we have both halves
+                # of the comparison and it's meaningful.
+                cur = response.get("down_duration_mins")
+                if cur is not None and median > 0:
+                    response["cluster_progress_pct"] = round(
+                        100.0 * cur / median, 1
+                    )
+
+    return response
 
 
 @mcp.tool()
