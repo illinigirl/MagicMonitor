@@ -38,22 +38,29 @@ and add (or merge into) the `mcpServers` block:
   "mcpServers": {
     "magic-monitor": {
       "command": "/Users/meganschott/Documents/Pi/Disney/mcp/.venv/bin/python",
-      "args": ["/Users/meganschott/Documents/Pi/Disney/mcp/server.py"],
-      "env": {
-        "AWS_PROFILE": "watchtower"
-      }
+      "args": ["/Users/meganschott/Documents/Pi/Disney/mcp/server.py"]
     }
   }
 }
 ```
 
-The `env` block tells boto3 which SSO profile to read from the
-shared cache when the live-data tools (e.g. `get_ride_forecast`)
-run. Without it the MCP server still loads, but the live tools
-return an "AWS credentials expired" hint instead of forecasts.
+Live-data tools (`get_ride_forecast`, `get_live_ride_status`,
+`get_park_live_status`, `get_ride_downtime_today`) read from the
+deployed DynamoDB table via the `watchtower` SSO profile. The
+server picks that profile up automatically — `AWS_PROFILE` does
+not need to be set in the MCP config.
 
-Restart Claude Desktop after editing the config. The full tool list
-should appear in the tools menu (wrench / 🔧 icon).
+(Earlier versions of this README suggested adding `"env":
+{"AWS_PROFILE": "watchtower"}` to the magic-monitor block. Don't
+bother — Claude Desktop currently rewrites the config file on
+quit/launch and silently strips fields outside its known schema,
+so the env block doesn't survive a restart. The server-side
+default in `server.py` is the resilient fix instead. To point at
+a different profile, override with `AWS_PROFILE=your-profile` in
+your shell before launching Claude Desktop.)
+
+Restart Claude Desktop after editing the config. The full tool
+list should appear in the tools menu (wrench / 🔧 icon).
 
 ## Verify
 

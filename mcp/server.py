@@ -35,6 +35,16 @@ from mcp.server.fastmcp import FastMCP
 _DDB_REGION = os.environ.get("DISNEY_REGION", "us-east-2")
 _DDB_TABLE = os.environ.get("DISNEY_TABLE_NAME", "DisneyData")
 
+# Default AWS profile when AWS_PROFILE isn't set in the environment.
+# Claude Desktop currently strips the `env` block from
+# claude_desktop_config.json's mcpServers entries on quit/launch, so
+# AWS_PROFILE often won't be present even if the config originally
+# included it. Defaulting here keeps the server working without the
+# user having to re-edit the config after every restart. The env var
+# still wins when set — a reviewer pointing at a different account
+# can `AWS_PROFILE=their-profile` without code changes.
+_DDB_PROFILE = os.environ.get("AWS_PROFILE", "watchtower")
+
 # Park-day boundary in Eastern time. Mirrors tools/aggregate-analytics.py
 # so the live downtime tool agrees with the historical heatmap and
 # down-cluster aggregations: a 1am Friday breakdown counts as
@@ -88,7 +98,7 @@ def _ddb_table():
     SSO session.
     """
     import boto3  # local import: only paid when DDB is actually used
-    session = boto3.Session(region_name=_DDB_REGION)
+    session = boto3.Session(profile_name=_DDB_PROFILE, region_name=_DDB_REGION)
     return session.resource("dynamodb").Table(_DDB_TABLE)
 
 
@@ -502,10 +512,29 @@ def _aws_error_payload(e: Exception) -> dict[str, Any] | None:
     far the most common failure mode here.
     """
     msg = str(e)
-    if "Token has expired" in msg or "ExpiredToken" in msg or "InvalidClientTokenId" in msg:
+    # Token expiry (SSO refresh case) — friendly path:
+    if "Token has expired" in msg or "ExpiredToken" in msg:
         return {
             "error": "AWS credentials expired",
             "error_hint": "Run `aws sso login --profile watchtower` and retry.",
+        }
+    # Invalid creds (different from expiry) — usually means boto3 picked
+    # up the wrong profile entirely, e.g. a stale [default] in
+    # ~/.aws/credentials when AWS_PROFILE wasn't set in the MCP env.
+    # DynamoDB surfaces this as UnrecognizedClientException; STS as
+    # InvalidClientTokenId; same root cause.
+    if "InvalidClientTokenId" in msg or "UnrecognizedClientException" in msg:
+        return {
+            "error": "AWS credentials not recognized",
+            "error_hint": (
+                "boto3 is hitting AWS with credentials that aren't valid "
+                "for this account. Most likely the MCP env doesn't set "
+                "AWS_PROFILE=watchtower and boto3 is falling back to a "
+                "stale [default] profile. Add "
+                '`\"env\": {\"AWS_PROFILE\": \"watchtower\"}` '
+                "to the magic-monitor block in claude_desktop_config.json "
+                "and restart Claude Desktop."
+            ),
         }
     return None
 
