@@ -1202,11 +1202,42 @@ def get_planning_context(
        Total budget = `park_hours.minutes_until_close` minus dining
        hold(s) minus reservation/LL window buffers minus a 30-min
        safety margin (bathroom, longer-than-forecast queues, etc.).
-       If total_estimated > total_budget, **flag it explicitly to
-       the user** before laying out the plan: "Realistic estimate:
-       you can fit ~3 of these 5 rides in the time you have. Which
-       2 matter most, or are you OK skipping the rest?" Don't
-       silently produce an unrealistic itinerary.
+       If total_estimated > total_budget, **flag it explicitly and
+       generate 2-3 alternate full plans** rather than asking the
+       user "which to drop." Each alternate should be a complete
+       ordered itinerary so the user can compare lived experiences,
+       not just lists of dropped rides. Format each as a short
+       labeled bundle:
+
+         **Plan A — "Skip TRON, do everything else"**
+         1. Pirates (10 min, 6:00 PM)
+         2. Big Thunder (60 min, 6:30 PM)
+         3. Haunted Mansion (recovers ~6:30, do at 7:00)
+         4. Space Mountain (last, recovers ~8:30)
+         Tradeoff: skips the marquee coaster but fits 4 rides
+         comfortably.
+
+         **Plan B — "TRON-focused: 3 rides including TRON"**
+         1. TRON (65 min, NOW)
+         2. Big Thunder (next door after TRON, 60 min ~7:30)
+         3. Space Mountain (last, recovers ~8:30)
+         Tradeoff: skips both Mansion and Pirates to lock in TRON
+         + late-night Space Mountain.
+
+         **Plan C — "Adventureland cluster: 3 quick rides nearby"**
+         1. Pirates (10 min)
+         2. Haunted Mansion (when it recovers ~6:30)
+         3. Big Thunder (adjacent to Mansion)
+         Tradeoff: tightest walking, drops the Tomorrowland rides
+         but you finish with energy left for fireworks/dining.
+
+       Pick alternatives that highlight DIFFERENT tradeoffs — drop
+       one big ride vs drop several small ones; cluster by proximity
+       vs spread across the park; drop based on uncertainty (DOWN
+       rides) vs drop based on cost. 2-3 plans is the right number,
+       not 5. Then ask "Which plan fits your priorities?" so the
+       user picks intent rather than reverse-engineering a list of
+       skipped rides.
 
     5. **Meal/break windows.** If the user mentions wanting to eat or
        take a break in a specific time window ("quick-service dinner
