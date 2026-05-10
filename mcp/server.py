@@ -1147,6 +1147,24 @@ def get_planning_context(
 
     HOW TO USE THE RESPONSE WHEN ORDERING RIDES:
 
+    0. **Discover hard constraints first.** If the user gives you a
+       multi-ride list without mentioning any of these, ASK ONCE
+       before laying out the order — they materially change the plan
+       and users often forget to volunteer them:
+       - Table-service dining reservations (fixed start time, ~60-90
+         min hold; missing the slot loses the reservation entirely)
+       - Genie+ / Multi-Pass Lightning Lane reservations (1-hour
+         return window per ride; standby wait effectively drops to
+         ~10-15 min for that ride during its window)
+       - Individual Lightning Lane / ILL (paid per-ride for top-tier
+         attractions like TRON or Guardians; same 1-hour shape)
+       - Virtual queue boarding groups (TRON, Tiana's, etc. — return
+         window is set when the boarding group is called)
+       Skip the question if the user already mentioned them. Treat
+       each as a hard slot in the schedule and sequence other rides
+       around it. When the user has an LL/ILL for a ride, note that
+       you're skipping the standby line entirely for that ride.
+
     1. **Cost-of-delay rule** (most important). The fields you want:
        `forecast_peak_next_3h_mins` (worst forecasted wait in the next
        3 hours) and `forecast_minutes_until_peak` (how soon that peak
@@ -1173,9 +1191,22 @@ def get_planning_context(
        are in adjacent lands). Other things equal, prefer back-to-back
        rides in the same cluster to reduce walking.
 
-    4. **Park-close constraint.** `park_hours.minutes_until_close`
-       limits how many rides you can plausibly fit. Estimate ~25 min
-       per ride at typical cadence (queue + ride + walk).
+    4. **Feasibility check — warn the user if the wishlist won't fit.**
+       BEFORE presenting the order, sanity-check that the plan fits
+       in the time available. Estimate per ride:
+         time_per_ride ≈ current_wait_mins + 10 min ride duration
+                         + walking time to next ride
+       Walking: ~5 min for adjacent lands (<300m), ~10 min for cross-
+       park hops (>500m, e.g. Adventureland to Tomorrowland). Use the
+       lat/lon distances to be specific.
+       Total budget = `park_hours.minutes_until_close` minus dining
+       hold(s) minus reservation/LL window buffers minus a 30-min
+       safety margin (bathroom, longer-than-forecast queues, etc.).
+       If total_estimated > total_budget, **flag it explicitly to
+       the user** before laying out the plan: "Realistic estimate:
+       you can fit ~3 of these 5 rides in the time you have. Which
+       2 matter most, or are you OK skipping the rest?" Don't
+       silently produce an unrealistic itinerary.
 
     5. **Meal/break windows.** If the user mentions wanting to eat or
        take a break in a specific time window ("quick-service dinner
