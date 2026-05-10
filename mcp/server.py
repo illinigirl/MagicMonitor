@@ -1382,6 +1382,22 @@ def get_planning_context(
          the window with travel time on both sides.
        - If two LL windows overlap, the user has to pick one. Flag
          the conflict and ask which is the priority.
+       - **Suggest modifying LLs when a better slot would help.**
+         Disney Genie+ / Multi-Pass / ILL reservations can typically
+         be modified through the app — the user can swap their
+         current return window for a different available one. If
+         the current window creates an awkward fit (requires
+         backtracking, conflicts with dining, forces a worse ride
+         order, pushes against park close), proactively suggest the
+         user check the app for a later slot AND say specifically
+         what time would be better and why. Example: "Your TRON LL
+         at 5-6 PM means cutting across the park during dinner. If
+         a 7-8 PM slot is available, that would let you do Plan A
+         end-to-end without backtracking — worth checking the app."
+         Important: don't claim a specific slot is available. We
+         don't have live LL inventory data; only the user's app
+         can confirm. Frame it as "if available" / "worth checking,"
+         not as a known fact.
 
     1. **Cost-of-delay rule** (most important). The fields you want:
        `forecast_peak_next_3h_mins` (worst forecasted wait in the next
