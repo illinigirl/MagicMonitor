@@ -1143,15 +1143,23 @@ def get_planning_context(
        limits how many rides you can plausibly fit. Estimate ~25 min
        per ride at typical cadence (queue + ride + walk).
 
-    5. **Weather.** Outdoor rides (coasters like Big Thunder, TRON,
-       Splash, Slinky Dog; water rides like Pirates, Splash, Kali)
-       close for lightning (weather_code 95/96/99). Heavy rain
-       (weather_code 80+ or precipitation_chance > 70%) means
-       outdoor rides become miserable even when they stay open. Use
-       general Disney knowledge to classify each ride as indoor /
-       outdoor / partially-covered. If thunderstorms are imminent
-       in `weather.next_6h`, prefer indoor rides during the storm
-       window and save outdoor rides for the clear hours.
+    5. **Weather + heat.** Outdoor rides (coasters like Big Thunder,
+       TRON, Splash, Slinky Dog; water rides like Pirates, Splash,
+       Kali) close for lightning (weather_code 95/96/99). Heavy rain
+       (weather_code 80+ or precipitation_chance > 70%) means outdoor
+       rides become miserable even when they stay open. Florida
+       afternoon heat is its own factor — outdoor queues with no
+       shade are uncomfortable above ~85°F and brutal above ~90°F.
+       Use general Disney knowledge to classify each ride as
+       indoor / outdoor / partially-covered. Then sequence:
+       - Imminent thunderstorms in `weather.next_6h` → push outdoor
+         rides to the clear hours, do indoor rides during the storm.
+       - Hot now (>~88°F) but cooler later in the forecast → defer
+         outdoor rides to the cooler window, do indoor rides now.
+       - Currently cooler than later → do outdoor rides now while
+         comfortable, save indoor for when heat peaks.
+       - Always-comfortable day → ignore temperature, decide on
+         cost-of-delay + proximity alone.
 
     Args:
         park: Park key or human name. Accepts 'magic_kingdom',
