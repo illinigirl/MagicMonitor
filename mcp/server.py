@@ -1080,6 +1080,128 @@ def _fetch_weather_forecast() -> dict[str, Any] | None:
     }
 
 
+def _compute_load_vs_forecast(
+    rides_out: list[dict],
+) -> dict[str, Any] | None:
+    """Compare each operating ride's current wait to today's forecast
+    for the current ET hour. Aggregate into a park-level "today is
+    running X% above/below forecast" signal.
+
+    This is the always-on, point-in-time version of Phase C. Full
+    forecast accuracy analytics (per-ride bias, time-of-day error,
+    statistical confidence intervals) needs the per-poll wait history
+    the C → B upgrade introduces. What we can do TODAY from existing
+    data: snapshot ratio at the current moment.
+
+    Aggregation is `sum(actual) / sum(predicted)` across sampled rides,
+    which is equivalent to a wait-weighted mean of per-ride ratios.
+    That weighting matters — a ride with predicted_wait=5 reporting
+    actual_wait=20 is a 4x ratio but on tiny numbers (noise). A ride
+    with predicted=60 reporting actual=75 is a 1.25x ratio on real
+    minutes. Weighting by predicted wait pulls the signal toward the
+    high-traffic rides that actually drive the user's experience.
+
+    Excludes:
+    - DOWN rides (no comparable forecast)
+    - Rides with predicted wait <10 min (noise floor — small
+      denominators produce flap in the ratio)
+    - Rides missing either current STATE wait or a forecast entry
+      for the current hour
+
+    Returns None if no rides survive the exclusions (planner falls
+    back to the raw forecast).
+    """
+    now_et = datetime.now(_EASTERN)
+    current_hour = now_et.hour
+    today_iso = now_et.date().isoformat()
+
+    per_ride: list[dict[str, Any]] = []
+    total_actual = 0
+    total_predicted = 0
+
+    for r in rides_out:
+        if r.get("status") != "OPERATING":
+            continue
+        actual = r.get("wait_mins")
+        forecast = r.get("forecast")
+        if not actual or not forecast:
+            continue
+        # Find the forecast entry for the current ET hour today.
+        # Upstream times are like "2026-05-10T17:00:00-04:00" — match
+        # by date AND hour so we don't accidentally pick a previous
+        # day's same-hour entry on overnight queries.
+        predicted: int | None = None
+        for entry in forecast:
+            try:
+                t = datetime.fromisoformat(entry["time"])
+            except (KeyError, ValueError):
+                continue
+            t_et = t.astimezone(_EASTERN)
+            if (
+                t_et.date().isoformat() == today_iso
+                and t_et.hour == current_hour
+            ):
+                predicted = entry.get("wait_mins")
+                break
+        if predicted is None or predicted < 10:
+            continue
+        ratio = round(actual / predicted, 2)
+        per_ride.append({
+            "ride_name": r["ride_name"],
+            "actual_wait_mins": actual,
+            "predicted_wait_this_hour": predicted,
+            "ratio": ratio,
+        })
+        total_actual += actual
+        total_predicted += predicted
+
+    if not per_ride or total_predicted == 0:
+        return None
+
+    park_ratio = round(total_actual / total_predicted, 2)
+    n = len(per_ride)
+
+    # Confidence + interpretation. We don't have enough data to
+    # compute formal confidence intervals (one snapshot per ride),
+    # so this is sample-size + magnitude based.
+    if n < 3:
+        confidence = "low"
+        interp = (
+            f"Only {n} ride(s) sampled — treat the ratio as "
+            f"directional only, don't lean on it heavily."
+        )
+    elif abs(park_ratio - 1.0) < 0.10:
+        confidence = "high"
+        interp = (
+            f"Today running close to forecast ({int(park_ratio * 100)}% "
+            f"of predicted, {n} rides sampled). Use forecast values as-is."
+        )
+    elif park_ratio > 1.0:
+        pct = int((park_ratio - 1.0) * 100)
+        confidence = "high" if n >= 5 else "medium"
+        interp = (
+            f"Today running ~{pct}% ABOVE forecast across {n} rides — "
+            f"crowds heavier than predicted. Scale forecast peak values "
+            f"by ~{park_ratio:.2f} when reasoning about cost-of-delay."
+        )
+    else:
+        pct = int((1.0 - park_ratio) * 100)
+        confidence = "high" if n >= 5 else "medium"
+        interp = (
+            f"Today running ~{pct}% BELOW forecast across {n} rides — "
+            f"crowds lighter than predicted. Scale forecast peak values "
+            f"by ~{park_ratio:.2f} when reasoning about cost-of-delay."
+        )
+
+    return {
+        "park_load_ratio": park_ratio,
+        "rides_sampled": n,
+        "confidence": confidence,
+        "interpretation": interp,
+        "per_ride": per_ride,
+    }
+
+
 def _forecast_peak_in_window(
     forecast: list[dict], hours_ahead: int = 3
 ) -> dict[str, Any] | None:
@@ -1206,6 +1328,23 @@ def get_planning_context(
        (flat over the next 3h), so deferring TRON costs ~0. Pirates
        first." The full `forecast` array is also returned so you can
        look up exact future-wait values at specific times when needed.
+
+    1.5. **Today-vs-forecast correction.** The top-level
+       `today_vs_forecast` field compares each operating ride's
+       CURRENT wait to what today's forecast predicted for the
+       current ET hour, aggregated park-wide. If `park_load_ratio`
+       is materially different from 1.0 (>10% off), today's actual
+       crowd is heavier or lighter than the forecast model expected.
+       When reasoning about cost-of-delay, scale forecast peak
+       values by this ratio. Example: ratio=1.23, forecast says
+       Pirates peaks at 40 in 60 min → expected actual peak is
+       ~49 min. Note the calibration ONCE in your response ("Today
+       is running 23% above forecast — I've adjusted the peak
+       estimates accordingly") rather than re-mentioning it per
+       ride. Confidence levels: `low` (<3 rides sampled, treat as
+       directional only); `medium`/`high` (5+ rides, reliable
+       enough to scale by). If confidence is low or the field is
+       absent, use forecast values as-is.
 
     2. **DOWN-state rides.** Use `down_duration_mins` and
        `typical_down_cluster_mins` to estimate when they'll come back.
@@ -1469,6 +1608,7 @@ def get_planning_context(
         "current_time_et": now_et.isoformat(),
         "park_hours": _fetch_park_hours_today(park_key),
         "weather": _fetch_weather_forecast(),
+        "today_vs_forecast": _compute_load_vs_forecast(rides_out),
         "rides": rides_out,
         "unresolved": unresolved,
     }
