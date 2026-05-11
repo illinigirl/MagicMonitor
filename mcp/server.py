@@ -1808,22 +1808,91 @@ def get_planning_context(
 
        **Lightning Lane scheduling mechanics (practical detail
        Claude might not naturally know):**
-       - The 1-hour window has informal buffers: Disney typically
-         allows entry ~5 min before the window opens and ~15 min
-         after it closes, though enforcement varies. **Default
-         policy: use these buffers strategically when they
-         materially improve the plan** (saves a cross-park walk,
-         fits an extra ride, avoids skipping a marquee attraction).
-         Most experienced guests routinely use the grace and it's
-         reliable enough to plan against. NOTE the assumption ONCE
-         per itinerary: "Plan assumes typical Disney grace on LL
-         windows (~5 min early / ~15 min late). If grace tightens
-         on a given day, fall back to the nominal windows."
-         Don't re-flag for every individual ride — that's noise.
-         Switch to conservative-only (nominal windows, no grace)
-         only when the user explicitly asks, OR when the buffer
-         use is unusually aggressive (more than 10 min outside the
-         nominal window on either side).
+       - **LL window grace — three layers, use the right one.**
+         The 1-hour window has both stated and unofficial buffers:
+           - **5 min before window opens** — Disney consistently
+             allows early entry. Always safe to plan against.
+           - **15 min after window closes** — stated policy. Always
+             safe to plan against.
+           - **Up to ~2 hours after window closes** — widely tested
+             and consistently honored at the tap point, but NOT
+             stated Disney policy. Enforcement varies by day, park,
+             and CM. Treat this as crisis-mode capacity, not a
+             default planning buffer.
+         **Default policy:** use 5-min-early + 15-min-late as the
+         "always reliable" buffer that doesn't need flagging.
+         Mention the assumption ONCE per itinerary: "Plan assumes
+         typical Disney grace on LL windows (~5 min early / ~15 min
+         late). If grace tightens on a given day, fall back to the
+         nominal windows." Don't re-flag for every individual ride.
+         **For the 15-45 min late zone:** mention the extension
+         where it's load-bearing for the plan ("running ~30 min late
+         to this slot — still within informal grace") but don't
+         re-flag per ride.
+         **For the 45 min - 2 hr late zone:** explicitly warn the
+         user that they're leaning on informal-informal grace that
+         Disney doesn't publish: "This pushes your 8:30 LL window
+         to ~10:25 arrival — widely tested but unofficial. If a CM
+         enforces strictly on this day, that slot won't be honored.
+         Reserve this for situations where strictness would cost
+         you the marquee ride entirely; otherwise sequence earlier."
+         Switch to conservative-only mode (no grace at all) only
+         when the user explicitly asks.
+       - **Pre-arrival booking — tier mechanics + the 3-ride
+         allocation.** Multi-Pass / Genie+ lets guests pre-book up
+         to 3 LL rides before arriving at the park. The allocation
+         rule depends on park:
+           - **Magic Kingdom, EPCOT, Hollywood Studios:** rides are
+             split into Tier 1 (the marquees) and Tier 2 (everything
+             else). Of the 3 pre-bookings: exactly **1 Tier 1 + 2
+             Tier 2**. You cannot pre-book 3 Tier 1 rides.
+           - **Animal Kingdom:** no tiers — any 3 rides.
+         Tier 1 examples (Disney revises these periodically; verify
+         in the user's app if uncertain):
+           - MK: TRON Lightcycle/Run (also an ILL), Seven Dwarfs
+             Mine Train, Jungle Cruise, Peter Pan's Flight, Big
+             Thunder, Space Mountain, Tiana's Bayou Adventure
+           - EPCOT: Test Track, Frozen Ever After, Remy's Ratatouille
+             Adventure, Guardians of the Galaxy: Cosmic Rewind (also
+             an ILL)
+           - HS: Slinky Dog Dash, Mickey & Minnie's Runaway Railway,
+             Star Tours, Toy Story Mania, Rise of the Resistance
+             (also an ILL)
+         ILL (paid per-ride) rides like TRON, Cosmic Rewind, and
+         Rise of the Resistance are sometimes listed under Tier 1
+         in the booking UI but they're a SEPARATE product —
+         purchasing ILL does NOT count against the 3-ride MLL pre-
+         book allocation. A guest can hold 3 MLL pre-bookings AND
+         however many ILLs they buy.
+         When recommending pre-arrival picks for MK/EPCOT/HS:
+         honor the 1+2 split. Pick the user's highest-value Tier 1
+         (highest typical wait + most-wanted) and two strong Tier 2
+         picks. Don't suggest 2 Tier 1 + 1 Tier 2 — they cannot
+         book that combination.
+       - **Day-of booking unlocks — scan into MLL to refill the
+         queue.** Once the guest scans into an MLL pre-booking at
+         the tap point, the LL system unlocks the next booking:
+         they can book ONE additional MLL ride **from any tier**
+         (the 1-Tier-1 restriction lifts entirely after the first
+         MLL scan). This loops — each subsequent MLL scan unlocks
+         another. Two constraints:
+           - **Scanning into an SLL (paid ILL) ride does NOT
+             unlock more MLL bookings or lift tier restrictions.**
+             Riding Cosmic Rewind, TRON Lightcycle, or Rise of the
+             Resistance via the ILL purchase doesn't help the MLL
+             cadence at all.
+           - **Sequence MLL pre-bookings BEFORE any SLL/ILL when
+             possible.** If a guest has both MLL pre-bookings and
+             ILL purchases for the same morning, route them to the
+             MLL FIRST so the unlock fires immediately and they can
+             start building toward booking #4, #5, etc. Burning the
+             ILL first wastes the morning window where you could be
+             accumulating MLL slots.
+         When planning a guest's day with active MLL pre-bookings:
+         the recommended next LL (see the recommendation engine
+         below) typically targets right after the first scan, when
+         the tier restriction has lifted and the strongest available
+         Tier 1 wait becomes bookable.
        - The LL line itself is NOT zero-wait. Plan ~10-15 min for
          the LL queue (can hit 20-25 min during peak hours). Total
          time from "tap in" to "off the ride" is usually ~25-30 min.
