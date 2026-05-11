@@ -3068,10 +3068,18 @@ def record_plan(
     Args:
         park: Park key or human name.
         ride_sequence: Ordered list of rides in the plan. Each entry
-            is a dict like {"ride_name": str, "predicted_wait_min":
-            int | null, "position": int}. Capture the planner's
-            prediction for each ride so we can compare against actual
-            later. Keep it compact — a few fields per ride.
+            is a dict like {"ride_name": str, "ride_id": str,
+            "predicted_wait_min": int | null, "position": int}.
+            **Include the `ride_id` field** — it comes back as part of
+            each ride in get_planning_context's response, and the
+            poller uses it to match plans against live DOWN/UP events
+            for plan-aware disruption alerts. Falling back to ride_name
+            still works (case-insensitive match) but ride_id is more
+            reliable for the Disney Adventure Friends Cavalcade /
+            Festival of Fantasy Parade kind of name overlap edge cases.
+            Capture the planner's prediction for each ride so we can
+            compare against actual later. Keep it compact — a few
+            fields per ride.
         show_selections: Optional list of shows being fitted into the
             plan. Each entry: {"show_name": str, "performance_start":
             iso_ts, "predicted_arrival_min": int}. Empty list / None

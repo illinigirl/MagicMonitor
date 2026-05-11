@@ -136,3 +136,52 @@ def alert_low_wait(
         f"Typical for this hour: ~{typical_wait_mins} min."
     )
     return _send(user_key, title, body, priority=0)
+
+
+def alert_plan_disruption(
+    user_key: str,
+    ride_name: str,
+    park_name: str,
+    park_key: str,
+    disruption_type: str,
+    plan_id: Optional[str] = None,
+    wait_mins: Optional[int] = None,
+) -> bool:
+    """Fire when a ride in the recipient's active plan for today
+    transitions DOWN or BACK UP. Separate from the favoriter-based
+    DOWN/UP alerts: this one fires regardless of favorites because
+    being in TODAY's plan is a stronger "you care about this ride
+    right now" signal than having favorited it generically.
+
+    disruption_type:
+      "went_down" — ride in plan just transitioned to DOWN.
+      "back_up"   — ride in plan just came back operating.
+
+    Priority 1 for went_down (it's actionable — replan), 0 for
+    back_up (good news, less urgent).
+    """
+    emoji = PARK_EMOJI.get(park_key, "🎢")
+    if disruption_type == "went_down":
+        title = f"{emoji} Plan disruption — {ride_name} DOWN"
+        body = (
+            f"{park_name}\n"
+            f"{ride_name} just went down and it's in your plan today. "
+            f"Check with Claude when you can — you may want to "
+            f"re-sequence the rest of the day."
+        )
+        priority = 1
+    elif disruption_type == "back_up":
+        wait_blurb = f" Current wait: {wait_mins} min." if wait_mins is not None else ""
+        title = f"{emoji} Plan update — {ride_name} back up"
+        body = (
+            f"{park_name}\n"
+            f"{ride_name} is operating again and it's in your plan today."
+            f"{wait_blurb} Let Claude know if you want to slot it back in."
+        )
+        priority = 0
+    else:
+        # Defensive: unknown disruption_type. Don't crash the poller —
+        # log + skip rather than throw on a typo.
+        print(f"[notifier] Unknown plan disruption_type: {disruption_type!r} (ride={ride_name})")
+        return False
+    return _send(user_key, title, body, priority=priority)

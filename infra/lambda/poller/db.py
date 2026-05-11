@@ -251,3 +251,102 @@ def get_user_favorites_for_park(user_id: str, park_key: str) -> set[str]:
         ExpressionAttributeValues={":park": park_key},
     )
     return {item["SK"].removeprefix("FAV_RIDE#") for item in resp.get("Items", [])}
+
+
+# ─── Active plan index (M9 bridge: plan-aware DOWN/UP alerts) ───────
+# USER#<id> / PLAN#<iso_ts> rows are written by the MCP record_plan
+# tool when a user accepts a plan. The poller needs to know which
+# plans are active TODAY so it can ping users when a ride in their
+# plan transitions DOWN or BACK UP.
+#
+# Implementation note: this is a scan with FilterExpression. At
+# single-digit-user scale, the DisneyData table is small enough that
+# a full scan reads only a few hundred items (~125 RCU, well under
+# free tier). Cost: ~$0.025/day at current poll cadence. If the user
+# count grows past ~100, this should move to a GSI on
+# `(planned_for_date, outcome_recorded)` so we don't scan inactive
+# plans + historical USER#* / RIDE#* partitions to find a few rows.
+
+def build_active_plan_ride_index(today_date_iso: str) -> dict:
+    """Build {ride_identifier: [(user_id, plan_id), ...]} for today's
+    active (outcome_recorded=false) plans.
+
+    `ride_identifier` is the ride_id when ride_sequence entries carry
+    one, falling back to the lowercased ride_name otherwise. The
+    handler's lookup tries both forms so plans recorded before the
+    ride_id field landed still match.
+
+    Called once per poll invocation, cached in the local handler
+    scope. Returns an empty dict on failure rather than raising —
+    plan alerts are bonus, not load-bearing for the M1 alert path.
+    """
+    # Paginate the scan — DDB returns 1MB pages max, and on a table
+    # with many RIDE# rows the PLAN# rows may not land in the first
+    # page (DDB scans don't guarantee any partition ordering). Without
+    # pagination this silently returns zero matches.
+    index: dict = {}
+    last_evaluated_key = None
+    page_count = 0
+    while True:
+        kwargs = {
+            "FilterExpression": (
+                "planned_for_date = :d AND outcome_recorded = :false "
+                "AND begins_with(SK, :plan_prefix) AND begins_with(PK, :user_prefix)"
+            ),
+            "ExpressionAttributeValues": {
+                ":d": today_date_iso,
+                ":false": False,
+                ":plan_prefix": "PLAN#",
+                ":user_prefix": "USER#",
+            },
+        }
+        if last_evaluated_key:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+        try:
+            resp = _table.scan(**kwargs)
+        except Exception as e:
+            print(f"[poller] build_active_plan_ride_index scan failed (page {page_count}): {e}")
+            return index  # whatever we built so far is better than nothing
+        page_count += 1
+        for item in resp.get("Items", []):
+            user_id = item.get("PK", "").removeprefix("USER#")
+            plan_id = item.get("SK", "").removeprefix("PLAN#")
+            if not user_id or not plan_id:
+                continue
+            for ride in item.get("ride_sequence", []) or []:
+                ride_id = ride.get("ride_id")
+                ride_name = ride.get("ride_name")
+                for key in filter(None, (ride_id, (ride_name or "").lower())):
+                    index.setdefault(key, []).append((user_id, plan_id))
+        last_evaluated_key = resp.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+        # Belt-and-braces guard against runaway pagination if the table
+        # grows unexpectedly. At ~2K rows + ~1MB pages we expect 2-3
+        # pages today; 50 pages = ~50MB of scan, well beyond any
+        # realistic state of the table.
+        if page_count >= 50:
+            print(f"[poller] build_active_plan_ride_index hit page cap (50), stopping early")
+            break
+    return index
+
+
+def lookup_plan_targets(
+    index: dict, ride_id: str, ride_name: str
+) -> list:
+    """Resolve plan-alert targets for a given ride using either
+    identifier (the MCP tool prefers ride_id but older plans may only
+    carry ride_name).
+
+    Returns deduped list of (user_id, plan_id). Same (user, plan)
+    pair appearing under both keys collapses to one entry.
+    """
+    seen = set()
+    out = []
+    for key in filter(None, (ride_id, (ride_name or "").lower())):
+        for entry in index.get(key, []):
+            if entry in seen:
+                continue
+            seen.add(entry)
+            out.append(entry)
+    return out

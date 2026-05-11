@@ -154,6 +154,21 @@ def handler(event, context):
         """
         return [s for s in subscribers if ride_id in get_favorites(s, park_key)]
 
+    # Plan-aware alerts (M9 bridge): build a {ride_identifier: [(user,
+    # plan_id), ...]} index of today's active plans ONCE per invocation,
+    # used to fan out plan-disruption Pushovers on DOWN/BACK UP
+    # transitions in addition to the favoriter fanout. Failure here is
+    # bonus-feature-degrades-gracefully — the favoriter alerts above
+    # still fire normally.
+    today_local_iso = datetime.now(_EASTERN).date().isoformat()
+    plan_ride_index = db.build_active_plan_ride_index(today_local_iso)
+    if plan_ride_index:
+        print(
+            f"[poller] Active plans for {today_local_iso}: "
+            f"{sum(len(v) for v in plan_ride_index.values())} ride-targets "
+            f"across {len(plan_ride_index)} distinct ride identifiers"
+        )
+
     # Track rides currently down across all parks for the post-loop
     # "second alert" sweep (rides down >= SECOND_ALERT_MINS get a
     # follow-up notification).
@@ -311,6 +326,42 @@ def handler(event, context):
                     park_key=park_key,
                 )
 
+                # Plan-aware fanout: users who don't favorite this
+                # ride but have it in TODAY's active plan still want
+                # to know — it's an actionable replan trigger.
+                # Piggybacks on the per-ride DOWN cooldown above so we
+                # don't re-alert on flap.
+                plan_targets = db.lookup_plan_targets(
+                    plan_ride_index, ride_id, attr["name"]
+                )
+                if plan_targets:
+                    favoriter_set = set(favoriters)
+                    plan_alert_count = 0
+                    for target_user, target_plan in plan_targets:
+                        # If this user is already getting the
+                        # favoriter alert, skip the plan alert —
+                        # one notification per event is enough.
+                        if target_user in favoriter_set:
+                            continue
+                        user_key = get_user_key(target_user)
+                        if not user_key:
+                            continue
+                        if notifier.alert_plan_disruption(
+                            user_key,
+                            ride_name=attr["name"],
+                            park_name=attr["park_name"],
+                            park_key=park_key,
+                            disruption_type="went_down",
+                            plan_id=target_plan,
+                        ):
+                            plan_alert_count += 1
+                    if plan_alert_count:
+                        print(
+                            f"[poller] {attr['name']} DOWN: "
+                            f"{plan_alert_count} plan-aware alerts (non-favoriter)"
+                        )
+                        total_alerts += plan_alert_count
+
             # ── BACK UP: was DOWN, now OPERATING ───────────────────
             elif new_status == "OPERATING" and old_status == "DOWN":
                 went_down = db.get_down_since(ride_id)
@@ -340,6 +391,38 @@ def handler(event, context):
                     wait_mins=new_wait,
                     actual_downtime_mins=actual_mins,
                 )
+
+                # Plan-aware fanout for the back-up direction. Same
+                # dedup as DOWN: skip users already getting the
+                # favoriter notification.
+                plan_targets = db.lookup_plan_targets(
+                    plan_ride_index, ride_id, attr["name"]
+                )
+                if plan_targets:
+                    favoriter_set = set(favoriters)
+                    plan_alert_count = 0
+                    for target_user, target_plan in plan_targets:
+                        if target_user in favoriter_set:
+                            continue
+                        user_key = get_user_key(target_user)
+                        if not user_key:
+                            continue
+                        if notifier.alert_plan_disruption(
+                            user_key,
+                            ride_name=attr["name"],
+                            park_name=attr["park_name"],
+                            park_key=park_key,
+                            disruption_type="back_up",
+                            plan_id=target_plan,
+                            wait_mins=new_wait,
+                        ):
+                            plan_alert_count += 1
+                    if plan_alert_count:
+                        print(
+                            f"[poller] {attr['name']} BACK UP: "
+                            f"{plan_alert_count} plan-aware alerts (non-favoriter)"
+                        )
+                        total_alerts += plan_alert_count
 
             # CLOSED transitions intentionally don't alert — too noisy
             # at park closing time.
