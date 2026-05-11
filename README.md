@@ -90,16 +90,18 @@ session without re-validating JWT cookies at an API edge.
 ### Single-table DynamoDB, deliberately
 
 ```
-PK              | SK                | Purpose
-RIDE#<id>       | STATE             | current ride state (overwrites)
-RIDE#<id>       | HIST#<iso_ts>     | status-change history (90d TTL)
-RIDE#<id>       | DOWN_SINCE        | when this ride went down
-RIDE#<id>       | COOLDOWN#DOWN     | 15-min alert dedup (TTL)
-RIDE#<id>       | COOLDOWN#STILL_DOWN | 45-min follow-up alert dedup (TTL)
-RIDE#<id>       | COOLDOWN#LOW_WAIT | 90-min low-wait alert dedup (TTL)
-USER#<sub>      | PROFILE           | name + Pushover user key
-USER#<sub>      | FAV_RIDE#<id>     | favorite (denormalized park_key)
-PARK#<key>      | USER#<sub>        | park subscription (fanout target)
+PK              | SK                    | Purpose
+RIDE#<id>       | STATE                 | current ride state (overwrites)
+RIDE#<id>       | HIST#<iso_ts>         | status-change history (90d TTL)
+RIDE#<id>       | FORECAST#<polled_at>  | per-poll wait forecast (7d TTL)
+RIDE#<id>       | DOWN_SINCE            | when this ride went down
+RIDE#<id>       | COOLDOWN#DOWN         | 15-min alert dedup (TTL)
+RIDE#<id>       | COOLDOWN#STILL_DOWN   | 45-min follow-up alert dedup (TTL)
+RIDE#<id>       | COOLDOWN#LOW_WAIT     | 90-min low-wait alert dedup (TTL)
+USER#<sub>      | PROFILE               | name + Pushover user key
+USER#<sub>      | FAV_RIDE#<id>         | favorite (denormalized park_key)
+USER#<sub>      | PLAN#<iso_ts>         | accepted plan + outcome (24h TTL pending; 1y if recorded)
+PARK#<key>      | USER#<sub>            | park subscription (fanout target)
 ```
 
 No GSIs. Every access pattern resolves to a Query or GetItem on
@@ -176,6 +178,61 @@ hour-bucket baseline. If `current ≤ min(30, 0.5 × typical)` and a
 90-min cooldown isn't active, a low-wait Pushover fires. Only 38 of
 the 88 tracked rides have baselines — for rides whose typical wait
 is already short, alerting "this is a short wait" is meaningless.
+
+### Agentic planner with cross-session feedback loop
+
+MM is exposed as 17 MCP tools that any MCP client (Claude Desktop,
+agentic frameworks) can call conversationally. The interesting one
+is `get_planning_context` — a single tool call that returns
+per-ride live status + forecast + DOWN history + lat/lon + park
+hours + weather + today-vs-forecast correction + park-wide DOWN
+list + LL drop patterns + headliner showtimes for an arbitrary
+list of rides. Ground truth in one round trip, the LLM reasons
+over it.
+
+Three tools then close a feedback loop across sessions:
+
+- `record_plan(ride_sequence, show_selections, context, ...)` —
+  eager-write at plan-acceptance time (24h TTL so unrecorded plans
+  auto-clean). Captures Claude's predicted waits + arrival times
+  alongside the plan itself.
+- `record_plan_outcome(plan_id, aggression_rating, timing_rating,
+  per_item_feedback, ...)` — lazy-update when the user reports
+  outcomes ("we ran out of time before Mansion", "Big Thunder was
+  60 not 40"). Bumps TTL to 1 year.
+- `get_user_plan_history(...)` — returns recent plans **plus a
+  server-computed `calibration_summary`**: aggression averages,
+  timing distributions, per-ride / per-show prediction bias with
+  sample sizes, confidence labels (`high` ≥5, `medium` 3-4, `low`
+  <3), and ready-made interpretation strings the LLM paraphrases.
+
+**The design pattern that matters:** the data plane does the math
+(server-side aggregation, confidence thresholds, neutral-zone
+filtering of small deltas), the LLM narrates the lesson. Mirrors
+the live `today_vs_forecast` design from `get_planning_context` —
+pre-computed numbers + interpretation strings in the response,
+conversational application by the model. Server-side aggregation
+keeps calibration version-controlled and rigorous; LLM-side
+narration keeps the conversational feel of the agentic loop.
+
+What the loop produces in practice — Claude opens a new planning
+session, calls `get_user_plan_history`, and reads back something
+like:
+
+> *"User finishes with extra time on 3/5 recent plans (averaging
+> ~45 min spare on those days) — pack today's plan more
+> aggressively."*
+>
+> *"Big Thunder Mountain Railroad tends to wait LONGER than
+> predicted (+17 min avg, high confidence on n=5). Scale this
+> ride's prediction up by ~17 min for this user."*
+
+Then it weaves that into today's plan ("your last 3 plans
+finished with extra time, so I'm being more aggressive today")
+without restating the calibration per ride. Single-user-by-design
+for the family-use case (`user_id` defaults to `"megan"`);
+multi-user-via-MCP is out of scope until MCP carries the calling
+client's auth subject.
 
 ### Trust-policy override in CDK
 
@@ -285,20 +342,30 @@ deploy hygiene, common debug commands, and known follow-ups.
 
 ## What's left
 
-A handful of polish items, captured in [`RUNBOOK.md` →
-Known follow-ups](RUNBOOK.md#known-follow-ups-low-priority) and
-[`PROJECT.md` → Roadmap](PROJECT.md):
+Captured in [`PROJECT.md` → Roadmap](PROJECT.md) and
+[`RUNBOOK.md` → Known follow-ups](RUNBOOK.md#known-follow-ups-low-priority):
 
-- **Per-type alert toggles on `/me`** — currently every alert
-  recipient gets DOWN, BACK UP, STILL DOWN, and LOW WAIT. PROJECT.md
-  M7+ has the natural opt-in shape.
+- **`party_calendar.json` quick win** — static JSON of MNSSHP +
+  MVMCP dates so the planner can flag "today's a Halloween party
+  day, daytime crowds typically lighter; plan to be out by 6pm if
+  no party ticket." ~1 hour, sets up M8.
+- **M6-B: live AWS data plane (~1.5-2 days)** — the analytics
+  layer is currently a frozen JSON snapshot from a sibling Pi
+  SQLite. Upgrade path is hourly-bucketed wait writes from the
+  poller into a `RIDE#<id>/AGG#<hour>` partition + a nightly
+  re-aggregation Lambda. Consumer interface unchanged, data
+  source swapped. Unblocks M8 (Calendar Intelligence).
 - **Trip planning (M5)** — trip CRUD, auto-toggle subscriptions
   by trip dates, "mark as ridden" suppression.
-- **Nightly DDB-backed aggregates** — the analytics layer is
-  currently a frozen JSON snapshot from a Pi-side SQLite. Upgrade
-  path is one Lambda + DDB partition; documented as the C → B
-  transition in PROJECT.md M6.
-- **README screenshots** — wait, you're reading them.
+- **Per-type alert toggles on `/me`** — currently every alert
+  recipient gets DOWN, BACK UP, STILL DOWN, and LOW WAIT.
+  PROJECT.md M7+ has the natural opt-in shape.
+- **M9: embedded agentic chat (~2-3 days, post-interview)** —
+  bring the MCP planner into the web app for users who don't run
+  Claude Desktop. Refactor tool implementations so a shared module
+  powers both the stdio MCP server and a new HTTP transport the
+  web app calls via Anthropic API tool-use. Allowlist-gated, with
+  prompt caching and per-user token budgets.
 
 ## Deliberately skipped
 

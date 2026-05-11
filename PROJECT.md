@@ -103,23 +103,138 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### MCP suite — agentic trip planner (✅ shipped 2026-05-10)
+
+Magic Monitor exposed as 17 MCP tools that any MCP client (Claude
+Desktop, agentic frameworks) can call conversationally. **This is
+the demo headline now** — agentic trip-planner answers natural-
+language route questions in Claude Desktop using one consolidated
+`get_planning_context` call, then learns from outcomes across
+sessions via a feedback loop with server-side calibration.
+
+**Tools, by capability:**
+
+- *Sanity:* `hello_magic_monitor`
+- *Analytics (offline JSON snapshot, 8.8M historical rows):*
+  `get_park_heatmap`, `get_ride_analytics`, `get_ride_dow_pattern`,
+  `get_ride_down_clusters`, `get_short_wait_baseline`,
+  `get_ride_ll_drops`, `find_rides_matching`
+- *Live DDB reads:* `get_ride_forecast`, `get_live_ride_status`,
+  `get_park_live_status`, `get_ride_downtime_today`
+- *Live external (themeparks.wiki):* `get_park_showtimes`
+- *The agentic planner:* `get_planning_context` — one-shot per-ride
+  live status + forecast + DOWN history + lat/lon + park hours +
+  weather + today-vs-forecast correction + park-wide DOWN list +
+  LL drop patterns + headliner showtimes
+- *Plan feedback loop:* `record_plan`, `record_plan_outcome`,
+  `get_user_plan_history` (returns server-computed
+  `calibration_summary` — aggression averages, timing distribution,
+  per-ride / per-show prediction bias with sample sizes + confidence
+  labels + ready-made interpretation strings)
+
+**Other shipped pieces under this umbrella:**
+
+- `attraction-locations.json` — lat/lon for all 88 WDW attractions
+  (fetched from themeparks.wiki entity endpoints) so the planner
+  can do haversine-distance proximity grouping.
+- LL drop analytics from sibling Pi project's `ll_history` (159K
+  events / 5 weeks / 46 rides), summarized as per-ride drop hours
+  + drops-per-active-day + typical-shift-minutes for the planner
+  to suggest LL refresh windows.
+- Verbatim Python port of the showtimes classifier from
+  `web/src/lib/showtimes.ts` with cross-file "keep in sync" comments
+  on both sides. Six-bucket categorization with named-act overrides
+  (Indy Epic Stunt Spectacular as stage not spectacular; festival
+  concert series as music; Candlelight Processional as stage).
+- boto3 default-profile resilience — Claude Desktop strips the env
+  block from MCP config on quit/launch, so the server defaults to
+  `AWS_PROFILE=watchtower` internally. Survives Claude Desktop
+  restarts without re-editing config.
+- ~30K-character `get_planning_context` docstring carrying the full
+  planner rulebook: hard-constraints discovery (dining, LL, virtual
+  queue, shows), cost-of-delay reasoning, today-vs-forecast scaling
+  with confidence thresholds, DOWN-state diagnosis (mechanical vs
+  weather-caused with concurrent-outdoor-rides signal), proximity
+  grouping, feasibility check with 2-3 alternate full plans on
+  overcommit, meal/break windows, per-park parade routes + viewing
+  spots, crowd-scaled show arrival times, water-rides hot-day
+  exception, and the cross-session feedback loop instructions.
+- Server-side calibration aggregation pattern (mirrors the live
+  `today_vs_forecast` design): pre-computed numbers + confidence
+  labels + interpretation strings in the read tool, narration in
+  the LLM.
+
 #### Phase A2 — Forecast capture in poller (✅ shipped 2026-05-10)
-- Poller now extracts the `forecast` array from each `/live` response
-  and writes one `RIDE#<id>/FORECAST#<polled_at>` row per poll, TTL'd
-  after 7 days. No additional API calls — forecast was already in the
-  same payload we were polling for status.
+- Poller extracts the `forecast` array from each `/live` response and
+  writes one `RIDE#<id>/FORECAST#<polled_at>` row per poll, TTL'd
+  after 7 days. No additional API calls — forecast was already in
+  the same payload.
 - New STATE attribute `last_forecast_at` tracks forecast presence
-  cheaply, so Phase C can ask "when did Space Mountain stop having
-  a forecast?" without us having stored 5K+ empty rows/day for the
-  ~23% of attractions that never have one (DOWN rides, walk-up
-  meets, transportation, some shows).
-- New MCP tool `get_ride_forecast(ride_name)` reads the latest snapshot
-  from DDB. First MCP tool that hits live AWS — uses boto3's default
-  credential chain (picks up `AWS_PROFILE=watchtower` from Claude
-  Desktop's MCP env block) and surfaces SSO-expired errors with a
-  clear `aws sso login` hint instead of a stack trace.
-- Sets up Phase C (forecast-vs-actual accuracy analytics) once a few
-  days of forecast history accumulate.
+  cheaply, so we don't store 5K+ empty rows/day for the ~23% of
+  attractions that never have a forecast (DOWN rides, walk-ups,
+  transportation, shows).
+- Underpins the live-data half of `get_planning_context` — without
+  this Phase, the agentic planner couldn't reason about future
+  waits, only current.
+
+#### 2026-05-06 — Web app analytics + showtimes + onboarding wave
+Single-day wave that landed the most demo-visible web features:
+
+**M6 — Analytics (the impressive layer)**
+- Per-park hour × day-of-week heatmap.
+- Per-ride downtime ranking with 3 sort modes
+  (`?sort=down|wait|name`).
+- Drawn from 8.8M historical poll rows in sibling Pi project's
+  SQLite (analytics-snapshot.json, ~230 KB, regenerated by
+  `tools/aggregate-analytics.py`).
+- Pre-aggregated rather than streams→Athena pipeline (rationale
+  in README: poller writes only status changes, dataset is 1.5GB
+  not 10GB+, freshness-vs-cost calculus skews against Athena).
+- Heatmap renders in park-day order (4am ET boundary), not
+  calendar-clock — matches how the analytics aggregator buckets.
+
+**M4 — Showtimes web app**
+- `/parks/<park>/today` page with chronological showtimes.
+- Six-bucket name-based classifier (spectacular / parade / stage /
+  music / atmosphere / character_meet) with named-act overrides
+  for shows the regex misclassifies.
+- Category-pill filters + live search.
+- "Next up" callout with soonest unstarted performance across the
+  park.
+- Headliner / atmosphere split.
+- "Today's shows →" link added to landing-page park cards.
+
+**M3 Phase 3 — New-user onboarding gate**
+- First sign-in (no `USER#<sub>/PROFILE` row) → redirect to /me
+  onboarding flow before any other page.
+- Default zero rides → zero alerts, no welcome-spam.
+
+**SHORT_WAIT alerts (M7+ surface, shipped early)**
+- Poller imports `baselines.json` (per-(ride, hour-of-day) wait
+  thresholds, generated alongside analytics-snapshot).
+- For each operating ride: if `current_wait ≤ min(30, 0.5 ×
+  typical)` and 90-min cooldown isn't active, low-wait Pushover
+  fires.
+- Only 38 of 88 tracked rides have baselines — for rides with
+  short typical waits, alerting "this is short" is meaningless.
+
+#### M3 — Per-user dashboard pages, Phase 1 + Phase 2 (✅ shipped 2026-05-05)
+- **Phase 1:** `/me` page with profile + Pushover key + park
+  toggles. Route handlers under `web/src/app/api/me/*` use
+  NextAuth session to scope writes to `USER#<sub>`. CDK extended
+  the SSR compute role with scoped `Update`/`Put`/`Delete`
+  permissions.
+- **Phase 2:** favorite-rides grid per park + per-favorite ∩
+  per-park-subscription alert intersection in the poller. Schema:
+  `USER#<sub>/FAV_RIDE#<ride_id>` with denormalized `park_key`.
+  Poller fans out only to users who both subscribe to the park
+  AND have favorited the ride that changed status.
+- Auth fix: anchor session sub to Cognito ID-token sub
+  (the access-token sub differs from ID-token sub for federated
+  Google sign-ins).
+- Defensive trust-policy override on the SSR role (RUNBOOK
+  Lesson 5 round 2 — alpha CDK construct re-introduces SourceArn
+  conditions on cdk deploys that touch the App resource).
 
 #### M2-B — Auth + production deploy (✅ shipped 2026-05-05)
 - Live at https://magicmonitor.megillini.dev with TLS, Google sign-in
@@ -156,33 +271,47 @@ Each milestone ships something demo-able; even partial completion
 
 ### Next
 
-#### M3 — Per-user dashboard pages (~1 week)
-- Profile page: name + Pushover user key entry (writes USER#<sub>/PROFILE)
-- Park toggles: which parks alert me right now (writes PARK#<key>/USER#<sub>)
-- Favorite-rides grid: checkbox grid per park, alerts only fire for
-  rides in your favorites (writes USER#<sub>/FAV_RIDE#<id>)
-- New-user gating: show "Pick which rides to watch" first-run flow
-  before any alerts fire (default: zero rides → zero alerts)
-- Implementation: Next.js Route Handlers under `web/src/app/api/me/`
-  (NOT a separate FastAPI service). Each handler calls `auth()` to
-  get the Cognito sub, then writes through `@aws-sdk/lib-dynamodb`.
-  CDK adds scoped `UpdateItem`/`PutItem` permissions to the Amplify
-  SSR compute role — same role that reads in M2-B, just broader
-  conditions. Revisit this if MM ever needs a public/mobile API
-  that warrants the APIGW boundary.
-- *Demo-able:* sign up as a new user, paste a Pushover key, pick
-  favorites, get alerted within 2 min when one of them changes status
+#### `party_calendar.json` — quick-win calendar dimension (~1 hr)
+- Static JSON in the repo with this season's MNSSHP and MVMCP party
+  dates (Disney publishes 6-12 months out, so manual-or-scrape annual
+  update; ~25-50 dates per year, very stable).
+- Planner reads it: "today is a MNSSHP day → daytime crowds typically
+  run lighter than a normal Saturday → be more aggressive with the
+  plan, plan to be OUT by 6pm if no party ticket."
+- Pre-positions M8 (Calendar Intelligence) without waiting for the
+  full cohort-filtering build. Cheapest possible thing that captures
+  the most-impactful calendar dimension.
 
-### Future
+#### M6-B — Live AWS data plane (~1.5-2 days)
 
-#### M4 — Showtimes (~2-3 days)
-- Same themeparks.wiki API returns SHOW entities alongside attractions
-- Per-park "Today at the park" section: parades, fireworks, stage shows
-  with start times for the day
-- Examples: Festival of Fantasy Parade, Happily Ever After, Fantasmic,
-  Beauty and the Beast Live on Stage
-- No alerts (shows don't break) — pure read-side UI
-- *Demo-able:* "What time is Fantasmic tonight?" answered in one glance
+The C → B upgrade in the analytics data plane: stop relying on the
+Pi-fed `analytics-snapshot.json` for fresh data; start having the MM
+poller write granular waits into DDB so the analytics page stays
+fresh after the Pi snapshot date.
+
+- Modify the poller to upsert into a new
+  `RIDE#<id>/AGG#<yyyy-mm-dd-hh>` partition on each poll: per-hour
+  bucketed wait values (min / max / avg / count). Hourly bucketing
+  cuts DDB write volume ~30x vs. raw per-poll writes, important for
+  cost (~$0.20/month additional, comfortably within budget).
+- Nightly aggregation Lambda rolls hourly buckets into the daily /
+  weekly summaries the analytics page renders.
+- One-time backfill job ingests the existing Pi SQLite into the new
+  DDB shape so we don't lose history during the cutover.
+- Analytics page consumer keeps reading
+  `web/src/data/analytics-snapshot.json` (regenerated nightly from
+  DDB instead of from the Pi). Consumer interface unchanged, data
+  source swapped.
+
+**Interview narrative:** *"I shipped the analytics with a Pi-fed
+snapshot to get something demoable fast, then evolved the data plane
+to MM-native collection without changing the consumer interface.
+Backfilled the historical data so the analytics page never noticed
+the cutover."*
+
+Unblocks M8 — once M6-B has been collecting MM-native data alongside
+the Pi history for ~3 months, the union covers the seasonal mix M8
+needs.
 
 #### M5 — Trip planning (~1 week)
 - Trip CRUD: dates + parks per day + party size
@@ -197,23 +326,13 @@ Each milestone ships something demo-able; even partial completion
 - *Demo-able:* "I have a trip June 15-20, here's the calendar — alerts
   auto-enable on those dates and I see what shows are running each day"
 
-#### M6 — Analytics (~1 week, the impressive layer)
-- Port `_api_analytics_rides` from disney_dashboard.py:
-  - Per-ride downtime % over last 30 days
-  - Hourly average wait pattern per ride
-  - Day-of-week pattern
-  - Park-wide hour × day-of-week heatmap
-- Decision deferred until M5 ships: stay on DynamoDB with on-the-fly
-  aggregation, or migrate analytics to Aurora Serverless v2 / S3+Athena
-- *Demo-able:* "Here's three months of data showing when Test Track
-  is most likely to be down — useful for trip planning"
+### Future
 
 #### M7+ — Polish (grab bag)
-- Low-wait alerts (needs ~1 week of history to compute baselines).
-  When this ships, also add per-type toggles to `/me`
-  (`down_up` / `short_wait`) — until short-wait exists there's only
-  one alert type, so type-pickers are moot. Lightning-lane alerts
-  remain out of scope pre-demo (no public LL purchase API).
+- Per-type alert toggles on `/me` — currently every alert recipient
+  gets DOWN, BACK UP, STILL DOWN, and LOW WAIT. Needs `down_up` /
+  `short_wait` per-user toggles. Lightning-lane alerts remain out of
+  scope pre-demo (no public LL purchase API).
 - Show alerts: opt-in per show, fires N min before start time. Needs
   a daily showtime poll (stable through the day, no per-2-min churn)
   plus a per-user `SHOW_ALERT#<show_id>` row mirroring the FAV_RIDE
@@ -222,6 +341,15 @@ Each milestone ships something demo-able; even partial completion
 - Email digest summary at end of trip
 - Public read-only stats page (no sign-in needed)
 - Mobile push notifications via Web Push (alternative to Pushover)
+- Live LL transition capture in the MM poller (currently LL drop
+  analytics come from the Pi snapshot; capturing live keeps the data
+  fresh past the snapshot date — a smaller cousin of the M6-B move).
+- Weather-history persistence in DDB. Would let the planner answer
+  "what was the weather when this ride went DOWN" with data instead
+  of inference. Discussed in Q&A 2026-05-10 and explicitly deferred
+  — the live `today_vs_forecast` signal is what drives planning;
+  weather history is mostly explanatory, not actionable. Build only
+  if explainability becomes a UI feature.
 
 #### M8 — Calendar Intelligence (~1 week, scoped post-M6-B)
 
@@ -265,6 +393,91 @@ across the right mix of seasons / holidays / events. M6-B (live
 data plane) is what gets MM-native data accumulating; M8 follows
 naturally a few months later.
 
+#### M9 — Embedded agentic chat (~2-3 days, post-interview)
+
+Bring the MCP planner experience into the web app itself so users
+who don't run Claude Desktop (e.g., Megan's sister, husband, anyone
+who wants to try MM from a phone in the park) can talk to the
+agentic planner the same way Claude Desktop users can today.
+
+**Architecture decision: Option C — shared tool implementations.**
+Refactor `mcp/server.py` so each tool's pure data-fetching logic
+moves into a shared module (`mcp/_tool_impls.py`); both
+`mcp/server.py` (stdio MCP for Claude Desktop) and a new HTTP
+transport (`mcp/server_http.py`, deployed as a Lambda) wrap the
+same impl functions. Single source of truth for tool logic AND
+docstrings; both demo paths work; cleanest portfolio narrative
+("the same tool layer powers both stdio MCP and the in-app chat").
+
+Alternatives ruled out: (A) HTTP-MCP-only adds cold-start latency
+and discards the stdio demo; (B) duplicating tool definitions in TS
+splits the source of truth and means every classifier/docstring
+change touches two files.
+
+**Phases (each a clean stopping point):**
+
+1. **Tool refactor + HTTP transport (~3-4 hr).** Extract tool bodies
+   to `_tool_impls.py`; expose via FastAPI or MCP SDK HTTP transport
+   as a new Lambda; exercise via curl. Claude Desktop demo unchanged.
+2. **Chat backend Route Handler (~4-6 hr).**
+   `web/src/app/api/chat/route.ts`. Validates NextAuth session
+   against an allowlist of Cognito subs; calls Anthropic Messages
+   API with tool definitions; tool-use loop; SSE streaming; **prompt
+   caching** on the docstrings + tool schemas (huge cost win — those
+   are stable + massive).
+3. **Chat UI page (~3-4 hr).**
+   `web/src/app/chat/page.tsx`. Streaming-chat component, tool-use
+   indicators ("Calling get_planning_context…"), mobile-friendly.
+   Reuses existing castle palette + typography.
+4. **Allowlist + per-user token tracking (~2-3 hr).** Allowed
+   Cognito subs in env var (`ALLOWED_CHAT_SUBS=sub1,sub2,sub3`).
+   Per-user monthly token totals to DDB
+   (`USER#<sub>/CHAT_USAGE#<yyyy-mm>`); soft-cap at a budget;
+   friendly error when exceeded. Per-conversation max-turn cap
+   prevents runaway tool-use loops.
+5. **CDK + secrets (~30 min).** SSM param
+   `/disney/anthropic/api_key`; grant SSR Lambda read access; add
+   the env var. Make sure the new HTTP-MCP Lambda is granted the
+   same DDB perms the stdio MCP relies on (read STATE / FORECAST /
+   USER#PLAN# rows).
+6. **Polish + testing (~2-3 hr).** Tool-use loop edge cases, rate
+   limiting, error boundaries. Mobile test on phone.
+
+**Cost reality check.** With prompt caching (90% off cached reads)
+on the ~30K-char docstrings + tool schemas, a typical planning
+conversation is ~$0.05-0.10. Three active users × 5 conversations/
+week = ~$3-5/month additional, well under the project's <$5/mo
+budget after MM's other costs.
+
+**Why post-interview, not before:**
+- Streaming + tool-use + auth interactions are notoriously fiddly.
+  Half-finished UI 4 days before an interview makes the demo worse,
+  not better.
+- Today's Claude Desktop MCP demo IS the agentic-coding headline.
+  Risk-averse to disrupt it pre-interview.
+- That said, M9 IS interview-relevant if shipped well: it
+  showcases production agentic-coding skill (allowlist auth,
+  prompt caching, per-user cost controls, graceful tool-use
+  failure handling) that Oracle is probably more interested in
+  than a Claude Desktop screenshot. Both narratives can coexist —
+  ship M9 after the interview if pressure permits, before the
+  interview ONLY if the calendar opens up unexpectedly.
+
+**Dependencies (all met):**
+- Cognito auth (M2-B ✓)
+- DDB Route Handler write pattern (M3 ✓)
+- Stable MCP tool layer (✓ as of 2026-05-10 — 17 tools incl.
+  full plan-feedback loop with calibration_summary)
+
+**Stretch follow-on (call it M9.1):** Pushover-driven proactive
+feedback collection. When `record_plan` writes a plan, schedule a
+Pushover ping for park-close + 30 min: "How'd today go? GREAT /
+FINE / RAN-OVER" with three URL buttons that hit a route handler
+on the web app and auto-record the coarse outcome. Closes the
+feedback loop without requiring the user to remember to chat.
+~3-4 hr. Build only if real usage of the cue-based + next-session
+triggers proves they don't capture enough feedback on their own.
+
 ## Recommended ordering rationale
 
 - **M2-B before M3:** M3 (per-user toggles) requires auth. M2-B
@@ -280,7 +493,7 @@ naturally a few months later.
 
 ## Demo-prep priority order
 
-If interview prep is the constraint, ship in this order:
+Original ordering (as of project start):
 
 1. **M2-B** — gets a live URL on a portfolio. Single most
    demo-valuable milestone.
@@ -288,3 +501,23 @@ If interview prep is the constraint, ship in this order:
 3. **M6** — impressive analytics that other tools don't have.
 4. **M4 + M5** — personal-use polish (real trip value, smaller
    demo lift).
+
+Status as of 2026-05-10: 1, 2, 3, and the M4 half of 4 all shipped.
+The MCP suite (added mid-roadmap, not in original order) became the
+new demo headline — agentic trip-planner using real WDW data is the
+single most distinctive piece of the project for an
+agentic-coding-flavored interview.
+
+**Refreshed priority for the next interview window:**
+
+1. **`party_calendar.json` quick win + this Done-section drift fix
+   you're reading right now** — small but interview-blocking.
+2. **Fresh Claude Desktop screenshots of the agentic planner in
+   action** (see `docs/screenshot-brief.md`) — needed for the README
+   demo grid.
+3. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
+   days, strong architecture-evolution narrative. Optional pre-
+   interview if calendar permits; otherwise post-.
+4. **M9 (embedded chat)** — post-interview only.
+5. **M5 (trip planning)** — personal-use polish, can slip past the
+   interview.
