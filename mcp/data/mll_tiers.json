@@ -1,0 +1,97 @@
+{
+  "updated_at": "2026-05-11",
+  "source_hint": "https://disneyworld.disney.go.com/genie/lightning-lane-multi-pass/ + My Disney Experience app",
+  "maintenance_note": "Disney revises tier assignments periodically (approximately quarterly when a major attraction opens or closes). Manually update this file when you notice the Disney app shows a different tier than listed here. Compact enough that this is ~5 min of work per revision.",
+  "rules": {
+    "pre_book_count": 3,
+    "tier_1_max": 1,
+    "tier_2_min": 2,
+    "ill_separate_product_note": "ILL (Individual Lightning Lane, paid per-ride) attractions like TRON Lightcycle/Run, Cosmic Rewind, and Rise of the Resistance appear in the tier_1 lists below for reference, but ILL is a SEPARATE product. Buying ILL does NOT consume a Multi-Pass pre-book slot. A guest can hold 3 MLL pre-bookings AND however many ILLs they purchase."
+  },
+  "magic_kingdom": {
+    "has_tiers": true,
+    "tier_1": [
+      "TRON Lightcycle / Run",
+      "Seven Dwarfs Mine Train",
+      "Jungle Cruise",
+      "Peter Pan's Flight",
+      "Big Thunder Mountain Railroad",
+      "Space Mountain",
+      "Tiana's Bayou Adventure"
+    ],
+    "tier_2": [
+      "Pirates of the Caribbean",
+      "The Haunted Mansion",
+      "Buzz Lightyear's Space Ranger Spin",
+      "\"it's a small world\"",
+      "The Many Adventures of Winnie the Pooh",
+      "Under the Sea ~ Journey of the Little Mermaid",
+      "Dumbo the Flying Elephant",
+      "Mickey's PhilharMagic",
+      "Mad Tea Party",
+      "The Magic Carpets of Aladdin",
+      "The Barnstormer",
+      "Tomorrowland Speedway"
+    ]
+  },
+  "epcot": {
+    "has_tiers": true,
+    "tier_1": [
+      "Test Track",
+      "Frozen Ever After",
+      "Remy's Ratatouille Adventure",
+      "Guardians of the Galaxy: Cosmic Rewind"
+    ],
+    "tier_2": [
+      "Soarin' Around the World",
+      "Mission: SPACE",
+      "Spaceship Earth",
+      "The Seas with Nemo & Friends",
+      "Living with the Land",
+      "Journey Into Imagination with Figment",
+      "Disney and Pixar Short Film Festival",
+      "Turtle Talk with Crush",
+      "Awesome Planet"
+    ]
+  },
+  "hollywood_studios": {
+    "has_tiers": true,
+    "tier_1": [
+      "Slinky Dog Dash",
+      "Mickey & Minnie's Runaway Railway",
+      "Star Tours – The Adventures Continue",
+      "Toy Story Mania!",
+      "The Twilight Zone Tower of Terror",
+      "Star Wars: Rise of the Resistance"
+    ],
+    "tier_2": [
+      "Millennium Falcon: Smugglers Run",
+      "Alien Swirling Saucers",
+      "Rock 'n' Roller Coaster Starring Aerosmith",
+      "Beauty and the Beast Live on Stage",
+      "Frozen Sing-Along Celebration",
+      "Indiana Jones Epic Stunt Spectacular!",
+      "Lightning McQueen's Racing Academy",
+      "Muppet*Vision 3D",
+      "Disney Junior Play and Dance!"
+    ]
+  },
+  "animal_kingdom": {
+    "has_tiers": false,
+    "any_three": true,
+    "note": "Animal Kingdom has no tier restrictions — guests can pre-book any 3 LL-eligible rides.",
+    "ll_eligible": [
+      "Avatar Flight of Passage",
+      "Na'vi River Journey",
+      "Expedition Everest",
+      "Kilimanjaro Safaris",
+      "DINOSAUR",
+      "Kali River Rapids",
+      "It's Tough to be a Bug!",
+      "TriceraTop Spin",
+      "Festival of the Lion King",
+      "Finding Nemo: The Big Blue... and Beyond!",
+      "Feathered Friends in Flight"
+    ]
+  }
+}

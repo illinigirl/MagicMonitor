@@ -1847,6 +1847,13 @@ def get_planning_context(
              else). Of the 3 pre-bookings: exactly **1 Tier 1 + 2
              Tier 2**. You cannot pre-book 3 Tier 1 rides.
            - **Animal Kingdom:** no tiers — any 3 rides.
+         **Call `get_mll_tiers(park)` for the authoritative current
+         tier snapshot** rather than relying on the examples below.
+         The tool returns the full Tier 1 / Tier 2 lists (or the
+         no-tiers AK note), plus an `updated_at` date so you can
+         tell the user how fresh the data is. The examples below
+         are illustrative; the tool is the source of truth.
+
          Tier 1 examples (Disney revises these periodically; verify
          in the user's app if uncertain):
            - MK: TRON Lightcycle/Run (also an ILL), Seven Dwarfs
@@ -1995,14 +2002,50 @@ def get_planning_context(
          - If they booked the recommendation: nothing to do. Plan
            continues as written; the predicted_wait_min on that
            ride stays at LL-queue-time.
-         - If they booked something different: call
-           record_plan_outcome on the prior plan with
-           aggression_rating=null, timing_rating=null (mid-execution,
-           not the user's plan-quality feedback), and free_text
-           describing the divergence ("user got TRON instead of Big
-           Thunder; replanning"). Then call get_planning_context
-           fresh and record_plan a new plan reflecting the actual
-           booking + remaining wishlist.
+         - If they booked something different: prefer to PATCH the
+           existing plan in place rather than creating a fresh one.
+           See "Mid-trip plan adjustments" below for the
+           remove_ride_from_plan / add_ride_to_plan flow.
+
+       - **Mid-trip plan adjustments — use add/remove, not full
+         replan, for small changes.** Two tools let you patch the
+         current PLAN# row in place without creating a new plan row:
+
+           - `remove_ride_from_plan(plan_id, ride_id, ride_name)` —
+             drops a ride from the active plan. Call when the user
+             explicitly skips a ride ("we're not doing Space Mountain,
+             wait's too long" / "we got a different LL than I
+             recommended for Big Thunder — drop the assumed one").
+             Magic Monitor stops sending plan-disruption alerts for
+             that ride within ~2 min (next poller cycle rebuilds the
+             active-plan index).
+           - `add_ride_to_plan(plan_id, ride_id, ride_name,
+             predicted_wait_min?, position?, notes?)` — adds a
+             spontaneous ride to the active plan. Call when the
+             user adds a ride that wasn't in the original ("we're
+             grabbing Pirates while we're nearby" / "I booked TRON
+             instead of Big Thunder — add TRON, remove Big Thunder").
+             Magic Monitor starts monitoring within ~2 min.
+
+         **When to use add/remove vs. a full replan:**
+           - **Use add/remove** for small in-the-moment changes:
+             user swaps one LL booking, decides to skip a single
+             ride, adds a spontaneous one. Preserves the plan
+             history including predictions for unchanged rides
+             (matters for the feedback loop's calibration data).
+           - **Use full replan** (record_plan_outcome on the prior
+             plan + fresh get_planning_context + new record_plan)
+             when the day fundamentally shifts: weather pivots
+             everything indoor, user changes parks mid-day, half
+             the wishlist gets dropped. Anything that changes 3+
+             items in one go is a fresh plan.
+
+         **Sequence for the most common case — user swaps an LL
+         booking:** `remove_ride_from_plan` (the ride whose LL you
+         recommended but they didn't get) → `add_ride_to_plan`
+         (the ride they actually got, with notes="actual LL booked
+         instead of recommended X"). Both calls return cleanly; the
+         poller catches the change on its next 2-min cycle.
 
        - **Suggest modifying LLs ONLY when the data supports it.**
          Disney Genie+ / Multi-Pass / ILL reservations can be
@@ -2778,6 +2821,95 @@ def find_rides_matching(
     }
 
 
+# ─────────────────────── MLL tier reference ───────────────────────
+#
+# Static JSON snapshot of current Multi-Pass tier assignments per
+# park. Used by the planner when reasoning about pre-arrival
+# bookings (MK/EPCOT/HS require exactly 1 Tier 1 + 2 Tier 2; AK has
+# no tiers). Source of truth is mcp/data/mll_tiers.json, manually
+# updated when Disney revises tier rosters (roughly quarterly).
+#
+# Why a static file vs. live scrape: Disney doesn't expose tier data
+# via any public API, and the disneyworld.com Genie UI is heavy
+# JavaScript with anti-bot protection. The roster shifts ~quarterly
+# and a hand-updated JSON is honest, version-controlled, and 5 min
+# of work per revision.
+
+_MLL_TIERS_PATH = _ROOT / "mcp" / "data" / "mll_tiers.json"
+
+
+@lru_cache(maxsize=1)
+def _mll_tiers() -> dict[str, Any]:
+    """Load tier roster once per process. Returns {} on missing file
+    so the tool can degrade gracefully (returns an error payload
+    instead of crashing)."""
+    if not _MLL_TIERS_PATH.exists():
+        return {}
+    return json.loads(_MLL_TIERS_PATH.read_text())
+
+
+@mcp.tool()
+def get_mll_tiers(park: str) -> dict[str, Any]:
+    """Current Multi-Pass tier rosters for a park.
+
+    Returns the Tier 1 / Tier 2 lists for the park (or a no-tiers
+    note for Animal Kingdom). Use this when reasoning about a
+    guest's pre-arrival LL bookings — the 3-ride allocation requires
+    exactly 1 Tier 1 + 2 Tier 2 at MK/EPCOT/HS, while AK allows any 3.
+
+    **Treat the result as best-known state, not live data.** Disney
+    revises tier assignments periodically. The returned `updated_at`
+    field tells you when this snapshot was hand-verified. If the
+    user mentions a ride that doesn't match what you'd expect from
+    the snapshot, ASK rather than overruling them ("the My Disney
+    Experience app is the source of truth — if it shows Pirates as
+    Tier 1 today, trust the app"). When you're confident about the
+    tier from the snapshot, apply it directly without re-flagging
+    per ride.
+
+    Args:
+        park: Park key or human name. Accepts 'magic_kingdom',
+            'Magic Kingdom', 'MK', etc.
+
+    Returns:
+        Dict with park, has_tiers (bool), tier_1 / tier_2 lists for
+        tiered parks OR ll_eligible list + any_three:true for Animal
+        Kingdom, rules (the pre-book allocation rules), updated_at
+        (snapshot date), and a maintenance_note for context. Returns
+        an error payload if the data file is missing.
+    """
+    park_key = _normalize_park(park)
+    data = _mll_tiers()
+    if not data:
+        return {
+            "error": "MLL tiers data file missing",
+            "error_message": (
+                "mcp/data/mll_tiers.json not found. The tool degrades "
+                "gracefully — use the docstring's tier examples or "
+                "ask the user to check the Disney app."
+            ),
+        }
+
+    park_data = data.get(park_key)
+    if park_data is None:
+        return {
+            "error": "Park not in tier snapshot",
+            "park_key": park_key,
+            "available_parks": [
+                k for k in data
+                if isinstance(data.get(k), dict) and "has_tiers" in data[k]
+            ],
+        }
+
+    return {
+        "park": park_key,
+        "updated_at": data.get("updated_at"),
+        "rules": data.get("rules", {}),
+        "maintenance_note": data.get("maintenance_note"),
+        **park_data,  # has_tiers + tier_1/tier_2 OR any_three + ll_eligible
+    }
+
+
 # ─────────────────────── plan feedback loop ───────────────────────
 #
 # Three tools that let the agentic planner learn from outcomes
@@ -3344,6 +3476,259 @@ def record_plan_outcome(
         "outcome_recorded": True,
         "outcome_recorded_at": now_iso,
         "new_expires_at_epoch": new_ttl,
+    }
+
+
+@mcp.tool()
+def remove_ride_from_plan(
+    plan_id: str,
+    ride_id: str,
+    ride_name: str,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Remove a ride from an active plan's ride_sequence.
+
+    Call this when the user explicitly drops a ride from their day
+    during a mid-trip replan ("we're skipping Space Mountain, the
+    wait's too long"). The poller scans active plan ride_sequence
+    arrays on every poll to fire plan-disruption alerts, so removing
+    a ride here means Magic Monitor stops alerting on its DOWN/UP
+    transitions for this user.
+
+    Patches the existing PLAN# row in place — no new row created,
+    no outcome recorded (the plan is still in-flight). The
+    outcome_recorded flag and TTL remain untouched.
+
+    Idempotent: removing a ride that's not in the plan returns
+    `removed=0` without raising. The match tries ride_id first
+    (most reliable) and falls back to case-insensitive ride_name
+    match for plans that didn't carry ride_id.
+
+    Args:
+        plan_id: From the record_plan response (or the SK suffix
+            in a get_user_plan_history entry). Either form works.
+        ride_id: The themeparks.wiki ride ID to remove. Same value
+            you'd see in get_planning_context's per-ride blocks.
+        ride_name: Display name, used for the response message and
+            as the ride_name-only fallback if ride_id doesn't match.
+        user_id: Single-user default "megan".
+
+    Returns:
+        Dict with plan_id, ride_name, removed (count — 0 or 1),
+        remaining_rides (int), and an optional note if the ride
+        wasn't found. On error: error payload (plan not found,
+        AWS auth issue, etc.).
+    """
+    sk = _coerce_plan_id_to_sk(plan_id)
+    try:
+        table = _ddb_table()
+        resp = table.get_item(Key={"PK": f"USER#{user_id}", "SK": sk})
+        item = resp.get("Item")
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan read failed",
+            "error_message": str(e),
+        }
+
+    if not item:
+        return {
+            "error": "Plan not found",
+            "error_message": (
+                f"No plan with id '{plan_id}' for user '{user_id}'. "
+                f"Either it expired (24h TTL on unrecorded plans) or "
+                f"the id is wrong — try get_user_plan_history to confirm."
+            ),
+            "plan_id": plan_id,
+            "user_id": user_id,
+        }
+
+    ride_seq = list(item.get("ride_sequence") or [])
+    name_lc = (ride_name or "").lower()
+    # Two-stage match: ride_id first (precise), then name fallback
+    # for older plans recorded before ride_id was documented.
+    new_seq = [
+        r for r in ride_seq
+        if r.get("ride_id") != ride_id
+        and (r.get("ride_name") or "").lower() != name_lc
+    ]
+    removed = len(ride_seq) - len(new_seq)
+
+    if removed == 0:
+        return {
+            "plan_id": plan_id,
+            "user_id": user_id,
+            "ride_name": ride_name,
+            "ride_id": ride_id,
+            "removed": 0,
+            "remaining_rides": len(new_seq),
+            "note": (
+                f"'{ride_name}' was not in the plan — nothing to remove. "
+                f"Plan still has {len(new_seq)} ride(s)."
+            ),
+        }
+
+    try:
+        table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": sk},
+            UpdateExpression="SET ride_sequence = :seq",
+            ExpressionAttributeValues=_floats_to_decimals({":seq": new_seq}),
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan update failed",
+            "error_message": str(e),
+        }
+
+    return {
+        "plan_id": plan_id,
+        "user_id": user_id,
+        "ride_name": ride_name,
+        "ride_id": ride_id,
+        "removed": removed,
+        "remaining_rides": len(new_seq),
+        "note": (
+            f"Removed '{ride_name}' from the plan. Magic Monitor will "
+            f"stop sending plan-disruption alerts for this ride within "
+            f"~2 min (next poller invocation rebuilds the active-plan "
+            f"index)."
+        ),
+    }
+
+
+@mcp.tool()
+def add_ride_to_plan(
+    plan_id: str,
+    ride_id: str,
+    ride_name: str,
+    predicted_wait_min: int | None = None,
+    position: int | None = None,
+    notes: str | None = None,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Add a ride to an active plan's ride_sequence.
+
+    Call this when the user adds a spontaneous ride that wasn't in
+    the original plan ("let's also grab Pirates while we're here").
+    Magic Monitor will start monitoring this ride for DOWN/UP
+    transitions and fire plan-disruption alerts within ~2 min
+    (next poller invocation rebuilds the active-plan index).
+
+    Patches the existing PLAN# row in place — no new row created,
+    no outcome recorded. The outcome_recorded flag and TTL remain
+    untouched.
+
+    Idempotent: adding a ride already in the plan returns `added=0`
+    with a note (doesn't duplicate or update the existing entry).
+    Match is by ride_id; if you need to update a ride's predicted
+    wait or notes, remove and re-add.
+
+    Args:
+        plan_id: From the record_plan response or
+            get_user_plan_history entry. Either form works.
+        ride_id: The themeparks.wiki ride ID. Same value you'd
+            see in get_planning_context's per-ride blocks.
+        ride_name: Display name (also used as a poller fallback
+            if ride_id matching fails for any reason).
+        predicted_wait_min: Optional. The planner's predicted wait
+            for this ride right now, including LL-queue time if the
+            user is booking an LL slot for it. Useful for the
+            feedback loop's per-ride bias calibration later.
+        position: Optional. Where this ride falls in the sequence
+            (1-indexed). Informational only — Claude uses it for
+            ordering when reasoning about the plan, but the data
+            plane doesn't enforce uniqueness or shift existing
+            positions on insert.
+        notes: Optional free-text ("assumed LL booked at 4pm" /
+            "spontaneous add after Pirates").
+        user_id: Single-user default "megan".
+
+    Returns:
+        Dict with plan_id, ride_name, ride_id, added (0 or 1),
+        total_rides (int), and a note. On error: error payload.
+    """
+    sk = _coerce_plan_id_to_sk(plan_id)
+    try:
+        table = _ddb_table()
+        resp = table.get_item(Key={"PK": f"USER#{user_id}", "SK": sk})
+        item = resp.get("Item")
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan read failed",
+            "error_message": str(e),
+        }
+
+    if not item:
+        return {
+            "error": "Plan not found",
+            "error_message": (
+                f"No plan with id '{plan_id}' for user '{user_id}'. "
+                f"Either it expired (24h TTL on unrecorded plans) or "
+                f"the id is wrong — try get_user_plan_history to confirm."
+            ),
+            "plan_id": plan_id,
+            "user_id": user_id,
+        }
+
+    ride_seq = list(item.get("ride_sequence") or [])
+
+    if any(r.get("ride_id") == ride_id for r in ride_seq if r.get("ride_id")):
+        return {
+            "plan_id": plan_id,
+            "user_id": user_id,
+            "ride_name": ride_name,
+            "ride_id": ride_id,
+            "added": 0,
+            "total_rides": len(ride_seq),
+            "note": (
+                f"'{ride_name}' is already in the plan. To update its "
+                f"predicted wait or notes, call remove_ride_from_plan "
+                f"first and then re-add."
+            ),
+        }
+
+    new_entry: dict[str, Any] = {
+        "ride_name": ride_name,
+        "ride_id": ride_id,
+    }
+    if predicted_wait_min is not None:
+        new_entry["predicted_wait_min"] = predicted_wait_min
+    if position is not None:
+        new_entry["position"] = position
+    if notes:
+        new_entry["notes"] = notes
+
+    ride_seq.append(new_entry)
+
+    try:
+        table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": sk},
+            UpdateExpression="SET ride_sequence = :seq",
+            ExpressionAttributeValues=_floats_to_decimals({":seq": ride_seq}),
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan update failed",
+            "error_message": str(e),
+        }
+
+    return {
+        "plan_id": plan_id,
+        "user_id": user_id,
+        "ride_name": ride_name,
+        "ride_id": ride_id,
+        "added": 1,
+        "total_rides": len(ride_seq),
+        "note": (
+            f"Added '{ride_name}' to the plan. Magic Monitor will "
+            f"start sending plan-disruption alerts for this ride "
+            f"within ~2 min."
+        ),
     }
 
 
