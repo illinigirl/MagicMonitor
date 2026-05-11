@@ -96,6 +96,7 @@ RIDE#<id>       | HIST#<iso_ts>         | status-change history (90d TTL)
 RIDE#<id>       | FORECAST#<polled_at>  | per-poll wait forecast (7d TTL)
 RIDE#<id>       | DOWN_SINCE            | when this ride went down
 RIDE#<id>       | COOLDOWN#DOWN         | 15-min alert dedup (TTL)
+RIDE#<id>       | COOLDOWN#BACK_UP      | 15-min alert dedup (TTL)
 RIDE#<id>       | COOLDOWN#STILL_DOWN   | 45-min follow-up alert dedup (TTL)
 RIDE#<id>       | COOLDOWN#LOW_WAIT     | 90-min low-wait alert dedup (TTL)
 USER#<sub>      | PROFILE               | name + Pushover user key

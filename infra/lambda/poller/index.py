@@ -377,6 +377,23 @@ def handler(event, context):
                 if not alerts_allowed(park_key):
                     continue
 
+                # Cooldown gate: flap protection. themeparks.wiki
+                # sometimes reports a ride OPERATING→DOWN→OPERATING
+                # repeatedly within minutes. Without this, every UP
+                # transition fires a fresh BACK UP push. We still
+                # record the state transition (above) so DOWN_SINCE
+                # is cleared correctly; we just skip the alert.
+                if db.is_back_up_alert_on_cooldown(ride_id):
+                    print(f"[poller] Skipping BACK UP alert for {attr['name']} (cooldown)")
+                    continue
+
+                # Set cooldown BEFORE fanning out, same pattern as
+                # DOWN cooldown — even if no users get pinged today
+                # (no favoriters, no plan watchers), we still want
+                # the cooldown to prevent flap spam if a user adds
+                # the favorite / plan mid-window.
+                db.mark_back_up_alert_sent(ride_id)
+
                 favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
                 print(
                     f"[poller] {attr['name']} BACK UP: {len(subscribers)} park subs, "

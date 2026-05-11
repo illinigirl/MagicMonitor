@@ -24,6 +24,13 @@ from boto3.dynamodb.conditions import Key
 TABLE_NAME = os.environ["DISNEY_TABLE_NAME"]
 HISTORY_RETENTION_DAYS = int(os.environ.get("HISTORY_RETENTION_DAYS", "90"))
 DOWN_ALERT_COOLDOWN_SECS = int(os.environ.get("DOWN_ALERT_COOLDOWN_SECS", "900"))
+# BACK UP alerts also need a cooldown — themeparks.wiki occasionally
+# flaps a ride OPERATING→DOWN→OPERATING→DOWN→OPERATING within minutes
+# during glitchy reporting periods. Without this, every UP transition
+# fires a fresh BACK UP push (since DOWN_SINCE is set on every DOWN
+# regardless of whether the DOWN cooldown suppressed the DOWN alert).
+# 15 min matches the DOWN cooldown so flap pings dedup symmetrically.
+BACK_UP_ALERT_COOLDOWN_SECS = int(os.environ.get("BACK_UP_ALERT_COOLDOWN_SECS", "900"))
 # Short-wait alerts get a longer cooldown — the low-wait window for a
 # ride often persists 30-60 min, and we don't want to spam-ping during
 # the same trough. 90 min default; configurable via env.
@@ -183,6 +190,33 @@ def mark_down_alert_sent(ride_id: str) -> None:
         Item={
             "PK":      f"RIDE#{ride_id}",
             "SK":      "COOLDOWN#DOWN",
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "ttl":     expire_ts,
+        }
+    )
+
+
+# ─── BACK UP cooldown — mirrors DOWN cooldown ────────────────────────
+# Prevents flap-induced spam where themeparks.wiki reports a ride
+# OPERATING→DOWN→OPERATING repeatedly within minutes. Every BACK UP
+# transition produces an alert without this gate; one OK-the-ride-is-
+# fixed notification per ride per cooldown window is the right
+# semantics.
+
+def is_back_up_alert_on_cooldown(ride_id: str) -> bool:
+    """Return True if a BACK UP alert was sent for this ride recently."""
+    resp = _table.get_item(Key={"PK": f"RIDE#{ride_id}", "SK": "COOLDOWN#BACK_UP"})
+    return "Item" in resp
+
+
+def mark_back_up_alert_sent(ride_id: str) -> None:
+    """Record that a BACK UP alert was sent. Item auto-expires after
+    BACK_UP_ALERT_COOLDOWN_SECS via DynamoDB TTL."""
+    expire_ts = int(time.time()) + BACK_UP_ALERT_COOLDOWN_SECS
+    _table.put_item(
+        Item={
+            "PK":      f"RIDE#{ride_id}",
+            "SK":      "COOLDOWN#BACK_UP",
             "sent_at": datetime.now(timezone.utc).isoformat(),
             "ttl":     expire_ts,
         }
