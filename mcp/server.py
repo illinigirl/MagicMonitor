@@ -1849,6 +1849,92 @@ def get_planning_context(
          late to the ILL. (User-stated experience as of 2026-05-10
          — if Disney standardizes enforcement across products this
          rule may need revisiting.)
+       - **Recommend the next LL to book when the user has Multi-Pass
+         active.** Multi-Pass users can hold one LL at a time and
+         book the next once the current one is used (or tapped in).
+         When the user mentions they have Multi-Pass / Genie+ active
+         — or is asking for a plan after a long park stretch where
+         it's reasonable to assume — proactively suggest which ride
+         to book next. Don't wait for them to ask.
+
+         Selection criteria, in order:
+
+         1. **Filter:** rides on the user's wishlist that are
+            (a) currently OPERATING, (b) have a `current_ll_offer`
+            with a `return_start` falling within the user's planned
+            remaining park time, (c) haven't already been done today
+            (ask if uncertain — Claude has no built-in "done" signal
+            beyond what the user reports).
+
+         2. **Score each candidate by time saved:**
+              ll_value = current wait_mins - 15 min LL queue
+            Higher is better — an LL on a 60-min standby saves ~45
+            min; an LL on a 25-min standby only saves ~10. If the
+            current wait is below ~25 min, the LL is rarely worth
+            burning on that ride.
+
+         3. **Tiebreakers (apply when top picks are within ~10 min
+            of each other on time saved):**
+            - **Plan compatibility:** does the LL return window fall
+              during a stretch the user would already be in that
+              land? Bonus if yes (e.g., Big Thunder LL returning at
+              3 PM while the user planned to be in Frontierland
+              anyway).
+            - **Proximity:** walking distance from the user's current
+              location or their next planned ride. Use lat/lon and
+              haversine. Closer = bonus.
+            - **Cost-of-delay survivor:** if the ride's
+              `forecast_peak_next_3h_mins` is much higher than its
+              current wait, the LL locks in today's lower value
+              against the predicted peak.
+            - **Down-risk avoidance:** rides with high
+              `downtime_pct` in their historical analytics carry
+              more risk if you commit an LL slot to them. Slight
+              negative weight.
+
+         4. **Recommend top 1-2 with explicit reasoning.** Don't
+            just name the ride; show the math: "I'd book Big Thunder
+            next — it's showing 65 min standby and its LL is
+            returning at 3:15 PM. That's ~50 min saved vs standby,
+            and you'd be in Frontierland for Pirates around that
+            time anyway. Second choice would be Space Mountain (40
+            min saved, less convenient return window)."
+
+         **How to incorporate into the plan you propose:**
+
+         - Lay out the plan ASSUMING the recommended LL gets booked.
+           Mark that ride's slot in the sequence with an explicit
+           "assuming Big Thunder LL at 3:15 PM" note rather than
+           hiding the assumption. Predicted wait for that ride
+           drops to ~15 min (LL queue) for plan-time purposes.
+         - When you call record_plan to persist the plan, encode
+           the assumption in the ride_sequence entry — e.g.,
+           {"ride_name": "Big Thunder", "predicted_wait_min": 15,
+           "position": 3, "notes": "assumes Multi-Pass LL booked
+           at 3:15 PM"} — so the feedback loop can later compare
+           predicted-vs-actual if the booking diverged.
+         - Tell the user upfront that the plan is contingent on
+           the booking: "If you book something else when the window
+           opens, tell me what you got and I'll re-sequence the
+           rest of the day. I'm assuming Big Thunder at 3:15 here
+           — if Disney offers you a different time slot or you
+           pick another ride, that's the trigger for a quick
+           replan."
+
+         **When the user reports back what they actually booked:**
+
+         - If they booked the recommendation: nothing to do. Plan
+           continues as written; the predicted_wait_min on that
+           ride stays at LL-queue-time.
+         - If they booked something different: call
+           record_plan_outcome on the prior plan with
+           aggression_rating=null, timing_rating=null (mid-execution,
+           not the user's plan-quality feedback), and free_text
+           describing the divergence ("user got TRON instead of Big
+           Thunder; replanning"). Then call get_planning_context
+           fresh and record_plan a new plan reflecting the actual
+           booking + remaining wishlist.
+
        - **Suggest modifying LLs ONLY when the data supports it.**
          Disney Genie+ / Multi-Pass / ILL reservations can be
          modified through the app, but the planner only has visibility
