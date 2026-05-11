@@ -85,6 +85,25 @@ the other live-DDB tools:
 >
 > I'm at Magic Kingdom and want to ride Pirates, Big Thunder, TRON,
 > Haunted Mansion, and Space Mountain. What should I ride next?
+>
+> What entertainment is running at EPCOT today?
+>
+> I'm at Hollywood Studios with Slinky Dog, Tower of Terror, and
+> Rise of the Resistance on my list — but I also want to catch
+> Fantasmic. How should I order things?
+>
+> [Day 1] Plan me a Magic Kingdom day — Pirates, Big Thunder, Haunted
+> Mansion, Space Mountain, plus Happily Ever After.
+>
+> [Day 2, new conversation, same MCP server still loaded]
+> Let's plan EPCOT today: Test Track, Cosmic Rewind, Soarin', and
+> Spaceship Earth.
+>
+> [Claude should call get_user_plan_history first, see the
+> unrecorded MK plan from yesterday, ask "before we plan today, how
+> did your MK day go?", then use whatever you say to calibrate the
+> EPCOT plan. After EPCOT is laid out and you accept, Claude calls
+> record_plan to log it for the same loop.]
 
 If you see "AWS credentials expired" instead, run `aws sso login
 --profile watchtower` and try again — Claude Desktop picks up the
@@ -115,13 +134,126 @@ DynamoDB table.
 | `get_live_ride_status` | DDB live | Current live status of one ride (status, wait, LL availability) |
 | `get_park_live_status` | DDB live | Current live status of every ride in one park, optionally filtered |
 | `get_ride_downtime_today` | DDB live | Count of DOWN events for one ride during one park-day (today / N days back) |
-| `get_planning_context` | mixed | One-shot trip-planner context: live status + forecast + DOWN history + lat/lon + park hours + weather, for a list of rides |
+| `get_park_showtimes` | themeparks.wiki | Today's full entertainment lineup for one park — spectaculars, parades, stage shows, music, atmosphere, character meets — each classified and sorted by next-upcoming start time |
+| `get_planning_context` | mixed | One-shot trip-planner context: live status + forecast + DOWN history + lat/lon + park hours + weather + headliner showtimes, for a list of rides |
 | `find_rides_matching` | snapshot | Filter and sort rides by predicates ("low downtime, high avg wait") |
+| `record_plan` | DDB write | Persist an accepted plan + the planner's predictions for the cross-session feedback loop. 24h TTL until outcome is recorded, then 1 year |
+| `record_plan_outcome` | DDB write | Log how a recorded plan actually went — aggression rating, timing rating, per-ride/show actuals, free-text notes |
+| `get_user_plan_history` | DDB live | Recent plans for a user with outcomes if recorded, plus a server-computed `calibration_summary` (aggression avg, timing distribution, per-ride / per-show prediction bias with sample sizes + confidence labels). The planner uses this to calibrate today's plan against the user's track record without having to derive aggregates from raw rows |
 
 Future tools (planned):
 
 - `get_ride_forecast_history` — multiple poll-snapshots for a ride
   (Phase C: forecast-vs-actual accuracy analysis)
+
+### Plan feedback loop — design notes
+
+`record_plan` / `record_plan_outcome` / `get_user_plan_history` form a
+cross-session feedback loop that lets the agentic planner learn from
+the user's actual outcomes.
+
+**Lifecycle:**
+
+1. User asks for a plan; Claude lays it out via `get_planning_context`.
+2. User accepts ("let's do that, starting with Pirates"). Claude calls
+   `record_plan` with the ride sequence, any shows, and a small
+   context snapshot. DDB row is written with `outcome_recorded=false`
+   and a 24h TTL.
+3. Either same-conversation (user says "we're done", "thanks, that
+   worked") OR at the start of a future planning session (Claude calls
+   `get_user_plan_history` and sees the pending plan), Claude calls
+   `record_plan_outcome` with the user's feedback. TTL extends to 1
+   year and the row becomes calibration data for future plans.
+4. Stale plans (planned > 14 days ago, never recorded) get flagged
+   `stale_for_recall=true` so Claude stops asking about them.
+
+**Why eager-write at plan-time vs. lazy-write at outcome-time:**
+
+We write the row when the plan is made (not when feedback arrives) so
+we capture the planner's predictions at the time — predicted wait per
+ride, predicted arrival per show, the today_vs_forecast ratio Claude
+saw. This is what makes "system learns from outcomes" rigorous: we
+can compare the predictions Claude actually made against actuals later.
+Lazy-write would lose the original predictions because the user only
+remembers what happened, not what was forecast.
+
+The 24h TTL on unrecorded rows limits cruft from plans the user
+browsed past and never followed.
+
+**Server-side calibration aggregation (the "system learns" loop):**
+
+`get_user_plan_history` doesn't just return raw plan rows — it also
+returns a pre-computed `calibration_summary` block derived from the
+recorded outcomes. Same shape as the live `today_vs_forecast` block
+in `get_planning_context`: pre-computed numbers, sample sizes, plus
+ready-made interpretation strings the LLM can paraphrase. Buckets:
+
+- `aggression`: avg score on a -1..+1 scale (-1 = too aggressive,
+  +1 = not aggressive enough), plus an interpretation like *"User's
+  recent plans tend to finish with time to spare. Pack more in
+  today."*
+- `timing`: distribution of `ran_over` / `on_time` / `extra_time`
+  outcomes, plus avg `extra_time_minutes` when meaningful, plus
+  interpretation like *"User finishes with extra time on 3/5 recent
+  plans (averaging ~45 min spare on those days) — pack today's plan
+  more aggressively."*
+- `per_ride_prediction_bias`: per-ride avg(actual − predicted) wait
+  delta, sample size, and a confidence label (`high` for n≥5,
+  `medium` for n=3-4, `low` for n<3). Interpretations are
+  ride-specific and direction-aware: *"Big Thunder tends to wait
+  LONGER than predicted (+17 min avg, high confidence on n=5).
+  Scale this ride's prediction up by ~17 min for this user."*
+- `per_show_arrival_bias`: same pattern for show arrival timing
+  (predicted arrival window vs. actual `arrived_with_min`).
+
+The `usage_hint` field at the bottom of the summary tells the LLM
+how to apply each bucket: surface aggression + timing as one upfront
+calibration note (same convention as today_vs_forecast); apply
+high-confidence per-item biases visibly to the user; apply
+medium-confidence biases silently to predictions; ignore
+low-confidence biases entirely (sample too small to be useful).
+
+This is the design intent: the data plane does the math, the LLM
+narrates the lesson. Server-side aggregation keeps the calibration
+rigorous and version-controlled; LLM-side narration keeps the
+conversational feel of the agentic loop.
+
+**Auth model — single-user by design:**
+
+MCP doesn't carry the calling client's authenticated user identity to
+the server. For this family-use deployment, all three feedback tools
+default `user_id="megan"` and write under `PK = USER#megan`. To plan
+for someone else, pass `user_id` explicitly. Multi-user MCP is out of
+scope for v1; the same data shape extends cleanly when MCP gains a
+way to carry the auth subject from the calling client.
+
+**Pushover-driven proactive feedback collection** (a Pushover ping at
+park-close-time with one-tap "great / fine / ran-over" buttons that
+deep-link to the web app) is intentionally NOT in v1. The cheap
+cue-based + next-session triggers should cover most real usage; the
+proactive loop is a follow-on to build only if data sparsity proves
+the feedback gap is real.
+
+### Showtimes classifier — note on the dual TS/Python implementation
+
+`get_park_showtimes` (and the headliner subset embedded in
+`get_planning_context`) reuses the same six-bucket classifier the
+web app uses at `/parks/<park>/today` — but the classifier itself
+is a verbatim Python port of the TS implementation in
+`web/src/lib/showtimes.ts`. Two copies of the regex is the
+deliberate trade-off:
+
+- Same product judgment expressed in two languages — interview-
+  legible "here's how I'd express the same heuristic across stacks."
+- Drift cost is low: shows turn over maybe twice a year, and a "keep
+  in sync" comment at the top of both files makes the link explicit.
+- Failure mode is "MCP planner misclassifies show X for one cycle
+  until both files are updated," never silently broken data.
+
+Alternatives considered: shipping a static JSON snapshot built by a
+TS classifier run, or shrinking the Python side to a four-bucket
+classifier (planner-relevant categories only). Both add complexity
+or asymmetry for marginal benefit at this scale.
 
 ## Standalone debugging
 

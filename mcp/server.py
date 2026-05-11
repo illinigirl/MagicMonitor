@@ -144,6 +144,28 @@ def _convert_decimals(obj: Any) -> Any:
     return obj
 
 
+def _floats_to_decimals(obj: Any) -> Any:
+    """Recursively convert Python floats to Decimal for DDB writes.
+
+    boto3's resource interface refuses native floats with
+    "Float types are not supported. Use Decimal types instead."
+    The reverse of _convert_decimals, used on the write side. NaN /
+    inf would raise inside Decimal(); we don't expect those in plan
+    feedback data so we let the exception propagate as a clear
+    error rather than silently coercing.
+    """
+    from decimal import Decimal
+    if isinstance(obj, float):
+        # str() round-trips the value cleanly; Decimal(float) would
+        # introduce binary-float artifacts like Decimal('1.1200000...').
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {k: _floats_to_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_floats_to_decimals(v) for v in obj]
+    return obj
+
+
 def _normalize_park(park: str) -> str:
     """Accept 'Magic Kingdom' / 'magic_kingdom' / 'MK' / 'mk', return canonical key.
 
@@ -911,6 +933,89 @@ def get_park_live_status(
     }
 
 
+@mcp.tool()
+def get_park_showtimes(park: str) -> dict[str, Any]:
+    """Today's entertainment lineup at a park: shows + performance times.
+
+    Returns every SHOW entity at the park that has at least one
+    performance starting today (in park-local Eastern time), each
+    classified into one of:
+
+      - spectacular    nighttime fireworks / projection finales
+      - parade         daytime parades and cavalcades
+      - stage          scheduled stage productions worth planning around
+      - music          live bands, ensembles, choirs, drum corps
+      - atmosphere     non-musical ambient acts (jugglers, stilt walkers)
+      - character_meet "Meet [Character]" meet-and-greets
+
+    The first three (spectacular/parade/stage) are the "headliners" the
+    web UI surfaces by default; the model can use the same split as a
+    soft signal for what's worth fitting into a planning itinerary
+    (see also get_planning_context, which embeds a headliner-only
+    subset of this data).
+
+    Source: themeparks.wiki /live endpoint, same as the web app.
+    Showtimes are published once per day and rarely change intra-day,
+    so this is fresh enough without caching.
+
+    Args:
+        park: Park key or human name. Accepts 'magic_kingdom',
+            'Magic Kingdom', 'MK', etc. (same normalization as the
+            other park-scoped tools).
+
+    Returns:
+        Dict with park, current_time_et, shows (list of
+        {id, name, category, showtimes: [{start, end}, ...]}, sorted
+        by next-upcoming start time), and next_up — the soonest
+        unstarted performance anywhere in the park, or None if every
+        performance is already over for the day. On fetch failure,
+        returns shows=None with an error_message rather than a stack
+        trace; the planner can degrade gracefully.
+    """
+    park_key = _normalize_park(park)
+    now_et = datetime.now(_EASTERN)
+    shows = _fetch_park_showtimes(park_key)
+
+    if shows is None:
+        return {
+            "park": park_key,
+            "current_time_et": now_et.isoformat(),
+            "shows": None,
+            "next_up": None,
+            "error_message": (
+                "Failed to fetch showtimes from themeparks.wiki. "
+                "Try again in a moment; the upstream API is occasionally "
+                "flaky for individual park endpoints."
+            ),
+        }
+
+    # Park-wide next-up: soonest unstarted performance across all shows
+    # regardless of category. A Voices-of-Liberty set in 5 min beats a
+    # Happily Ever After at 9 PM as "what's next."
+    now_iso = now_et.isoformat()
+    next_up: dict[str, Any] | None = None
+    for show in shows:
+        nt = _next_upcoming_showtime(show, now_iso)
+        if not nt:
+            continue
+        if next_up is None or nt["start"] < next_up["time"]["start"]:
+            next_up = {
+                "show": {
+                    "id": show["id"],
+                    "name": show["name"],
+                    "category": show["category"],
+                },
+                "time": nt,
+            }
+
+    return {
+        "park": park_key,
+        "current_time_et": now_et.isoformat(),
+        "shows": shows,
+        "next_up": next_up,
+    }
+
+
 def _park_day_window_utc(days_back: int) -> tuple[datetime, datetime, str]:
     """Return [start, end_inclusive] UTC datetimes covering one park-day.
 
@@ -1239,6 +1344,194 @@ def _fetch_weather_forecast() -> dict[str, Any] | None:
     }
 
 
+# ─────────────────────── showtimes (M4 over MCP) ───────────────────────
+#
+# Verbatim Python port of the classifier + fetcher in
+# `web/src/lib/showtimes.ts` and `web/src/lib/showtimes-server.ts`.
+# Two copies of the regex is the deliberate trade-off — see the design
+# discussion in mcp/README.md. KEEP IN SYNC: when shows turn over (a
+# headliner gets retired, a new act launches), update both files. The
+# TS is what the web app renders; this is what the MCP planner sees.
+# Drift between the two is "MCP planner misclassifies show X" until
+# both are updated; it's never fatal.
+
+_SHOW_PARK_IDS = {
+    "magic_kingdom":     "75ea578a-adc8-4116-a54d-dccb60765ef9",
+    "epcot":             "47f90d2c-e191-4239-a466-5892ef59a88b",
+    "hollywood_studios": "288747d1-8b4f-4a64-867e-ea7c9b27bad8",
+    "animal_kingdom":    "1c84a229-8862-4648-9c71-378ddd2c7693",
+}
+
+# Six-bucket category model mirrors web/src/lib/showtimes.ts. The
+# planner uses the headliner subset (spectacular/parade/stage) as
+# soft time constraints and treats music/atmosphere/character_meet
+# as ambient (mention only if the user asks).
+_SHOW_HEADLINER_CATEGORIES = ("spectacular", "parade", "stage")
+
+import re as _re
+
+_NAMED_ACT_OVERRIDES = [
+    # Stage shows whose API names lack "live on stage" / "musical"
+    (_re.compile(r"mickey's magical friendship faire"),                "stage"),
+    (_re.compile(r"celebraci[oó]n encanto"),                           "stage"),
+    (_re.compile(r"feathered friends in flight"),                      "stage"),
+    # The "Spectacular!" in the title trips SPECTACULAR_RX before the
+    # stage regex's "epic stunt" can match — but Indy is a midday
+    # stunt show that runs ~5x/day, not a nighttime fireworks finale.
+    # Override forces the right bucket so the planner doesn't apply
+    # post-finale-crowd reasoning to a 4pm performance.
+    (_re.compile(r"indiana jones.*epic stunt"),                        "stage"),
+    # Christmas-season stage show at EPCOT (Festival of the Holidays).
+    # 50-piece orchestra + celebrity narrator reading the Christmas
+    # story — a real planning anchor in November/December.
+    (_re.compile(r"candlelight processional"),                         "stage"),
+    # Live-music sets at World Showcase / AK pavilions where the API
+    # name describes the venue, not the act
+    (_re.compile(r"viva mexico"),                                      "music"),
+    (_re.compile(r"entertainment at canada mill stage"),               "music"),
+    (_re.compile(r"entertainment at germany gazebo"),                  "music"),
+    # EPCOT festival concert series. Garden Rocks (Flower & Garden,
+    # Mar-Jul) and Eat to the Beat (Food & Wine, Aug-Nov) usually
+    # contain the word "Concert" in the API name and would match the
+    # music keyword regex on their own — these overrides are defense
+    # in depth for years where the branding drops "Concert" from the
+    # title. Disney on Broadway (also F&W) sometimes appears without
+    # any music keyword at all, so it actually needs the override.
+    (_re.compile(r"eat to the beat"),                                  "music"),
+    (_re.compile(r"garden rocks"),                                     "music"),
+    (_re.compile(r"disney on broadway"),                               "music"),
+    # Up character moment, not an atmosphere band
+    (_re.compile(r"adventures with kevin"),                            "character_meet"),
+]
+
+_SPECTACULAR_RX = _re.compile(
+    r"\b(fireworks|spectacular|enchantment|happily ever after|luminous|"
+    r"fantasmic|wonderful world of animation|disney movie magic|"
+    r"tree of life awakenings|disney starlight|symphony of us)\b"
+)
+_PARADE_RX = _re.compile(r"\b(parade|cavalcade)\b")
+_STAGE_RX = _re.compile(
+    r"\b(live on stage|sing-?along|musical adventure|musical celebration|"
+    r"festival of the lion king|finding nemo|epic stunt|frozen sing|"
+    r"first order searches|disney villains|big blue|beauty and the beast)\b"
+)
+_MUSIC_RX = _re.compile(
+    r"\b(band|philharmonic|drum|drummers|drummer|pianist|musician|concert|"
+    r"mariachi|marimba|voices of|jammitors|dapper dans|beats and strings|"
+    r"kora tinga|rhythmics|swingin|matsuriza)\b"
+)
+
+
+def _classify_show(name: str) -> str:
+    """Bucket a SHOW entity by name into one of six categories.
+
+    Mirrors web/src/lib/showtimes.ts `classifyShow`. Anything unmatched
+    falls through to "atmosphere" — wrong-but-safe (still surfaced,
+    never invisible).
+    """
+    n = name.lower()
+    for pattern, category in _NAMED_ACT_OVERRIDES:
+        if pattern.search(n):
+            return category
+    if n.startswith("meet "):
+        return "character_meet"
+    if _SPECTACULAR_RX.search(n):
+        return "spectacular"
+    if _PARADE_RX.search(n):
+        return "parade"
+    if _STAGE_RX.search(n):
+        return "stage"
+    if _MUSIC_RX.search(n):
+        return "music"
+    return "atmosphere"
+
+
+def _fetch_park_showtimes(park_key: str) -> list[dict[str, Any]] | None:
+    """Fetch today's SHOW entities for a park from themeparks.wiki.
+
+    Mirrors web/src/lib/showtimes-server.ts `getParkShowtimes`. Filters
+    to entities of type SHOW with at least one performance starting
+    today (in park-local time, America/New_York), classifies each by
+    name, and returns a flat list sorted by next-upcoming start time.
+
+    Returns None on fetch failure — callers should degrade gracefully
+    (showtimes are nice-to-have for the planner, not load-bearing).
+
+    No caching: the Open-Meteo / themeparks.wiki helpers used by
+    get_planning_context are also uncached. Showtime payloads change
+    rarely intra-day (the API publishes the day's schedule once and
+    the rare "Fantasmic cancelled tonight" status doesn't show up here
+    anyway — that goes via the live status of the SHOW entity which
+    we're not surfacing yet).
+    """
+    park_id = _SHOW_PARK_IDS.get(park_key)
+    if not park_id:
+        return None
+
+    import requests
+    url = f"https://api.themeparks.wiki/v1/entity/{park_id}/live"
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return None
+
+    today_local = datetime.now(_EASTERN).date().isoformat()
+    shows: list[dict[str, Any]] = []
+
+    for item in data.get("liveData", []) or []:
+        if item.get("entityType") != "SHOW":
+            continue
+        # Filter the multi-day showtimes array to today's performances
+        # only. Slice the date prefix off the ISO string instead of
+        # parsing — themeparks.wiki always returns ISO with TZ offset
+        # in park-local time so the YYYY-MM-DD prefix IS the park day.
+        todays = []
+        for s in item.get("showtimes", []) or []:
+            start = s.get("startTime")
+            end = s.get("endTime")
+            if not start or not end:
+                continue
+            if start[:10] != today_local:
+                continue
+            todays.append({"start": start, "end": end})
+        if not todays:
+            # Skip shows the API knows about but isn't running today —
+            # multi-day festival entries, after-hours-only spectaculars
+            # when there's no after-hours event, etc.
+            continue
+        todays.sort(key=lambda x: x["start"])
+        shows.append({
+            "id": item.get("id"),
+            "name": item.get("name"),
+            "category": _classify_show(item.get("name", "")),
+            "showtimes": todays,
+        })
+
+    # Sort by next-upcoming start time so "what's happening soon" reads
+    # naturally. Shows whose performances are all in the past sort to
+    # the bottom by name.
+    now_iso = datetime.now(_EASTERN).isoformat()
+    def _sort_key(show: dict[str, Any]) -> tuple[int, str]:
+        for t in show["showtimes"]:
+            if t["start"] > now_iso:
+                return (0, t["start"])
+        return (1, (show.get("name") or "").lower())
+    shows.sort(key=_sort_key)
+    return shows
+
+
+def _next_upcoming_showtime(
+    show: dict[str, Any], now_iso: str
+) -> dict[str, str] | None:
+    """First performance of `show` starting after `now_iso`, or None."""
+    for t in show.get("showtimes", []) or []:
+        if t["start"] > now_iso:
+            return t
+    return None
+
+
 def _compute_load_vs_forecast(
     rides_out: list[dict],
 ) -> dict[str, Any] | None:
@@ -1428,6 +1721,65 @@ def get_planning_context(
 
     HOW TO USE THE RESPONSE WHEN ORDERING RIDES:
 
+    **CRITICAL DATA CAVEAT — read this first.** Every live field in
+    this response (`status`, `wait_mins`, `current_ll_offer`,
+    `forecast`, `weather`, `today_vs_forecast`, `currently_down_in_park`,
+    `showtimes`) reflects RIGHT NOW, TODAY. Nothing here predicts
+    tomorrow or any future date. If the user is asking about a
+    future-day plan ("we're going Saturday", "tomorrow's our EPCOT
+    day"), this data still helps for typical-pattern reasoning
+    (historical analytics, drop patterns, baselines), but DO NOT
+    treat live values as predictions for that date — and DO NOT
+    suggest specific actions that depend on availability data we
+    don't have for that date (see the LL section below for the most
+    common version of this trap).
+
+    0a. **Before planning, check for unrecorded prior plans + calibrate
+       against the user's track record.** Call get_user_plan_history
+       (defaults to user_id="megan" for this single-user setup) BEFORE
+       laying out today's plan. Two things to do with what you get back:
+
+       - **Pending feedback prompt.** If a plan has outcome_recorded=false
+         AND stale_for_recall=false (planned 1-14 days ago), ask once:
+         "Before we plan today — how did your <park> day on <planned_for_date>
+         go? Was it about right, did you run over, or have extra time?"
+         Then call record_plan_outcome with what they say. If they reply
+         "don't really remember," still call record_plan_outcome with
+         free_text="user couldn't recall" so the row stops generating
+         prompts. For plans where stale_for_recall=true, don't ask —
+         briefly acknowledge ("I see you also planned at MK on the 1st,
+         too long ago to ask about") and move on.
+
+       - **Calibration via the pre-computed summary.** Read
+         `calibration_summary` from the response (server-side
+         aggregation; you don't need to derive anything from raw plans).
+         Apply each bucket according to its `confidence` label and the
+         summary's `usage_hint`:
+
+           - **aggression + timing aggregates** — if either has an
+             interpretation that's actionable (i.e., not the "balanced"
+             / "current calibration is working" wording), surface it
+             ONCE up front in your response: "Your last N plans
+             finished with extra time, so I'm packing more in today."
+             Don't restate per ride. Same convention as the section
+             1.5 today_vs_forecast calibration mention.
+           - **per_ride_prediction_bias entries** — apply by
+             confidence:
+               · high (n>=5): quote directly to the user when
+                 relevant ("Big Thunder runs ~15 min longer than
+                 forecast for you, so I'm scheduling 60 min for it
+                 instead of 45")
+               · medium (n=3-4): apply silently to your prediction
+                 (don't mention; sample size doesn't justify a callout)
+               · low (n<3): IGNORE. The signal is too noisy.
+           - **per_show_arrival_bias entries** — same confidence
+             rules. A "user arrives later than recommended" signal
+             with high confidence may justify trimming arrival
+             buffers; with low confidence, ignore.
+
+       If `calibration_summary` is null, this is the first recorded
+       trip — proceed with baselines and don't fabricate calibration.
+
     0. **Discover hard constraints first.** If the user gives you a
        multi-ride list without mentioning any of these, ASK ONCE
        before laying out the order — they materially change the plan
@@ -1441,6 +1793,14 @@ def get_planning_context(
          attractions like TRON or Guardians; same 1-hour shape)
        - Virtual queue boarding groups (TRON, Tiana's, etc. — return
          window is set when the boarding group is called)
+       - Shows worth planning around. The top-level `showtimes` field
+         lists today's headliner spectaculars / parades / stage shows
+         that haven't started yet. If any look marquee (Happily Ever
+         After, Festival of Fantasy, Fantasmic, Festival of the Lion
+         King, etc.) and the user hasn't said one way or the other,
+         ASK ONCE: "I see X at <time> and Y at <time> running tonight
+         — want to fit either in?" Treat any selected show as a
+         ~20-45 min fixed hold (see section 5.5 for the full mechanics).
        Skip the question if the user already mentioned them. Treat
        each as a hard slot in the schedule and sequence other rides
        around it. When the user has an LL/ILL for a ride, note that
@@ -1473,53 +1833,85 @@ def get_planning_context(
          the window with travel time on both sides.
        - If two LL windows overlap, the user has to pick one. Flag
          the conflict and ask which is the priority.
-       - **Suggest modifying LLs when a better slot would help.**
+       - **When you have to push past the end of one LL window,
+         prefer pushing the Individual Lightning Lane (ILL, paid
+         per-ride) over the Multi-Pass / Genie+ (bundled).** Empirical
+         pattern: ILL CMs tend to be more lenient about late
+         arrivals than Multi-Pass CMs — paid-per-ride creates a
+         "we charged you $20, we're not turning you away" dynamic,
+         and ILL queues are typically shorter so a late guest is
+         less disruptive. Multi-Pass enforcement is more variable
+         and often stricter. So when sequencing forces a late
+         arrival on one of two competing LLs, route on-time to the
+         Multi-Pass and apply the late grace to the ILL. Same logic
+         when only one of two LLs is reachable in time without
+         skipping a planned ride: be on-time to the Multi-Pass,
+         late to the ILL. (User-stated experience as of 2026-05-10
+         — if Disney standardizes enforcement across products this
+         rule may need revisiting.)
+       - **Suggest modifying LLs ONLY when the data supports it.**
          Disney Genie+ / Multi-Pass / ILL reservations can be
-         modified through the app. The planner has indirect signal
-         about availability via each ride's `current_ll_offer`,
-         which is the GLOBAL next-available LL return time being
-         offered right now (not user-specific — same number Disney
-         shows anyone booking fresh).
+         modified through the app, but the planner only has visibility
+         into one signal: each ride's `current_ll_offer`, which is
+         the GLOBAL next-available LL return time being offered RIGHT
+         NOW for TODAY (not user-specific — same number Disney shows
+         anyone booking fresh). Disney's API does NOT expose a full
+         inventory map, future-day inventory, or per-slot availability.
 
-         How to reason about whether the user's target swap-time
-         is available:
-         - target_swap_time >= current_ll_offer.return_start
-           → slots through the target are still in inventory.
-           Suggest the swap with high confidence: "Looks like 7-8 PM
-           is still open — current next-available is 6:30 PM, so
-           any slot after that should be bookable. Worth swapping."
-         - target_swap_time < current_ll_offer.return_start
-           → slots before next-available are sold out, including
-           the target. Tell the user honestly: "7-8 PM appears to
-           be gone — earliest available now is 8:30 PM. Your 5-6 PM
-           is still the best slot you have access to."
+         **Hard refusal rule:** never suggest moving an LL to a
+         specific time without a concrete signal supporting it. The
+         three valid scenarios:
 
-         Proactively trigger this reasoning when the current LL
-         window creates an awkward fit (requires backtracking,
-         conflicts with dining, forces a worse ride order, pushes
-         against park close). Don't suggest a swap if the current
-         slot is fine.
+         **(A) Today, target ≥ current_ll_offer.return_start** —
+         the only "we have data" case. Phrase with appropriate
+         hedging: "The 7-8 PM range looks LIKELY available — current
+         next-available is 6:30 PM, so anything ≥ 6:30 should be
+         bookable. Specific times within that range can still be
+         sold out though, so check the app to confirm 7-8 PM
+         specifically before committing." Do NOT phrase as "is
+         open" or "is available" — that overstates what we know.
 
-         What we don't have: visibility into specific future slots
-         beyond "next-available" — Disney's API doesn't expose a
-         full inventory map. So we can confirm "≥ X is available"
-         or "< X is sold out" with confidence, but we can't say
-         "specifically 7:15 PM is open." Phrase suggestions
-         accordingly.
+         **(B) Today, target < current_ll_offer.return_start** —
+         the target is gone. Tell the user honestly: "7-8 PM appears
+         to be sold out — earliest available now is 8:30 PM. Your
+         5-6 PM is still the best slot you have access to."
 
-         When no better slot is currently available, fall back to
-         the historical drop pattern in `ll_drop_pattern.top_drop_hours_et`
-         — these are the ET hours when this ride's LL slot most
-         commonly refreshes (cancellations / no-shows / system
-         refreshes that move return times earlier). Concrete
-         suggestion shape: "Test Track's LL refreshes typically
-         happen around 11 AM, 2 PM, and 5 PM ET — if no better slot
-         is available right now, check the app at those times."
-         `drops_per_active_day` tells you how frequently to expect
-         refreshes (8+ per day is "very active," <1 is "rare").
-         `typical_shift_minutes` tells you how big a refresh
-         usually is — if it's 30 min, the swap window opens up
-         half an hour; if it's 4 hours, the slot can jump dramatically.
+         **(C) `current_ll_offer` is missing OR the user is planning
+         a future date** — REFUSE to suggest specific times. We have
+         no data. Do this instead:
+           - Acknowledge the gap honestly: "I can't see tomorrow's
+             LL inventory — Disney doesn't publish that, and the live
+             data here is today-only."
+           - Reference `ll_drop_pattern.top_drop_hours_et` as TYPICAL
+             refresh windows (NOT availability claims):
+             "Big Thunder's LL slot most commonly refreshes around
+             11 AM, 2 PM, and 5 PM ET — when you're booking, those
+             are the historically best times to check the app for an
+             earlier slot." Pure pattern-of-life data, no claim
+             about specific dates.
+           - For tomorrow specifically, also note the booking timing:
+             Multi-Pass opens at 7am day-of for most guests; Deluxe/
+             DVC guests can book Multi-Pass 7 days ahead and ILL up
+             to 7 days ahead. The user should react to actual
+             availability when the booking window opens, not to any
+             plan we propose.
+
+         **When to proactively trigger this reasoning:** when the
+         current LL window creates an awkward fit for TODAY
+         (requires backtracking, conflicts with dining, forces a
+         worse ride order, pushes against park close). Don't suggest
+         a swap if the current slot is fine. Don't suggest a swap
+         AT ALL for a future-date plan — wait until they're at the
+         park and ask in real time.
+
+         **`ll_drop_pattern` field reference (historical only):**
+         `drops_per_active_day` tells you how frequently this ride's
+         LL refreshes (8+ per day is "very active," <1 is "rare").
+         `typical_shift_minutes` tells you how big a refresh usually
+         is — if it's 30 min, the swap window opens half an hour
+         when refreshes happen; if it's 4 hours, the slot can jump
+         dramatically. These describe the ride's typical refresh
+         behavior, not today's specific inventory state.
 
     1. **Cost-of-delay rule** (most important). The fields you want:
        `forecast_peak_next_3h_mins` (worst forecasted wait in the next
@@ -1671,6 +2063,166 @@ def get_planning_context(
        a live-data lookup — wait times and operating status of
        restaurants aren't currently in MM's data.
 
+    5.5. **Showtimes the user wants to catch.** The top-level `showtimes`
+       field is a headliner-only subset of today's entertainment lineup
+       (spectacular / parade / stage), filtered to performances that
+       haven't started yet. Each entry has `category`, `name`, and
+       `remaining_today` — a list of {start, end} ISO timestamps for
+       this show's upcoming performances.
+
+       Treat selected shows as fixed time-blocks. Walk backward from
+       the start time when sequencing: the previous ride must finish
+       (wait + ride duration + walk to viewing spot + early-arrival
+       buffer) before showtime. If the math doesn't work, swap a
+       different ride into the slot or warn the user the show is at
+       risk.
+
+       **Crowd-scale the arrival recommendations.** The arrival times
+       below are baselines for an average-crowd day. The same
+       `today_vs_forecast.park_load_ratio` signal that scales ride
+       waits in section 1.5 applies to show arrival times — popular
+       viewing spots fill up proportionally to the park's actual
+       crowd level, not its forecast. Apply roughly:
+         - ratio > 1.20 (heavy) → multiply baseline arrival by ~1.4-1.5x
+           (60-90 min Fantasmic baseline becomes 90-130 min)
+         - 1.05 ≤ ratio ≤ 1.20 (slightly heavy) → multiply by ~1.2x
+         - 0.85 ≤ ratio ≤ 1.05 (typical) → use baseline as-is
+         - ratio < 0.85 (light) → multiply by ~0.7-0.8x
+       If `today_vs_forecast` is None or `confidence` is "low", use
+       baselines as-is and acknowledge the uncertainty ("hard to gauge
+       crowds today — these are typical-day arrival times, add 30 min
+       on top if the park feels packed when you arrive"). Mention the
+       scaling ONCE per response (same convention as section 1.5
+       calibration) rather than per-show.
+
+       Weather is a secondary modifier: if `weather.next_6h` shows
+       rain clearing right before showtime, expect the venue to fill
+       faster than usual once the rain stops (people who were waiting
+       it out indoors all converge at once). For Fantasmic
+       specifically, heavy rain can cancel the show — don't promise
+       a 90-min hold if the forecast looks thunderstorm-y.
+
+       **Spectaculars (fireworks / projection finales)** — ~15-30 min
+       performance. These typically gate park-departure timing: most
+       guests leave shortly after, so the post-finale ~30 min is the
+       worst time to queue (mass exit crowds). Don't put a long-wait
+       ride immediately after a spectacular. Per-park notes:
+
+       - **Happily Ever After (Magic Kingdom):** ~18 min, projection
+         mapping on the castle. The iconic spot is the Hub directly
+         in front of the castle (best castle view, gets crowded
+         60-90 min before). Main Street curbs are the popular
+         alternative — arrive 30-45 min early for a clear sightline.
+         The Tomorrowland bridge is an off-angle alternative with
+         less crowd if the user is okay with a side view. After the
+         finale, Main Street becomes a slow-moving river of exits
+         for ~30-45 min. If the user has a Tomorrowland ride after,
+         that's fine — the queues there clear quickly. Avoid
+         scheduling a Frontierland or Adventureland ride post-finale
+         unless they're willing to fight the exit crowd to get there.
+       - **Disney Starlight: Dream the Night Away (Magic Kingdom):**
+         ~20 min, a newer nighttime parade-spectacular hybrid that
+         winds the parade route. Same viewing-spot logic as Festival
+         of Fantasy below applies, with the added consideration that
+         this is a nighttime show — Frontierland start position has
+         the LEAST castle ambient light, Main Street near the castle
+         has the most. Often runs a second performance ~2 hours
+         after the first on busy nights.
+       - **Luminous The Symphony of Us (EPCOT):** ~17 min, fireworks
+         and barges on World Showcase Lagoon. Best viewing is
+         anywhere along the lagoon perimeter — the show is designed
+         to look good from all sides. Showcase Plaza (front of WS)
+         is the densest viewing area. Japan, Italy, and UK pavilions
+         are popular alternative spots. International Gateway side
+         (between France and UK) usually has more breathing room and
+         is the closer exit if leaving via Boardwalk hotels. Arrive
+         30-45 min early for a clear lagoon sightline at the popular
+         spots; 15 min for the lesser-trafficked sides.
+       - **Fantasmic! (Hollywood Studios):** ~30 min, in the 6,900-
+         seat Hollywood Hills Amphitheater (uniquely sit-down — the
+         only WDW spectacular with assigned seating). Arrive 60-90
+         min early for a good seat, 30 min for standing room.
+         Dining packages with a few HS table-service restaurants
+         include reserved seating. After Fantasmic, the amphitheater
+         empties onto a single narrow path — expect 20-30 min just
+         to clear the venue, longer to reach the front of the park.
+       - **Disney Movie Magic + Wonderful World of Animation
+         (Hollywood Studios):** projected on the Chinese Theatre at
+         the end of Hollywood Blvd. Stand anywhere along Hollywood
+         Blvd facing the theater. Less of a planning anchor than
+         Fantasmic — these run back-to-back at the front of the park
+         and are easy to walk up to 10-15 min before.
+       - **Animal Kingdom:** no traditional nighttime spectacular
+         currently. Tree of Life Awakenings is a 5-min projection
+         that loops every ~10 min after dark — ambient, no planning
+         needed.
+
+       **Parades** — ~12-15 min for the parade itself, but the parade
+       route is closed off ~30-45 min total (crowd assembly + parade
+       + dispersal). Currently only Magic Kingdom has daytime parades:
+
+       - **Disney Festival of Fantasy Parade (Magic Kingdom):** the
+         marquee parade. ~12 min performance. Route: starts at
+         Frontierland (the steps near Tiana's Bayou Adventure / Big
+         Thunder), winds through Liberty Square, past Cinderella
+         Castle, down Main Street USA, ends at Town Square. Common
+         viewing spots and tradeoffs:
+           - **Frontierland (start)** — lightest crowd, easy to leave
+             toward Big Thunder / Splash / Pirates afterward. Good
+             pick if the user's next ride is in Frontierland or
+             Adventureland — they're already there. Arrive 15-20 min
+             early.
+           - **Liberty Square bridge / in front of Haunted Mansion** —
+             same route side as Frontierland. Easy walk to Mansion or
+             back to Frontierland after. ~15-20 min early.
+           - **Hub in front of castle** — best castle backdrop and
+             photo opportunity, most crowded. 30-45 min early.
+           - **Main Street curb** — flat, easy viewing, lots of curb
+             space. Arrive 20-30 min early for prime spots, 10 min
+             for back-row standing.
+           - **Town Square (end)** — parade ends here, easy exit to
+             park entrance if leaving after. 10-15 min early.
+         The route blocks crossing through Liberty Square / past the
+         castle / down Main Street for the full ~30-45 min window.
+         If the user wants a ride on the OPPOSITE side of the route
+         from the parade (e.g., they're at Town Square and want to
+         get to Frontierland), sequence that ride BEFORE the parade
+         or wait until ~15 min after it ends. Use the ride lat/lon
+         to find a viewing spot near the user's next ride: if their
+         next ride is Big Thunder, suggest the Frontierland start;
+         if it's Haunted Mansion, suggest the Liberty Square bridge.
+       - **Disney Adventure Friends Cavalcades:** mini-parades that
+         run multiple times throughout the day at MK (often AK too).
+         ~5 min each, much shorter route than FoF. Less of a
+         planning anchor — easy to catch incidentally if the user is
+         on Main Street when one passes. Don't reorganize the day
+         around these unless the user specifically asks.
+       - **EPCOT, Hollywood Studios, Animal Kingdom:** no traditional
+         daytime parade currently running. Don't suggest parade
+         viewing for those parks even if `remaining_today` is empty
+         (the absence of parade entries is the signal — don't
+         hallucinate a parade).
+
+       **Stage shows** — typically 25-35 min for the performance plus
+       15-20 min queueing in (these are indoor-theater shows with set
+       seatings). Treat as a ~45-min hold. Examples:
+       - **Festival of the Lion King (Animal Kingdom):** in-the-round
+         theater, ~30 min, very popular — arrive 20 min early.
+       - **Indiana Jones Epic Stunt Spectacular (Hollywood Studios):**
+         ~30 min outdoor stunt show, 5x daily. Easy walk-up; arrive
+         10-15 min early.
+       - **Festival of Fantasy / Mickey's Magical Friendship Faire
+         on the Castle Forecourt Stage (Magic Kingdom):** ~20 min,
+         outdoor castle stage. Sightlines from in front of the
+         castle are fine; arrive at start time.
+       - **Beauty and the Beast Live on Stage (Hollywood Studios):**
+         ~25 min, outdoor amphitheater. Arrive 15 min early.
+
+       The web app at `/parks/<park>/today` shows the full lineup
+       (including atmosphere acts and character meets) — mention it
+       as the place to browse what else is running if the user wants
+       more detail than the headliner list here.
+
     6. **Weather + heat.** Outdoor rides (coasters like Big Thunder,
        TRON, Splash, Slinky Dog; water rides like Pirates, Splash,
        Kali) close for lightning (weather_code 95/96/99). Heavy rain
@@ -1689,6 +2241,78 @@ def get_planning_context(
        - Always-comfortable day → ignore temperature, decide on
          cost-of-delay + proximity alone.
 
+    6.5. **Water rides are the hot-day exception** — and have their
+       own scheduling caveats. The two significant soak rides at WDW
+       are Tiana's Bayou Adventure (Magic Kingdom, formerly Splash
+       Mountain) and Kali River Rapids (Animal Kingdom). Both
+       genuinely soak you — Kali is the more aggressive of the two
+       (drenched, not damp).
+
+       **Heat + sun = optimal conditions for these, not the time to
+       avoid them.** Invert the normal "defer outdoor rides when
+       hot" logic for water rides specifically: treat them as
+       INDOOR-equivalent (or better) during the hot-afternoon
+       window. The whole appeal is the cooldown.
+
+       But two constraints that matter for sequencing:
+
+       - **Don't schedule a water ride immediately before any
+         extended indoor AC stop.** Table-service dining, indoor
+         stage shows (Festival of the Lion King at AK, Beauty and
+         the Beast Live at HS, Carousel of Progress at MK), or
+         long indoor queues with strong AC will make a soaked
+         guest genuinely miserable for 30+ minutes. Allow
+         ~30-60 min in sun/warm air to dry before the next indoor
+         stop, OR sequence another outdoor activity (a coaster, a
+         walking break, an outdoor quick-service stop) in between
+         to bridge the dry-out window.
+       - **Don't schedule water rides when it's cool.** Below
+         ~70°F, getting soaked is unpleasant; below ~60°F (rare in
+         FL but possible Dec-Feb mornings), actively avoid. Check
+         `weather.current.temp_f` before recommending.
+
+       When a user has a water ride on their list:
+         1. Find a hot-afternoon slot (warmer than 80°F ideally)
+         2. Verify what's scheduled immediately after — if it's
+            indoor dining or an indoor show, push the water ride
+            earlier or insert a 30-60 min outdoor buffer
+         3. If the day is cool throughout, mention it to the user
+            and ask if they still want to ride — don't silently
+            include a soak ride on a 65°F day
+
+    7. **After the user accepts a plan, persist it for the feedback
+       loop.** Once the user signals acceptance ("let's do that",
+       "starting with Pirates", "sounds good"), call record_plan with
+       a compact snapshot:
+         - park
+         - ride_sequence: ordered list of {ride_name,
+           predicted_wait_min, position} from the plan you just laid
+           out (use today_vs_forecast-adjusted predictions, not raw
+           forecast values)
+         - show_selections: any shows being fitted in (with
+           performance_start + your predicted_arrival_min)
+         - context: small dict like {park_load_ratio:
+           today_vs_forecast.park_load_ratio, weather_summary:
+           "<temp>F, <conditions>"}
+         - notes: any user-stated constraints ("dining at 6pm",
+           "skipping water rides")
+       record_plan returns a plan_id; mention it briefly to the user
+       so they can reference it later if needed ("logged as plan
+       2026-05-10T18:00; you can give feedback next time we plan").
+
+       DO NOT call record_plan for plans the user didn't accept
+       (alternates they asked about and rejected, hypothetical "what
+       if" planning, or pure information queries with no commitment).
+       The point is to capture plans the user actually intends to
+       follow.
+
+       Then LATER in the same conversation, if the user signals
+       end-of-trip ("we're heading out", "thanks, that worked",
+       "we're done") OR reports outcomes incrementally throughout
+       the day, call record_plan_outcome with the same plan_id and
+       whatever feedback you've gathered. If they don't, the next
+       planning session will pick it up via the section 0a check.
+
     Args:
         park: Park key or human name. Accepts 'magic_kingdom',
             'Magic Kingdom', 'MK', etc.
@@ -1699,11 +2323,13 @@ def get_planning_context(
 
     Returns:
         Dict with park, current_time_et, park_hours (open/close/
-        minutes_until_close), weather (current + 6h forecast), rides
-        (list with full per-ride context), and unresolved (list of
-        ride_names that couldn't be matched). On AWS auth failure for
-        the live-data portion, falls back to per-ride error blocks
-        rather than dropping the whole call.
+        minutes_until_close), weather (current + 6h forecast),
+        showtimes (headliner-only, remaining-today performances; None
+        if the showtimes API fetch failed), rides (list with full
+        per-ride context), and unresolved (list of ride_names that
+        couldn't be matched). On AWS auth failure for the live-data
+        portion, falls back to per-ride error blocks rather than
+        dropping the whole call.
     """
     park_key = _normalize_park(park)
     now_et = datetime.now(_EASTERN)
@@ -1869,6 +2495,31 @@ def get_planning_context(
 
         rides_out.append(out)
 
+    # Headliner-only showtimes with remaining-today performances. We
+    # filter aggressively here (vs. exposing the full park lineup via
+    # get_park_showtimes) because get_planning_context is already
+    # token-heavy and atmosphere acts / character meets aren't
+    # planner-relevant. The model can fall back to get_park_showtimes
+    # if it needs the rest.
+    now_iso = now_et.isoformat()
+    all_shows = _fetch_park_showtimes(park_key)
+    headliner_showtimes: list[dict[str, Any]] | None
+    if all_shows is None:
+        headliner_showtimes = None
+    else:
+        headliner_showtimes = []
+        for show in all_shows:
+            if show["category"] not in _SHOW_HEADLINER_CATEGORIES:
+                continue
+            remaining = [t for t in show["showtimes"] if t["start"] > now_iso]
+            if not remaining:
+                continue
+            headliner_showtimes.append({
+                "name": show["name"],
+                "category": show["category"],
+                "remaining_today": remaining,
+            })
+
     return {
         "park": park_key,
         "current_time_et": now_et.isoformat(),
@@ -1876,6 +2527,7 @@ def get_planning_context(
         "weather": _fetch_weather_forecast(),
         "today_vs_forecast": _compute_load_vs_forecast(rides_out),
         "currently_down_in_park": _fetch_park_currently_down(table, park_key),
+        "showtimes": headliner_showtimes,
         "rides": rides_out,
         "unresolved": unresolved,
     }
@@ -1969,6 +2621,703 @@ def find_rides_matching(
             for r in rides[:limit]
         ],
     }
+
+
+# ─────────────────────── plan feedback loop ───────────────────────
+#
+# Three tools that let the agentic planner learn from outcomes
+# across sessions. Lifecycle:
+#
+# 1. After the user accepts a plan, Claude calls record_plan(...)
+#    which writes a USER#<user_id>/PLAN#<iso_ts> row with
+#    outcome_recorded=false and a 24h TTL (auto-clean if never
+#    confirmed).
+# 2. Either later in the same conversation (user signals "we're
+#    done") OR at the start of a future planning session (Claude
+#    sees an unrecorded plan via get_user_plan_history), Claude
+#    calls record_plan_outcome(plan_id, ...) which updates the
+#    same row with the user's feedback and bumps TTL to 1 year.
+# 3. get_user_plan_history(...) returns recent plans (with the
+#    `outcome_recorded` flag and a `staleness` indicator) so the
+#    planner can both prompt for missing feedback AND calibrate the
+#    new plan against the user's track record.
+#
+# Auth model: this is a single-user feature for the family-use case.
+# `user_id` defaults to "megan" — passes through as the partition
+# suffix unchanged. Multi-user via MCP is out of scope for v1; the
+# same data shape would extend cleanly when MCP gains a way to
+# carry the auth subject from the calling client.
+#
+# Pushover-driven proactive feedback collection (the agentic-narrative
+# stretch from the design doc) is deliberately not implemented here.
+# Ship the cheap version first, see whether the user-cue + next-session
+# triggers are enough; build the Pushover loop as a follow-on if they
+# aren't.
+
+# Default partition-key suffix for the single-user case.
+_DEFAULT_USER_ID = "megan"
+# Eager-write rows that never get a confirming outcome should expire
+# fast — they represent plans the user browsed past or asked about
+# hypothetically. 24h is enough that a same-day "we're done" cue can
+# still find the row.
+_PLAN_PENDING_TTL_SECS = 24 * 60 * 60
+# Outcome-confirmed rows live longer so the calibration history is
+# meaningful. 365 days lets per-user trends accumulate across a year
+# of trips.
+_PLAN_RECORDED_TTL_SECS = 365 * 24 * 60 * 60
+# Staleness threshold for prompting. Plans older than this are too
+# stale for the user to recall details; Claude should skip asking
+# about them rather than nag.
+_PLAN_STALENESS_DAYS = 14
+
+
+def _epoch_now() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _coerce_plan_id_to_sk(plan_id: str) -> str:
+    """plan_id is the ISO timestamp suffix; SK is `PLAN#<ts>`.
+
+    Accept either form ('PLAN#2026-05-10T18:00:00+00:00' or
+    '2026-05-10T18:00:00+00:00') so Claude can pass back whatever it
+    received without having to remember the prefix convention.
+    """
+    if plan_id.startswith("PLAN#"):
+        return plan_id
+    return f"PLAN#{plan_id}"
+
+
+# Aggression rating numeric scale. Negative = plan didn't fit (too
+# aggressive), positive = plan ran short (not aggressive enough).
+# Average across plans gives a -1..+1 calibration knob.
+_AGGRESSION_SCORES = {
+    "too_aggressive": -1.0,
+    "about_right": 0.0,
+    "not_aggressive_enough": 1.0,
+}
+
+# Sample-size thresholds for per-ride / per-show bias confidence.
+# Below 3 samples a derived average is essentially noise; treat as
+# directional only or ignore entirely.
+_BIAS_CONFIDENCE_HIGH = 5
+_BIAS_CONFIDENCE_MEDIUM = 3
+
+# Magnitude threshold (minutes) below which a wait-time delta is
+# treated as "predicted accurately" rather than biased. Calibration
+# noise on a 2-min poll cadence + user recall imprecision means
+# ±5 min is functionally indistinguishable from zero.
+_BIAS_NEUTRAL_MINUTES = 5
+
+
+def _bias_confidence(n: int) -> str:
+    if n >= _BIAS_CONFIDENCE_HIGH:
+        return "high"
+    if n >= _BIAS_CONFIDENCE_MEDIUM:
+        return "medium"
+    return "low"
+
+
+def _compute_calibration_summary(
+    recorded_plans: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Aggregate recorded plans into per-user calibration signals.
+
+    Server-side derivation so the LLM gets pre-computed numbers +
+    confidence labels rather than having to eyeball raw plan rows.
+    Same design pattern as `_compute_load_vs_forecast` for the live
+    today_vs_forecast signal — pre-computation in the data plane,
+    interpretation strings in the response so Claude has ready
+    phrasing.
+
+    Returns None if no plans have outcomes recorded.
+
+    Output shape:
+        {
+          n_recorded_plans: int,
+          aggression: {avg_score, interpretation, n_samples} | null,
+          timing: {distribution, avg_extra_time_minutes,
+                   interpretation, n_samples} | null,
+          per_ride_prediction_bias: [
+            {ride_name, n_samples, avg_delta_min, confidence,
+             interpretation},
+            ...
+          ],
+          per_show_arrival_bias: [
+            {show_name, n_samples, avg_delta_min, confidence,
+             interpretation},
+            ...
+          ],
+        }
+    """
+    plans = [p for p in recorded_plans if p.get("outcome_recorded")]
+    if not plans:
+        return None
+
+    # ── Aggression aggregate ──
+    agg_scores = [
+        _AGGRESSION_SCORES[p["aggression_rating"]]
+        for p in plans
+        if p.get("aggression_rating") in _AGGRESSION_SCORES
+    ]
+    if agg_scores:
+        avg_agg = sum(agg_scores) / len(agg_scores)
+        if avg_agg < -0.3:
+            agg_interp = (
+                "User's recent plans tend to run too aggressive — they "
+                "didn't fit. Be more conservative today: longer buffers, "
+                "fewer rides, or both."
+            )
+        elif avg_agg > 0.3:
+            agg_interp = (
+                "User's recent plans tend to finish with time to spare. "
+                "Pack more in today — shorter buffers, add a ride, or "
+                "fit a show that wouldn't normally make the cut."
+            )
+        else:
+            agg_interp = (
+                "User's recent plans have been balanced — predicted "
+                "aggression has been about right. Use baseline buffers."
+            )
+        aggression = {
+            "avg_score": round(avg_agg, 2),
+            "interpretation": agg_interp,
+            "n_samples": len(agg_scores),
+        }
+    else:
+        aggression = None
+
+    # ── Timing aggregate ──
+    timing_buckets = {"ran_over": 0, "on_time": 0, "extra_time": 0}
+    extra_times: list[float] = []
+    for p in plans:
+        t = p.get("timing_rating")
+        if t in timing_buckets:
+            timing_buckets[t] += 1
+        if t == "extra_time" and p.get("extra_time_minutes") is not None:
+            extra_times.append(float(p["extra_time_minutes"]))
+    n_timing = sum(timing_buckets.values())
+    if n_timing > 0:
+        avg_extra = (
+            round(sum(extra_times) / len(extra_times), 1)
+            if extra_times else None
+        )
+        # Interpretation pulls the dominant bucket, with an extra-time
+        # magnitude callout when meaningful.
+        share_extra = timing_buckets["extra_time"] / n_timing
+        share_over = timing_buckets["ran_over"] / n_timing
+        if share_extra >= 0.6:
+            extra_blurb = (
+                f" (averaging ~{avg_extra:.0f} min spare on those days)"
+                if avg_extra else ""
+            )
+            timing_interp = (
+                f"User finishes with extra time on {timing_buckets['extra_time']}/"
+                f"{n_timing} recent plans{extra_blurb} — pack today's plan "
+                f"more aggressively."
+            )
+        elif share_over >= 0.5:
+            timing_interp = (
+                f"User runs over time on {timing_buckets['ran_over']}/"
+                f"{n_timing} recent plans — be more conservative today, "
+                f"cut a ride or extend buffers."
+            )
+        elif timing_buckets["on_time"] / n_timing >= 0.5:
+            timing_interp = (
+                f"User finishes on time on {timing_buckets['on_time']}/"
+                f"{n_timing} recent plans — current calibration is working."
+            )
+        else:
+            timing_interp = (
+                f"Mixed timing pattern across {n_timing} recent plans "
+                f"(ran_over={timing_buckets['ran_over']}, "
+                f"on_time={timing_buckets['on_time']}, "
+                f"extra_time={timing_buckets['extra_time']}) — no clear "
+                f"adjustment. Use baselines."
+            )
+        timing = {
+            "distribution": timing_buckets,
+            "avg_extra_time_minutes": avg_extra,
+            "interpretation": timing_interp,
+            "n_samples": n_timing,
+        }
+    else:
+        timing = None
+
+    # ── Per-ride prediction bias ──
+    # For each plan, join ride_sequence (carries predicted_wait_min)
+    # with per_item_feedback (carries actual_wait_min) on ride name.
+    # Aggregate (actual - predicted) deltas across plans.
+    ride_deltas: dict[str, list[float]] = {}
+    show_deltas: dict[str, list[float]] = {}
+    for p in plans:
+        feedback = p.get("per_item_feedback") or {}
+        if not isinstance(feedback, dict):
+            continue
+        # Ride bias
+        ride_predictions = {
+            r["ride_name"]: r.get("predicted_wait_min")
+            for r in (p.get("ride_sequence") or [])
+            if r.get("ride_name") and r.get("predicted_wait_min") is not None
+        }
+        for ride_name, predicted in ride_predictions.items():
+            fb = feedback.get(ride_name)
+            if not isinstance(fb, dict):
+                continue
+            actual = fb.get("actual_wait_min")
+            if actual is None:
+                continue
+            try:
+                delta = float(actual) - float(predicted)
+            except (TypeError, ValueError):
+                continue
+            ride_deltas.setdefault(ride_name, []).append(delta)
+        # Show arrival bias — same shape, different fields
+        show_predictions = {
+            s["show_name"]: s.get("predicted_arrival_min")
+            for s in (p.get("show_selections") or [])
+            if s.get("show_name") and s.get("predicted_arrival_min") is not None
+        }
+        for show_name, predicted in show_predictions.items():
+            fb = feedback.get(show_name)
+            if not isinstance(fb, dict):
+                continue
+            actual = fb.get("arrived_with_min")
+            if actual is None:
+                continue
+            try:
+                delta = float(actual) - float(predicted)
+            except (TypeError, ValueError):
+                continue
+            show_deltas.setdefault(show_name, []).append(delta)
+
+    def _bias_entries(deltas: dict[str, list[float]], item_label: str, kind: str) -> list[dict[str, Any]]:
+        """kind = 'ride_wait' or 'show_arrival' — picks interpretation phrasing."""
+        out = []
+        for name, ds in deltas.items():
+            n = len(ds)
+            avg = round(sum(ds) / n, 1)
+            confidence = _bias_confidence(n)
+            if abs(avg) <= _BIAS_NEUTRAL_MINUTES:
+                interp = f"Predictions for {name} have been roughly accurate ({avg:+.0f} min avg)."
+            elif kind == "ride_wait":
+                if avg > 0:
+                    interp = (
+                        f"{name} tends to wait LONGER than predicted "
+                        f"(+{avg:.0f} min avg, {confidence} confidence "
+                        f"on n={n}). Scale this ride's prediction up by "
+                        f"~{avg:.0f} min for this user."
+                    )
+                else:
+                    interp = (
+                        f"{name} tends to wait SHORTER than predicted "
+                        f"({avg:.0f} min avg, {confidence} confidence "
+                        f"on n={n}). Scale this ride's prediction down "
+                        f"by ~{abs(avg):.0f} min for this user."
+                    )
+            else:  # show_arrival
+                if avg > 0:
+                    interp = (
+                        f"User arrives at {name} LATER than recommended "
+                        f"(+{avg:.0f} min avg). Either they cut it close "
+                        f"(no problem if they got a fine spot) or your "
+                        f"recommendation was more conservative than needed."
+                    )
+                else:
+                    interp = (
+                        f"User arrives at {name} EARLIER than recommended "
+                        f"({avg:.0f} min avg) — your arrival recommendation "
+                        f"may be padding too much for this user."
+                    )
+            out.append({
+                f"{item_label}_name": name,
+                "n_samples": n,
+                "avg_delta_min": avg,
+                "confidence": confidence,
+                "interpretation": interp,
+            })
+        # Sort by sample size desc — most reliable signals first
+        out.sort(key=lambda x: -x["n_samples"])
+        return out
+
+    return {
+        "n_recorded_plans": len(plans),
+        "aggression": aggression,
+        "timing": timing,
+        "per_ride_prediction_bias": _bias_entries(ride_deltas, "ride", "ride_wait"),
+        "per_show_arrival_bias": _bias_entries(show_deltas, "show", "show_arrival"),
+        "usage_hint": (
+            "Apply aggression + timing interpretations as ONE upfront "
+            "calibration note in your response (same convention as "
+            "today_vs_forecast in section 1.5). Apply per-ride / "
+            "per-show bias entries selectively: high-confidence biases "
+            "(n>=5) can be quoted directly to the user; medium (n=3-4) "
+            "should be applied silently to predictions; low (n<3) "
+            "should be ignored — the signal is too noisy to be useful."
+        ),
+    }
+
+
+@mcp.tool()
+def record_plan(
+    park: str,
+    ride_sequence: list[dict[str, Any]],
+    show_selections: list[dict[str, Any]] | None = None,
+    context: dict[str, Any] | None = None,
+    notes: str | None = None,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Persist a plan you just proposed and the user accepted.
+
+    Call this AFTER the user signals acceptance of a plan you laid
+    out (e.g. "let's do that", "sounds good, starting with Pirates").
+    Don't call this for hypothetical plans, alternates the user
+    didn't pick, or one-off questions. The point is to record what
+    the user is actually going to attempt so we can compare against
+    actuals later.
+
+    The row is written with a 24h TTL initially — if no
+    record_plan_outcome call confirms it within a day, it
+    auto-cleans. Once outcome is recorded, TTL extends to 1 year.
+
+    Args:
+        park: Park key or human name.
+        ride_sequence: Ordered list of rides in the plan. Each entry
+            is a dict like {"ride_name": str, "predicted_wait_min":
+            int | null, "position": int}. Capture the planner's
+            prediction for each ride so we can compare against actual
+            later. Keep it compact — a few fields per ride.
+        show_selections: Optional list of shows being fitted into the
+            plan. Each entry: {"show_name": str, "performance_start":
+            iso_ts, "predicted_arrival_min": int}. Empty list / None
+            if the user didn't select any.
+        context: Optional snapshot of the planner-side context at
+            plan time. Useful keys: park_load_ratio (float),
+            today_vs_forecast_confidence (str), weather_summary (str
+            like "clear, 78F"), planned_at (iso_ts; defaults to now
+            if omitted). Anything else relevant — keep it small.
+        notes: Optional free-text capturing user-stated constraints
+            or preferences for this plan ("dining at 6pm", "skipping
+            water rides because of rain"). Helps later calibration.
+        user_id: Single-user default is "megan". Pass another value
+            only if planning for a different family member.
+
+    Returns:
+        Dict with plan_id (the SK suffix — pass back to
+        record_plan_outcome later), user_id, expires_at_epoch, and
+        a hint for what you should do next.
+    """
+    park_key = _normalize_park(park)
+    now_utc = datetime.now(timezone.utc)
+    plan_ts = (context or {}).get("planned_at") or now_utc.isoformat()
+    sk = f"PLAN#{plan_ts}"
+    ttl_epoch = _epoch_now() + _PLAN_PENDING_TTL_SECS
+
+    item: dict[str, Any] = {
+        "PK": f"USER#{user_id}",
+        "SK": sk,
+        "park_key": park_key,
+        "planned_at": plan_ts,
+        "planned_for_date": now_utc.astimezone(_EASTERN).date().isoformat(),
+        "ride_sequence": ride_sequence,
+        "show_selections": show_selections or [],
+        "context": context or {},
+        "notes": notes,
+        "outcome_recorded": False,
+        "ttl": ttl_epoch,
+    }
+
+    try:
+        table = _ddb_table()
+        table.put_item(Item=_floats_to_decimals(item))
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan write failed",
+            "error_message": str(e),
+        }
+
+    return {
+        "plan_id": plan_ts,
+        "user_id": user_id,
+        "park_key": park_key,
+        "expires_at_epoch": ttl_epoch,
+        "next_step_hint": (
+            "Plan saved as pending. When the user signals end-of-trip "
+            "(\"we're done\", \"heading out\", \"that worked great\") "
+            "OR explicitly reports outcomes, call record_plan_outcome "
+            "with this plan_id. Otherwise the row auto-expires in 24h."
+        ),
+    }
+
+
+@mcp.tool()
+def record_plan_outcome(
+    plan_id: str,
+    aggression_rating: str | None = None,
+    timing_rating: str | None = None,
+    extra_time_minutes: int | None = None,
+    per_item_feedback: dict[str, dict[str, Any]] | None = None,
+    free_text: str | None = None,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Log how a previously-recorded plan actually went.
+
+    Call this when the user reports outcomes — either implicitly
+    ("Big Thunder was 60 not 40", "we ran out of time before
+    Mansion") or explicitly ("we're done for today, that worked
+    great"). At minimum populate aggression_rating + timing_rating;
+    everything else is optional polish.
+
+    DO NOT call this without a plan_id. If the user reports outcomes
+    but no plan_id is in conversation, first call
+    get_user_plan_history(user_id) to find the matching pending plan
+    — match on park + planned_for_date when picking. If no matching
+    plan exists, tell the user honestly ("I don't have a plan logged
+    for that day, can't calibrate against it") rather than inventing one.
+
+    Args:
+        plan_id: The plan_id returned by record_plan (or the SK
+            suffix from get_user_plan_history). Either form works.
+        aggression_rating: One of:
+            "too_aggressive"        — plan didn't fit, ran out of time
+            "about_right"           — plan fit comfortably as predicted
+            "not_aggressive_enough" — plan finished early, could have
+                                      packed more in
+        timing_rating: One of:
+            "ran_over"   — finished after planned end / missed something
+            "on_time"    — finished within ~15 min of planned end
+            "extra_time" — finished with meaningful extra time
+        extra_time_minutes: When timing_rating="extra_time", roughly
+            how much time was left? Optional but useful for
+            calibration ("finished 90 min early" is very different
+            from "finished 15 min early").
+        per_item_feedback: Optional per-ride / per-show details, keyed
+            by ride or show name. Each value is a dict with any of:
+                actual_wait_min: int (the real wait observed)
+                arrived_with_min: int (for shows: how many min before
+                    showtime they actually arrived)
+                notes: str (anything notable)
+            Capture only what the user actually reports; don't infer
+            or guess.
+        free_text: Catch-all for anything that doesn't fit the structured
+            fields ("the cavalcade we caught was super short", "Pirates
+            had a stop mid-ride that added 10 min").
+        user_id: Single-user default "megan".
+
+    Returns:
+        Dict with the updated plan_id, outcome_recorded=true, and
+        the new TTL (1 year out). On error, returns an error payload.
+    """
+    sk = _coerce_plan_id_to_sk(plan_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_ttl = _epoch_now() + _PLAN_RECORDED_TTL_SECS
+
+    # Build the SET clause dynamically — only update fields the
+    # caller actually provided. Avoids overwriting prior partial
+    # outcome data with nulls if Claude makes a follow-up call.
+    set_parts = [
+        "outcome_recorded = :rec",
+        "outcome_recorded_at = :rat",
+        "#ttl = :ttl",
+    ]
+    expr_values: dict[str, Any] = {
+        ":rec": True,
+        ":rat": now_iso,
+        ":ttl": new_ttl,
+    }
+    expr_names = {"#ttl": "ttl"}
+
+    if aggression_rating is not None:
+        set_parts.append("aggression_rating = :agg")
+        expr_values[":agg"] = aggression_rating
+    if timing_rating is not None:
+        set_parts.append("timing_rating = :tim")
+        expr_values[":tim"] = timing_rating
+    if extra_time_minutes is not None:
+        set_parts.append("extra_time_minutes = :etm")
+        expr_values[":etm"] = extra_time_minutes
+    if per_item_feedback is not None:
+        set_parts.append("per_item_feedback = :pif")
+        expr_values[":pif"] = per_item_feedback
+    if free_text is not None:
+        set_parts.append("free_text = :ftx")
+        expr_values[":ftx"] = free_text
+
+    update_expr = "SET " + ", ".join(set_parts)
+
+    try:
+        table = _ddb_table()
+        # ConditionExpression ensures we only update an existing row;
+        # if Claude has the wrong plan_id we surface that explicitly
+        # rather than silently creating a junk row with no plan body.
+        table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": sk},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=_floats_to_decimals(expr_values),
+            ExpressionAttributeNames=expr_names,
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        if err is not None:
+            return err
+        msg = str(e)
+        if "ConditionalCheckFailedException" in msg:
+            return {
+                "error": "Plan not found",
+                "error_message": (
+                    f"No plan with id '{plan_id}' for user '{user_id}'. "
+                    f"Either the plan was never recorded (call record_plan "
+                    f"first) or it expired (24h TTL on unrecorded plans)."
+                ),
+                "plan_id": plan_id,
+                "user_id": user_id,
+            }
+        return {"error": "Outcome write failed", "error_message": msg}
+
+    return {
+        "plan_id": plan_id,
+        "user_id": user_id,
+        "outcome_recorded": True,
+        "outcome_recorded_at": now_iso,
+        "new_expires_at_epoch": new_ttl,
+    }
+
+
+@mcp.tool()
+def get_user_plan_history(
+    user_id: str = _DEFAULT_USER_ID,
+    limit: int = 10,
+    include_unrecorded_only: bool = False,
+    include_calibration: bool = True,
+) -> dict[str, Any]:
+    """Recent plans for a user, with outcomes if recorded, plus a
+    pre-computed calibration_summary derived from the recorded ones.
+
+    Use this:
+    1. **At the start of every planning session.** Check whether
+       there's an unrecorded plan from 1-14 days ago — that's a
+       prompt-the-user-once moment ("how did your MK day on the 8th
+       go?"). Plans older than 14 days are stale_for_recall=true;
+       acknowledge them but don't ask.
+    2. **Before responding to a user's outcome report** when no
+       plan_id is in conversation context. Match by park +
+       planned_for_date to pick the right one.
+    3. **For calibration of today's plan.** READ THE PRE-COMPUTED
+       calibration_summary FIELD rather than eyeballing the raw
+       plans. The server has already computed aggression averages,
+       timing distributions, and per-ride / per-show prediction
+       biases (with sample sizes + confidence labels). Each
+       sub-field carries a ready-made interpretation string you can
+       paraphrase directly. See `calibration_summary.usage_hint` for
+       how to apply each bucket appropriately by confidence.
+
+    Args:
+        user_id: Single-user default "megan".
+        limit: Max plans to return (1-50, default 10). Newest first.
+            10 is the default because calibration_summary aggregates
+            across these — too few and the signal is noisy; too
+            many and old patterns drown out recent shifts.
+        include_unrecorded_only: When True, returns only plans where
+            outcome_recorded=false. Useful for the "anything to ask
+            about?" check.
+        include_calibration: When True (default), computes and
+            returns a calibration_summary derived from the recorded
+            plans. Set False for the prompt-feedback flow where
+            calibration isn't needed (saves a few hundred bytes of
+            response).
+
+    Returns:
+        Dict with:
+          - user_id (str)
+          - count (int)
+          - plans (list, newest-first; each carries plan_id,
+            planned_at, planned_for_date, park_key, ride_sequence,
+            show_selections, context, notes, outcome_recorded,
+            outcome_recorded_at, aggression_rating, timing_rating,
+            extra_time_minutes, per_item_feedback, free_text,
+            days_since_plan, stale_for_recall)
+          - calibration_summary (dict | null) — null if no plans
+            have outcomes recorded yet (first-trip case). Populated
+            shape:
+              n_recorded_plans (int)
+              aggression: {avg_score (-1..+1), interpretation,
+                           n_samples} | null
+              timing: {distribution {ran_over, on_time, extra_time},
+                       avg_extra_time_minutes, interpretation,
+                       n_samples} | null
+              per_ride_prediction_bias: list of
+                {ride_name, n_samples, avg_delta_min, confidence
+                 ('low' | 'medium' | 'high'), interpretation}
+              per_show_arrival_bias: list of
+                {show_name, n_samples, avg_delta_min, confidence,
+                 interpretation}
+              usage_hint: how to apply each bucket appropriately
+    """
+    limit = max(1, min(limit, 50))
+    try:
+        table = _ddb_table()
+        resp = table.query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={
+                ":pk": f"USER#{user_id}",
+                ":sk": "PLAN#",
+            },
+            ScanIndexForward=False,  # newest first (PLAN# sorts by iso ts)
+            Limit=limit,
+        )
+        items = [_convert_decimals(it) for it in resp.get("Items", [])]
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan history read failed",
+            "error_message": str(e),
+        }
+
+    now_utc = datetime.now(timezone.utc)
+    plans = []
+    for it in items:
+        if include_unrecorded_only and it.get("outcome_recorded"):
+            continue
+        plan_ts = it.get("planned_at") or it["SK"][len("PLAN#"):]
+        try:
+            plan_dt = datetime.fromisoformat(plan_ts)
+            days_since = (now_utc - plan_dt).days
+        except ValueError:
+            days_since = None
+        plans.append({
+            "plan_id": it["SK"][len("PLAN#"):],
+            "planned_at": plan_ts,
+            "planned_for_date": it.get("planned_for_date"),
+            "park_key": it.get("park_key"),
+            "ride_sequence": it.get("ride_sequence", []),
+            "show_selections": it.get("show_selections", []),
+            "context": it.get("context", {}),
+            "notes": it.get("notes"),
+            "outcome_recorded": bool(it.get("outcome_recorded")),
+            "outcome_recorded_at": it.get("outcome_recorded_at"),
+            "aggression_rating": it.get("aggression_rating"),
+            "timing_rating": it.get("timing_rating"),
+            "extra_time_minutes": it.get("extra_time_minutes"),
+            "per_item_feedback": it.get("per_item_feedback"),
+            "free_text": it.get("free_text"),
+            "days_since_plan": days_since,
+            "stale_for_recall": (
+                days_since is not None and days_since > _PLAN_STALENESS_DAYS
+            ),
+        })
+
+    out: dict[str, Any] = {
+        "user_id": user_id,
+        "count": len(plans),
+        "plans": plans,
+    }
+    # Calibration is derived from RECORDED plans only — pending
+    # plans (eager-write rows without outcomes yet) carry no signal
+    # for prediction bias or timing aggregates.
+    if include_calibration:
+        out["calibration_summary"] = _compute_calibration_summary(plans)
+    return out
 
 
 if __name__ == "__main__":

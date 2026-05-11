@@ -7,6 +7,14 @@
  * client component.
  *
  * See showtimes-server.ts for the M4 design rationale.
+ *
+ * KEEP IN SYNC: the MCP server (`mcp/server.py`) carries a verbatim
+ * Python port of `classifyShow` + `NAMED_ACT_OVERRIDES` so the agentic
+ * planner sees the same buckets the web UI does. When a headliner
+ * retires or a new act launches and you update the regex / overrides
+ * here, also update the matching block in `mcp/server.py` (search for
+ * "showtimes (M4 over MCP)"). Drift is non-fatal — MCP would just
+ * misclassify show X for one cycle — but keep it tight.
  */
 
 /**
@@ -83,12 +91,27 @@ const NAMED_ACT_OVERRIDES: { pattern: RegExp; category: ShowCategory }[] = [
   { pattern: /mickey's magical friendship faire/, category: "stage" },
   { pattern: /celebración encanto|celebracion encanto/, category: "stage" },
   { pattern: /feathered friends in flight/, category: "stage" },
+  // The "Spectacular!" in the title trips the spectacular regex
+  // before the stage regex's "epic stunt" can match — but Indy is
+  // a midday stunt show running ~5x/day, not a nighttime finale.
+  { pattern: /indiana jones.*epic stunt/, category: "stage" },
+  // Christmas-season stage show at EPCOT (Festival of the Holidays).
+  { pattern: /candlelight processional/, category: "stage" },
   // Live-music sets at World Showcase / AK pavilions where the
   // API name describes the venue ("Entertainment at <Stage>") not
   // the act. Locals know these are bands; visitors need the hint.
   { pattern: /viva mexico/, category: "music" },
   { pattern: /entertainment at canada mill stage/, category: "music" },
   { pattern: /entertainment at germany gazebo/, category: "music" },
+  // EPCOT festival concert series. Garden Rocks (Flower & Garden,
+  // Mar-Jul) and Eat to the Beat (Food & Wine, Aug-Nov) usually
+  // contain "Concert" in the API name (caught by the music regex
+  // anyway), but these overrides defend against years where the
+  // branding drops it. Disney on Broadway (also F&W) sometimes
+  // ships without any music keyword and actually needs the override.
+  { pattern: /eat to the beat/, category: "music" },
+  { pattern: /garden rocks/, category: "music" },
+  { pattern: /disney on broadway/, category: "music" },
   // Adventures with Kevin = the bird character from Up; functionally
   // a character moment, not an atmosphere band.
   { pattern: /adventures with kevin/, category: "character_meet" },
