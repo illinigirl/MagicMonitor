@@ -2007,25 +2007,56 @@ def get_planning_context(
            See "Mid-trip plan adjustments" below for the
            remove_ride_from_plan / add_ride_to_plan flow.
 
-       - **Mid-trip plan adjustments — use add/remove, not full
-         replan, for small changes.** Two tools let you patch the
-         current PLAN# row in place without creating a new plan row:
+       - **Mid-trip plan adjustments — use the right tool per
+         situation.** Four tools mutate the active PLAN# row in
+         place (no new row, no outcome recorded; the plan stays
+         in-flight). Choose the one that matches the user's
+         actual signal:
 
-           - `remove_ride_from_plan(plan_id, ride_id, ride_name)` —
-             drops a ride from the active plan. Call when the user
-             explicitly skips a ride ("we're not doing Space Mountain,
-             wait's too long" / "we got a different LL than I
-             recommended for Big Thunder — drop the assumed one").
-             Magic Monitor stops sending plan-disruption alerts for
-             that ride within ~2 min (next poller cycle rebuilds the
-             active-plan index).
+           - `mark_ride_complete(plan_id, ride_id, ride_name,
+             actual_wait_min?, notes?)` — user RODE the ride. Use
+             this whenever the user reports finishing a ride
+             ("we just got off Pirates", "Big Thunder was 35 min,
+             not bad"). Moves the ride from ride_sequence into
+             completed_rides with a completed_at timestamp. Pass
+             actual_wait_min when the user mentions a wait — that's
+             the strongest signal for the calibration loop's
+             per-ride prediction bias. **Prefer this to
+             remove_ride_from_plan whenever the user actually
+             rode the thing.**
+           - `remove_ride_from_plan(plan_id, ride_id, ride_name,
+             reason?)` — user SKIPPED the ride. Use this only when
+             the user explicitly abandons a ride from their day
+             ("we're not doing Space Mountain, wait's too long",
+             "let's drop Mansion, we ran out of time"). Moves the
+             ride into dropped_rides with a dropped_at timestamp
+             + optional reason. NEGATIVE signal for the calibration
+             loop — contributes to "plan was too aggressive"
+             pattern. Calling this for a ride the user actually
+             rode undercounts completions in their history.
            - `add_ride_to_plan(plan_id, ride_id, ride_name,
-             predicted_wait_min?, position?, notes?)` — adds a
-             spontaneous ride to the active plan. Call when the
-             user adds a ride that wasn't in the original ("we're
-             grabbing Pirates while we're nearby" / "I booked TRON
-             instead of Big Thunder — add TRON, remove Big Thunder").
-             Magic Monitor starts monitoring within ~2 min.
+             predicted_wait_min?, position?, notes?)` — user added a
+             SPONTANEOUS ride that wasn't in the original ("we're
+             grabbing Pirates while we're nearby"). Adds to
+             ride_sequence; poller starts watching within ~2 min.
+           - `add_ride_to_plan` + `mark_ride_complete` —
+             retroactively log a ride the user did that wasn't
+             planned. Add it first (so it's recorded with predicted
+             wait if you remember what it was), then mark complete
+             with the actual wait.
+
+         **Common in-trip narrative flow** Claude should reach for:
+           - "we just finished Pirates, 12 min wait" → mark_ride_complete
+           - "we're skipping Space Mountain" → remove_ride_from_plan
+           - "we're grabbing Carousel too" → add_ride_to_plan
+           - "I booked TRON instead of the Big Thunder LL you
+             recommended" → remove_ride_from_plan(Big Thunder,
+             reason="swapped LL") + add_ride_to_plan(TRON, notes=
+             "actual ILL booked")
+           - "Big Thunder went down, we'll come back later" → leave
+             it alone — the existing plan-disruption alert covers
+             this; the ride is still in ride_sequence and the user
+             may still ride it once it's back.
 
          **When to use add/remove vs. a full replan:**
            - **Use add/remove** for small in-the-moment changes:
@@ -3131,21 +3162,48 @@ def _compute_calibration_summary(
         timing = None
 
     # ── Per-ride prediction bias ──
-    # For each plan, join ride_sequence (carries predicted_wait_min)
-    # with per_item_feedback (carries actual_wait_min) on ride name.
-    # Aggregate (actual - predicted) deltas across plans.
+    # Two sources of "ride was done with actual wait Y":
+    #  1. completed_rides entries (mid-trip mark_ride_complete) carry
+    #     predicted_wait_min on the same entry alongside actual_wait_min.
+    #     This is the primary, most accurate source — captured within
+    #     minutes of the actual ride.
+    #  2. per_item_feedback (end-of-day record_plan_outcome) keyed by
+    #     ride_name with actual_wait_min in the value dict. Predictions
+    #     for those rides live in ride_sequence (if they weren't moved
+    #     to completed_rides) or in completed_rides (if they were).
+    #     Recall-based, less accurate, but still useful when the user
+    #     reports a day's outcomes after the fact.
+    # We union both — same ride showing up in both paths contributes
+    # one delta each, but that's intentional: independent observations
+    # of the same ride still strengthen the signal.
     ride_deltas: dict[str, list[float]] = {}
     show_deltas: dict[str, list[float]] = {}
     for p in plans:
+        # Path 1: completed_rides (self-contained — predicted + actual
+        # on the same entry).
+        for r in (p.get("completed_rides") or []):
+            predicted = r.get("predicted_wait_min")
+            actual = r.get("actual_wait_min")
+            ride_name = r.get("ride_name")
+            if predicted is None or actual is None or not ride_name:
+                continue
+            try:
+                delta = float(actual) - float(predicted)
+            except (TypeError, ValueError):
+                continue
+            ride_deltas.setdefault(ride_name, []).append(delta)
+
+        # Path 2: per_item_feedback against ride_sequence + completed_rides
+        # predictions (legacy path; covers end-of-day recall).
         feedback = p.get("per_item_feedback") or {}
         if not isinstance(feedback, dict):
             continue
-        # Ride bias
-        ride_predictions = {
-            r["ride_name"]: r.get("predicted_wait_min")
-            for r in (p.get("ride_sequence") or [])
-            if r.get("ride_name") and r.get("predicted_wait_min") is not None
-        }
+        ride_predictions: dict[str, Any] = {}
+        for r in (p.get("ride_sequence") or []) + (p.get("completed_rides") or []):
+            name = r.get("ride_name")
+            pred = r.get("predicted_wait_min")
+            if name and pred is not None:
+                ride_predictions[name] = pred
         for ride_name, predicted in ride_predictions.items():
             fb = feedback.get(ride_name)
             if not isinstance(fb, dict):
@@ -3158,7 +3216,10 @@ def _compute_calibration_summary(
             except (TypeError, ValueError):
                 continue
             ride_deltas.setdefault(ride_name, []).append(delta)
-        # Show arrival bias — same shape, different fields
+
+        # Show arrival bias — same shape, different fields. Only sourced
+        # from per_item_feedback for now (no mid-trip mark_show_attended
+        # tool yet).
         show_predictions = {
             s["show_name"]: s.get("predicted_arrival_min")
             for s in (p.get("show_selections") or [])
@@ -3314,6 +3375,14 @@ def record_plan(
         "planned_at": plan_ts,
         "planned_for_date": now_utc.astimezone(_EASTERN).date().isoformat(),
         "ride_sequence": ride_sequence,
+        # As rides get done / abandoned during execution they move
+        # OUT of ride_sequence and INTO one of these two arrays.
+        # Poller only watches ride_sequence, so moved rides stop
+        # generating plan-disruption alerts immediately. Older plan
+        # rows that pre-date this schema have these absent; the
+        # tools that read them handle missing keys defensively.
+        "completed_rides": [],
+        "dropped_rides": [],
         "show_selections": show_selections or [],
         "context": context or {},
         "notes": notes,
@@ -3479,45 +3548,84 @@ def record_plan_outcome(
     }
 
 
+def _pop_ride_from_sequence(
+    ride_sequence: list[dict[str, Any]],
+    ride_id: str,
+    ride_name: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Helper for mark_ride_complete / remove_ride_from_plan.
+
+    Find a ride in ride_sequence (ride_id match first, ride_name
+    case-insensitive fallback), return (new_sequence_without_match,
+    popped_entry_or_None). If nothing matches, returns the original
+    sequence unchanged and None.
+    """
+    name_lc = (ride_name or "").lower()
+    popped: dict[str, Any] | None = None
+    new_seq: list[dict[str, Any]] = []
+    for r in ride_sequence:
+        if popped is None and (
+            r.get("ride_id") == ride_id
+            or (r.get("ride_name") or "").lower() == name_lc
+        ):
+            popped = r
+            continue
+        new_seq.append(r)
+    return new_seq, popped
+
+
 @mcp.tool()
-def remove_ride_from_plan(
+def mark_ride_complete(
     plan_id: str,
     ride_id: str,
     ride_name: str,
+    actual_wait_min: int | None = None,
+    notes: str | None = None,
     user_id: str = _DEFAULT_USER_ID,
 ) -> dict[str, Any]:
-    """Remove a ride from an active plan's ride_sequence.
+    """Mark a ride as completed — moves it from ride_sequence to
+    completed_rides on the active plan.
 
-    Call this when the user explicitly drops a ride from their day
-    during a mid-trip replan ("we're skipping Space Mountain, the
-    wait's too long"). The poller scans active plan ride_sequence
-    arrays on every poll to fire plan-disruption alerts, so removing
-    a ride here means Magic Monitor stops alerting on its DOWN/UP
-    transitions for this user.
+    Call this when the user reports they rode something ("we just
+    finished Big Thunder, wait was 35 min", "okay we got off Pirates").
+    Two effects:
+    1. **Stops plan-disruption alerts** for that ride immediately —
+       the poller only watches ride_sequence. Within ~2 min the
+       next poller cycle will skip this ride for alerts.
+    2. **Captures actuals for calibration.** The completed entry
+       preserves the original predicted_wait_min from when the plan
+       was made AND records the actual_wait_min the user reports.
+       This is what feeds per-ride prediction bias in
+       calibration_summary — mid-trip capture is much more accurate
+       than end-of-day recall via record_plan_outcome.
 
-    Patches the existing PLAN# row in place — no new row created,
-    no outcome recorded (the plan is still in-flight). The
-    outcome_recorded flag and TTL remain untouched.
+    Prefer mark_ride_complete to remove_ride_from_plan whenever the
+    user actually rode the thing. remove_ride_from_plan is for
+    skipped/abandoned rides (different feedback signal — that's "the
+    plan was too aggressive," not "the plan succeeded").
 
-    Idempotent: removing a ride that's not in the plan returns
-    `removed=0` without raising. The match tries ride_id first
-    (most reliable) and falls back to case-insensitive ride_name
-    match for plans that didn't carry ride_id.
+    Idempotent: marking a ride already in completed_rides returns
+    completed=0 with a note. Marking a ride not in the plan at all
+    returns completed=0 with a different note.
 
     Args:
-        plan_id: From the record_plan response (or the SK suffix
-            in a get_user_plan_history entry). Either form works.
-        ride_id: The themeparks.wiki ride ID to remove. Same value
-            you'd see in get_planning_context's per-ride blocks.
-        ride_name: Display name, used for the response message and
-            as the ride_name-only fallback if ride_id doesn't match.
+        plan_id: From the record_plan response or get_user_plan_history.
+        ride_id: themeparks.wiki ride ID. Same value you'd see in
+            get_planning_context per-ride blocks.
+        ride_name: Display name, used in the response message and
+            as a ride_name fallback in match logic.
+        actual_wait_min: Optional but encouraged. The actual wait
+            the user experienced. Strongest calibration signal —
+            captures predicted vs actual per-ride bias for this user.
+            Pass null if the user didn't mention a wait time.
+        notes: Optional free-text ("LL booked at 4pm", "rode standby
+            because LL was full", "ride broke down halfway through").
         user_id: Single-user default "megan".
 
     Returns:
-        Dict with plan_id, ride_name, removed (count — 0 or 1),
-        remaining_rides (int), and an optional note if the ride
-        wasn't found. On error: error payload (plan not found,
-        AWS auth issue, etc.).
+        Dict with plan_id, ride_name, ride_id, completed (0 or 1),
+        remaining_rides (still in ride_sequence), total_completed.
+        Error payload on plan-not-found / AWS auth / DDB issues.
     """
     sk = _coerce_plan_id_to_sk(plan_id)
     try:
@@ -3544,35 +3652,65 @@ def remove_ride_from_plan(
         }
 
     ride_seq = list(item.get("ride_sequence") or [])
-    name_lc = (ride_name or "").lower()
-    # Two-stage match: ride_id first (precise), then name fallback
-    # for older plans recorded before ride_id was documented.
-    new_seq = [
-        r for r in ride_seq
-        if r.get("ride_id") != ride_id
-        and (r.get("ride_name") or "").lower() != name_lc
-    ]
-    removed = len(ride_seq) - len(new_seq)
+    completed_rides = list(item.get("completed_rides") or [])
 
-    if removed == 0:
+    # Already completed? Don't double-record.
+    name_lc = (ride_name or "").lower()
+    if any(
+        r.get("ride_id") == ride_id
+        or (r.get("ride_name") or "").lower() == name_lc
+        for r in completed_rides
+    ):
         return {
             "plan_id": plan_id,
             "user_id": user_id,
             "ride_name": ride_name,
             "ride_id": ride_id,
-            "removed": 0,
-            "remaining_rides": len(new_seq),
+            "completed": 0,
+            "remaining_rides": len(ride_seq),
+            "total_completed": len(completed_rides),
             "note": (
-                f"'{ride_name}' was not in the plan — nothing to remove. "
-                f"Plan still has {len(new_seq)} ride(s)."
+                f"'{ride_name}' is already marked complete on this plan. "
+                f"Nothing to do."
             ),
         }
+
+    new_seq, popped = _pop_ride_from_sequence(ride_seq, ride_id, ride_name)
+    if popped is None:
+        return {
+            "plan_id": plan_id,
+            "user_id": user_id,
+            "ride_name": ride_name,
+            "ride_id": ride_id,
+            "completed": 0,
+            "remaining_rides": len(ride_seq),
+            "total_completed": len(completed_rides),
+            "note": (
+                f"'{ride_name}' is not in the plan's ride_sequence — "
+                f"nothing to mark complete. If the user wants to log a "
+                f"ride they did that wasn't planned, call add_ride_to_plan "
+                f"first then mark_ride_complete (or just capture it via "
+                f"record_plan_outcome at end-of-day)."
+            ),
+        }
+
+    # Move the popped entry into completed_rides with new fields appended.
+    completed_entry = dict(popped)
+    completed_entry["completed_at"] = datetime.now(timezone.utc).isoformat()
+    if actual_wait_min is not None:
+        completed_entry["actual_wait_min"] = actual_wait_min
+    if notes:
+        completed_entry["notes"] = notes
+    completed_rides.append(completed_entry)
 
     try:
         table.update_item(
             Key={"PK": f"USER#{user_id}", "SK": sk},
-            UpdateExpression="SET ride_sequence = :seq",
-            ExpressionAttributeValues=_floats_to_decimals({":seq": new_seq}),
+            UpdateExpression="SET ride_sequence = :seq, completed_rides = :done",
+            ExpressionAttributeValues=_floats_to_decimals({
+                ":seq": new_seq,
+                ":done": completed_rides,
+            }),
             ConditionExpression="attribute_exists(PK)",
         )
     except Exception as e:
@@ -3587,13 +3725,148 @@ def remove_ride_from_plan(
         "user_id": user_id,
         "ride_name": ride_name,
         "ride_id": ride_id,
-        "removed": removed,
+        "completed": 1,
         "remaining_rides": len(new_seq),
+        "total_completed": len(completed_rides),
         "note": (
-            f"Removed '{ride_name}' from the plan. Magic Monitor will "
-            f"stop sending plan-disruption alerts for this ride within "
-            f"~2 min (next poller invocation rebuilds the active-plan "
-            f"index)."
+            f"Marked '{ride_name}' complete"
+            + (f" (actual wait {actual_wait_min} min)" if actual_wait_min is not None else "")
+            + f". {len(new_seq)} ride(s) still planned. Magic Monitor "
+            f"will stop sending plan-disruption alerts for this ride "
+            f"within ~2 min."
+        ),
+    }
+
+
+@mcp.tool()
+def remove_ride_from_plan(
+    plan_id: str,
+    ride_id: str,
+    ride_name: str,
+    reason: str | None = None,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Drop a ride from an active plan — moves it from ride_sequence
+    to dropped_rides.
+
+    Call this when the user explicitly skips/abandons a ride during
+    a mid-trip replan ("we're skipping Space Mountain, the wait's
+    too long", "let's drop Mansion, we ran out of time"). The poller
+    only watches ride_sequence, so dropped rides stop generating
+    plan-disruption alerts within ~2 min (next poller cycle).
+
+    **mark_ride_complete vs remove_ride_from_plan — choose carefully:**
+    - **mark_ride_complete** = "we rode it." Positive feedback signal
+      for the calibration loop; captures actual_wait_min if reported.
+    - **remove_ride_from_plan** = "we're not going to ride it."
+      Negative signal — contributes to "plan was too aggressive"
+      pattern in calibration.
+
+    Both stop alerts; only one records "the plan succeeded for this
+    ride." If you call remove for something the user actually rode,
+    you'll undercount completions in their history.
+
+    Patches the existing PLAN# row in place — no new row created,
+    no outcome recorded. The outcome_recorded flag and TTL remain
+    untouched.
+
+    Idempotent: removing a ride that's not in the plan returns
+    dropped=0 without raising.
+
+    Args:
+        plan_id: From the record_plan response or get_user_plan_history.
+        ride_id: themeparks.wiki ride ID.
+        ride_name: Display name; also used as a ride_name fallback
+            in match logic.
+        reason: Optional free-text on why the ride was dropped
+            ("wait too long", "ran out of time", "kids tired").
+            Useful for calibration narrative — "user drops because
+            of wait, not time" hints they over-pack their plans.
+        user_id: Single-user default "megan".
+
+    Returns:
+        Dict with plan_id, ride_name, ride_id, dropped (0 or 1),
+        remaining_rides (still in ride_sequence), total_dropped.
+    """
+    sk = _coerce_plan_id_to_sk(plan_id)
+    try:
+        table = _ddb_table()
+        resp = table.get_item(Key={"PK": f"USER#{user_id}", "SK": sk})
+        item = resp.get("Item")
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan read failed",
+            "error_message": str(e),
+        }
+
+    if not item:
+        return {
+            "error": "Plan not found",
+            "error_message": (
+                f"No plan with id '{plan_id}' for user '{user_id}'. "
+                f"Either it expired (24h TTL on unrecorded plans) or "
+                f"the id is wrong — try get_user_plan_history to confirm."
+            ),
+            "plan_id": plan_id,
+            "user_id": user_id,
+        }
+
+    ride_seq = list(item.get("ride_sequence") or [])
+    dropped_rides = list(item.get("dropped_rides") or [])
+
+    new_seq, popped = _pop_ride_from_sequence(ride_seq, ride_id, ride_name)
+    if popped is None:
+        return {
+            "plan_id": plan_id,
+            "user_id": user_id,
+            "ride_name": ride_name,
+            "ride_id": ride_id,
+            "dropped": 0,
+            "remaining_rides": len(ride_seq),
+            "total_dropped": len(dropped_rides),
+            "note": (
+                f"'{ride_name}' was not in the plan's ride_sequence — "
+                f"nothing to drop. Plan still has {len(ride_seq)} ride(s)."
+            ),
+        }
+
+    dropped_entry = dict(popped)
+    dropped_entry["dropped_at"] = datetime.now(timezone.utc).isoformat()
+    if reason:
+        dropped_entry["reason"] = reason
+    dropped_rides.append(dropped_entry)
+
+    try:
+        table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": sk},
+            UpdateExpression="SET ride_sequence = :seq, dropped_rides = :gone",
+            ExpressionAttributeValues=_floats_to_decimals({
+                ":seq": new_seq,
+                ":gone": dropped_rides,
+            }),
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan update failed",
+            "error_message": str(e),
+        }
+
+    return {
+        "plan_id": plan_id,
+        "user_id": user_id,
+        "ride_name": ride_name,
+        "ride_id": ride_id,
+        "dropped": 1,
+        "remaining_rides": len(new_seq),
+        "total_dropped": len(dropped_rides),
+        "note": (
+            f"Dropped '{ride_name}' from the plan"
+            + (f" (reason: {reason})" if reason else "")
+            + f". {len(new_seq)} ride(s) still planned. Magic Monitor "
+            f"will stop sending plan-disruption alerts within ~2 min."
         ),
     }
 
@@ -3839,6 +4112,14 @@ def get_user_plan_history(
             "planned_for_date": it.get("planned_for_date"),
             "park_key": it.get("park_key"),
             "ride_sequence": it.get("ride_sequence", []),
+            # Per-ride state arrays — populated by mark_ride_complete /
+            # remove_ride_from_plan during execution. ride_sequence holds
+            # still-planned; completed_rides holds rode-it (with optional
+            # actual_wait_min for calibration); dropped_rides holds
+            # abandoned (with optional reason). Older plans may have
+            # these absent — defaulted to [].
+            "completed_rides": it.get("completed_rides", []),
+            "dropped_rides": it.get("dropped_rides", []),
             "show_selections": it.get("show_selections", []),
             "context": it.get("context", {}),
             "notes": it.get("notes"),

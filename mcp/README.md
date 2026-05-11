@@ -140,8 +140,9 @@ DynamoDB table.
 | `record_plan` | DDB write | Persist an accepted plan + the planner's predictions for the cross-session feedback loop. 24h TTL until outcome is recorded, then 1 year |
 | `record_plan_outcome` | DDB write | Log how a recorded plan actually went — aggression rating, timing rating, per-ride/show actuals, free-text notes |
 | `get_user_plan_history` | DDB live | Recent plans for a user with outcomes if recorded, plus a server-computed `calibration_summary` (aggression avg, timing distribution, per-ride / per-show prediction bias with sample sizes + confidence labels). The planner uses this to calibrate today's plan against the user's track record without having to derive aggregates from raw rows |
-| `remove_ride_from_plan` | DDB write | Patches an active PLAN# row to drop a ride from `ride_sequence`. Used for mid-trip adjustments (user skips a ride; LL booking changed) so the poller stops alerting on that ride within ~2 min |
-| `add_ride_to_plan` | DDB write | Patches an active PLAN# row to add a spontaneous ride to `ride_sequence`. Used for mid-trip adjustments (user grabs an unplanned ride; user got a different LL than recommended) so the poller starts alerting within ~2 min |
+| `mark_ride_complete` | DDB write | User RODE the ride. Moves it from `ride_sequence` into `completed_rides` with optional `actual_wait_min`. Stops plan-disruption alerts AND captures actuals for the calibration loop. Prefer this to `remove_ride_from_plan` whenever the user actually rode the thing |
+| `remove_ride_from_plan` | DDB write | User SKIPPED the ride. Moves it from `ride_sequence` into `dropped_rides` with optional `reason`. Negative signal for calibration ("plan was too aggressive"). Don't call this for rides the user actually rode — undercounts their completions |
+| `add_ride_to_plan` | DDB write | Adds a spontaneous ride to `ride_sequence`. Poller starts watching within ~2 min |
 | `get_mll_tiers` | static JSON | Current Multi-Pass tier rosters per park (Tier 1 / Tier 2 for MK/EPCOT/HS; no-tiers + LL-eligible list for AK). Used when the planner reasons about pre-arrival bookings (3-ride allocation, 1 Tier 1 + 2 Tier 2 at the tiered parks). Hand-maintained data file at `mcp/data/mll_tiers.json`; `updated_at` field on the response tells callers how fresh the snapshot is |
 
 Future tools (planned):

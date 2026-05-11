@@ -101,7 +101,7 @@ RIDE#<id>       | COOLDOWN#STILL_DOWN   | 45-min follow-up alert dedup (TTL)
 RIDE#<id>       | COOLDOWN#LOW_WAIT     | 90-min low-wait alert dedup (TTL)
 USER#<sub>      | PROFILE               | name + Pushover user key
 USER#<sub>      | FAV_RIDE#<id>         | favorite (denormalized park_key)
-USER#<sub>      | PLAN#<iso_ts>         | accepted plan + outcome (24h TTL pending; 1y if recorded)
+USER#<sub>      | PLAN#<iso_ts>         | accepted plan + outcome (24h TTL pending; 1y if recorded). Plan body carries ride_sequence (still-planned), completed_rides (rode, with actual_wait_min), dropped_rides (skipped, with reason)
 PARK#<key>      | USER#<sub>            | park subscription (fanout target)
 ```
 
