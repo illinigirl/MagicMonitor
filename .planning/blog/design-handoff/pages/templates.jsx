@@ -181,7 +181,7 @@ function ZineAbout() {
             <div className="marker" style={{ fontSize: 22, color: 'var(--ink)' }}>recurring jokes you'll see:</div>
             <ul style={{ paddingLeft: 18, fontSize: 13, lineHeight: 1.5, margin: '6px 0 0' }}>
               <li>The Roomba is sentient</li>
-              <li>Erythritol is my nemesis</li>
+              <li>Mostly keto, loud about the ice cream exception</li>
               <li>I will spreadsheet anything</li>
               <li>Claude is a coworker now, deal</li>
             </ul>
@@ -276,12 +276,13 @@ function Zine404() {
         <div style={{ position: 'relative' }}>
           <div className="card" style={{ background: 'var(--hot-soft)', transform: 'rotate(2deg)', padding: '22px 24px', boxShadow: '3px 6px 0 var(--hot)' }}>
             <div className="marker" style={{ fontSize: 26, color: 'var(--hot)', marginBottom: 4 }}>the recipe in question:</div>
-            <div className="display" style={{ fontSize: 26, lineHeight: 1.1, color: 'var(--ink)', marginBottom: 10 }}>Keto Pistachio Gelato, attempt #48</div>
+            <div className="display" style={{ fontSize: 26, lineHeight: 1.1, color: 'var(--ink)', marginBottom: 10 }}>Pistachio Gelato, attempt #48</div>
             <ul style={{ paddingLeft: 18, fontSize: 13, lineHeight: 1.55, margin: 0 }}>
-              <li>2 cups heavy cream (judge me, I dare you)</li>
-              <li>3/4 cup allulose (NOT erythritol, never again)</li>
-              <li>1 cup raw pistachios, toasted</li>
-              <li>4 egg yolks</li>
+              <li>2 cups whole milk (full fat or go home)</li>
+              <li>1 cup heavy cream</li>
+              <li>3/4 cup real sugar (yes, real — I'm mostly keto, ice cream is the exception)</li>
+              <li>1 cup raw pistachios, toasted and ground to paste</li>
+              <li>6 egg yolks</li>
               <li>1 pinch flake salt</li>
               <li>1 prayer to the texture gods</li>
             </ul>

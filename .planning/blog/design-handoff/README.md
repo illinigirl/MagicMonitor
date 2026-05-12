@@ -10,9 +10,9 @@ A personal blog for a sarcastic, feminine, agentic-coding-obsessed engineer who 
 
 - **Casual, funny, sarcastic** — like talking to a friend who happens to ship things.
 - **Confident but self-deprecating** — "I let Claude run my house and lived to tell about it," not "Exploring agentic orchestration patterns."
-- **Specific over generic** — "erythritol crystallization is a personal enemy" beats "I tried different sweeteners."
+- **Specific over generic** — "the gelato is real cream, real sugar, and I will die on that hill" beats "I make ice cream."
 - **Femininity is a differentiator, not a footnote** — the hot pink is the point. Sundress at standup energy.
-- **Recurring jokes** to weave in: the Roomba is sentient, erythritol is the enemy, Claude is a coworker now, "I will spreadsheet anything."
+- **Recurring jokes** to weave in: the Roomba is sentient, mostly keto but loud about the ice cream exception (real cream, real sugar — no artificial sweeteners, ever), Claude is a coworker now, "I will spreadsheet anything."
 
 Avoid: corporate speak, "passionate about," "leveraging," self-deprecation that reads as actually insecure.
 

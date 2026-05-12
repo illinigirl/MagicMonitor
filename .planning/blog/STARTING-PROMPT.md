@@ -14,7 +14,8 @@ at **blog.megillini.dev**. First post will showcase Magic Monitor;
 the broader purpose is a long-form portfolio surface for writing
 about engineering decisions in a voice that matches who I actually
 am — casual, sarcastic, feminine-as-differentiator, with recurring
-jokes about my Roomba, erythritol, and Claude as a coworker.
+jokes about my Roomba, the homemade real-sugar ice cream that is my
+loud exception to mostly being keto, and Claude as a coworker.
 
 Before you do anything, read these three reference paths in the
 current working directory:

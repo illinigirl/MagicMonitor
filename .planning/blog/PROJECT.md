@@ -1,9 +1,18 @@
 # Blog at megillini.dev — project queue
 
-**Brand:** Megan Builds. Personal blog at `blog.megillini.dev`. First
-post showcases Magic Monitor; broader purpose is a long-form portfolio
-surface for writing about engineering decisions in a voice that
-matches who Megan actually is.
+**Brand:** Megan Builds. Personal blog at `meganbuilds.megillini.dev`.
+First post showcases Magic Monitor; broader purpose is a long-form
+portfolio surface for writing about engineering decisions in a voice
+that matches who Megan actually is.
+
+The original plan was `blog.megillini.dev`, pivoted on deploy day
+(2026-05-12) when a stale CloudFront alias claim on that subdomain —
+left over from CDK delete/recreate cycles during the Amplify Hosting
+bug rabbit hole — wouldn't clear after 45+ min and was producing a
+misleading "Unable to assume IAM role" error. `meganbuilds.megillini.dev`
+had clean history and landed first try. It also matches the brand
+directly (the masthead literally says "megan builds"), so the swap
+is a strict upgrade.
 
 Status: **queued, design locked** (visual direction + tokens locked
 via Claude Design — see `.planning/blog/design-handoff/`).
@@ -31,13 +40,14 @@ Implementation hasn't started.
 - **Confident but self-deprecating** — *"I let Claude run my house
   and lived to tell about it,"* not *"Exploring agentic orchestration
   patterns."*
-- **Specific over generic** — *"erythritol crystallization is a
-  personal enemy"* beats *"I tried different sweeteners."*
+- **Specific over generic** — *"the gelato is real cream, real
+  sugar, and I will die on that hill"* beats *"I make ice cream."*
 - **Femininity is a differentiator** — the hot pink is the point.
   Sundress at standup energy.
 - **Recurring jokes** worth weaving in: the Roomba is sentient,
-  erythritol is the enemy, Claude is a coworker now, *"I will
-  spreadsheet anything."*
+  mostly keto but loud about the ice cream exception (real cream,
+  real sugar — no artificial sweeteners, ever), Claude is a
+  coworker now, *"I will spreadsheet anything."*
 - **Avoid:** corporate speak, "passionate about," "leveraging,"
   self-deprecation that reads as actually insecure.
 
@@ -92,7 +102,7 @@ framework gets picked.
 | Content format | MDX (`@astrojs/mdx`) | Lets posts embed React components for callouts + code |
 | Rendering | Static export (SSG) | Content is build-time; no SSR Lambda needed |
 | Deploy | AWS Amplify Hosting, us-east-2 | Same as MM. Let Amplify auto-issue the cert. |
-| Domain | `blog.megillini.dev` (subdomain, not apex) | Simpler DNS, no apex-record gymnastics |
+| Domain | `meganbuilds.megillini.dev` (subdomain, not apex) | Brand-exact, no apex-record gymnastics. Pivoted from `blog.megillini.dev` on deploy day after a stale CloudFront alias claim wouldn't clear — see RUNBOOK Lesson 7 / Lesson 8. |
 | Auth | None (public read-only) | Personal blog; no signup, no comments, no view tracking |
 | IaC | AWS CDK (TypeScript), single stack `BlogStack` | Same pattern as MM `DisneyStack` |
 | GitHub | New repo under `illinigirl` | Megan's GitHub org |
@@ -140,42 +150,71 @@ The agent will be tempted to add these. Don't.
 
 ---
 
-## First post: Magic Monitor showcase
+## First post: Frame TV mood lighting (pivoted from MM showcase)
 
-**Working title (in Megan's voice — sample, she'll tune):**
-*"I built a Disney wait-time predictor instead of doing my actual
-job — and then taught Claude to plan rides for my sister"*
+**Title (locked):** *"I asked Claude to fix a Samsung TV bug. Now my
+house picks its own mood lighting."*
 
-Note `design-handoff/data.js` already has a sample
-`park-whisperer` post entry with similar voice — use that as the
-tone reference.
+**File:** `src/content/blog/frame-tv-mood-lighting.mdx` (drafted
+2026-05-12). Tag: `Home Automation`. Read time: ~9 min.
 
-**What it should cover (rough outline):**
-1. The problem: every WDW family member wants live wait times +
-   alerts when their planned rides go down.
-2. The architecture choice: serverless single-table DynamoDB + a
-   poller Lambda + Next.js SSR on Amplify. Cost: ~$0.30/mo. Joke
-   about how this is somehow LESS than her phone bill.
-3. The MCP pivot: turning MM's read model into 22 tools an MCP
-   client can call conversationally. Demo: the agentic planner
-   answering *"I'm at MK with these 5 rides, what should I ride
-   next?"* — show a screenshot of the actual exchange.
-4. The cross-session feedback loop: the system learns from her
-   sister's actual trips. Joke about how she'll spreadsheet
-   anything, including her family's ride preferences.
-5. Real-world fixes — the BACK UP cooldown flap bug shipped while
-   testing, the LL verification refusal rule, the today-only data
-   caveat. Stories of how usage shaped the system.
-6. What's next: M6-B (live AWS data plane), M9 (embedded chat for
-   non-Claude-Desktop users like her sister), the calendar
-   intelligence build.
+**Why this swap from the MM showcase:** Magic Monitor is still in
+active development; an MM-first post would have to caveat itself.
+Frame TV has the better "first thing I really built with Claude"
+narrative arc and a chaos beat (Frame TV firmware staging coups on
+*Bluey*) that fits the voice. The MM showcase moves to the future
+post backlog and lands once MM is more settled.
 
-Target length: 1500-2500 words. Code snippets + 2-3 MM screenshots.
+**Frame TV post structure (drafted):**
+1. The setup — husband to Mexico 2wk, kids 10/12, day job, new Pi,
+   eight years of solo Python automation. Light reference to the
+   2018/chemo origin story; flagged as separate future post.
+2. The problem given up on — Frame TV's one shuffle option ("ALL"),
+   tiny on-device storage, uploads erroring out.
+3. The unstuck moment — Claude reads code, she clicks OK on the
+   remote, it just works. Recurring "click OK on the remote" beat.
+4. Collections — filename parser, mood/artist/movement/color tags.
+5. The HEIC → JPEG pipeline (meta-joke: post screenshots converted
+   by same code path).
+6. Light show mode — color extraction → Hue + Govee dispatch.
+7. Spotify drift — Sonos thumbnail auto-display.
+8. Calendar card — Google Calendar between every 3rd piece, color-
+   matched to prior art. Reminders overlay.
+9. Chaos beat — Frame firmware lying about idle state, art mode
+   coup mid-show.
+10. The close — "ideas don't die in my notes anymore."
+
+Photos: `src/content/blog/frame-art/{art,calendar,reminder}.jpg`,
+converted from HEIC originals via `sips`.
 
 ---
 
 ## Future post backlog
 
+- **"Go automate something"** — the 2018/chemo origin story for
+  Megan's home automation. Her sister told her, during treatment,
+  to go automate something when she got stressed. Eight years of
+  solo Python came out of that. Touched lightly in the Frame TV
+  post; deserves its own. *Sensitive material — Megan's call on
+  voice/depth when she's ready to write it.*
+- **What I do with the lights, generally** — the Hue/Govee
+  automation surface beyond the Frame TV integration. The Frame
+  post promised this as a follow-up.
+- **Magic Monitor showcase** — deferred from first-post slot until
+  MM is more settled. Original outline preserved below for when
+  it's time:
+  - The problem: every WDW family member wants live wait times
+    + alerts when their planned rides go down.
+  - Serverless architecture: single-table DDB + poller Lambda +
+    Next.js SSR on Amplify. ~$0.30/mo joke.
+  - The MCP pivot — 22 tools an MCP client can call. Demo: the
+    agentic planner answering *"I'm at MK with these 5 rides,
+    what should I ride next?"*
+  - Cross-session feedback loop — system learns from her sister's
+    actual trips. "I will spreadsheet anything" beat.
+  - Real-world fixes — the BACK UP cooldown flap bug, the LL
+    verification refusal rule, the today-only data caveat.
+  - What's next: M6-B, M9 embedded chat, calendar intelligence.
 - "The five AWS lessons from deploying Amplify Hosting in CDK"
   (the M2-B post-mortem — content already in `RUNBOOK.md`, just
   needs blog-shaping into Megan-voice)
@@ -186,7 +225,11 @@ Target length: 1500-2500 words. Code snippets + 2-3 MM screenshots.
 - "Pre-aggregated analytics vs streams → Athena: when each is right"
   (the M6 design call, with cost math)
 - Anything from `design-handoff/data.js` sample posts that captures
-  a real Megan thing (keto ice cream, Roomba opinions, etc.)
+  a real Megan thing (the full-sugar pistachio gelato saga, Roomba
+  opinions, etc.) — note: sample data still has stale "keto ice
+  cream / erythritol" joke language that was corrected 2026-05-12.
+  The real frame is *mostly keto, loud about the ice cream
+  exception, ice cream is full-fat and full-sugar.*
 
 ---
 

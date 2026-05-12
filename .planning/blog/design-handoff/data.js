@@ -25,12 +25,12 @@ const POSTS = [
   },
   {
     id: 'p3',
-    title: 'Keto ice cream attempt #47: we have ascended',
-    slug: 'keto-ice-cream-47',
+    title: 'Pistachio gelato attempt #47: we have ascended',
+    slug: 'pistachio-gelato-47',
     date: 'Apr 11, 2026',
     readTime: 5,
     tag: 'Life / Food',
-    excerpt: 'Forty-six failures. One spreadsheet. Erythritol crystallization is a personal enemy. This batch did not break me.',
+    excerpt: 'Forty-six failures. One spreadsheet. I am mostly keto and this gelato is real cream, real sugar, and I will die on that hill. This batch did not break me.',
     hue: 12,
     kind: 'note',
   },
@@ -101,7 +101,7 @@ const PROJECTS = [
 const NOW = [
   'Building an agent that reads my Costco receipts to track real food cost',
   'Training for the Disney Princess Half (yes, in costume)',
-  'Working on attempt #48 of keto pistachio gelato',
+  'Working on attempt #48 of full-sugar pistachio gelato',
   'Going to four concerts in May. Yes I have a spreadsheet.',
   'Interviewing. Hi, if you\u2019re reading this for that reason \ud83d\udc4b',
 ];
