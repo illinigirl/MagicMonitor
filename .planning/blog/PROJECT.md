@@ -83,73 +83,13 @@ framework gets picked.
 
 ---
 
-## Open stack decisions (need user input before handoff)
-
-Two things changed from my original PROJECT.md after the design
-handoff landed:
-
-### Decision 1: Astro vs Next.js 16
-
-The design handoff README says: *"Astro is probably the right call
-for a blog of this size — content in MDX, ship fast, no JS for
-static pages."*
-
-| | Astro | Next.js 16 |
-|---|---|---|
-| **Static export** | First-class, zero JS by default for static pages | Supported, but the framework is SSR-first |
-| **MDX support** | First-class via `@astrojs/mdx` | First-class via `@next/mdx` |
-| **Familiarity** | New territory for Megan | Same stack as Magic Monitor |
-| **Build perf** | Faster for static sites | Heavier |
-| **Component islands** | Built-in (opt into React per-component) | Always-React |
-| **Visual cohesion w/ MM** | Different framework, but the typography + components are tokens-level, not framework-level | Same framework but the blog has a distinct visual identity anyway |
-
-**My lean:** Astro. The design handoff is right about the trade —
-this is a content-heavy static site and Astro is the correct tool.
-The "share stack with MM" argument doesn't really apply once the
-visual identity diverges anyway (and it has, deliberately). The
-learning cost is real but small (~2 hours of orientation).
-
-Megan to decide.
-
-### Decision 2: Page scope for v1
-
-Design handoff lists 7-8 pages:
-- `/` (homepage with hero + dispatches + bench preview + now)
-- `/posts` (archive, filterable by tag)
-- `/posts/[slug]` (reading view with drop cap, pull quotes, code)
-- `/projects` (projects index, 4 detailed project rows)
-- `/projects/[slug]` (optional — post format works for most)
-- `/about` (bio + "shape of me" grid + how to reach + recurring jokes)
-- `/now` (could be a card on homepage)
-- `/404` (the "I asked Claude to find this page and it returned a
-  recipe" gag)
-
-My original v1 scope was 3 pages (/, /blog, /blog/[slug]). The
-design has more.
-
-| | Minimum (3 pages) | Design's full set (7-8 pages) |
-|---|---|---|
-| **Time-to-first-post** | Fast — can ship in ~half a day | Slower — ~1-2 days |
-| **Content burden** | One post needed to launch | About + projects index need real content beyond the showcase post |
-| **Portfolio impact** | Lower — looks like a thin scaffold | Higher — looks like a real personal site |
-| **Scope-creep risk** | Low | Medium — but design is locked, which contains it |
-
-**My lean:** ship the design's homepage + posts + posts/[slug] +
-404 in v1 (4 pages — the design's core reading surface). Defer
-projects + about to a fast v1.1 once the first post is live. The
-"projects" page needs real project blurbs and the "about" page
-needs a bio — those are content tasks that shouldn't block the
-scaffold.
-
-Megan to decide.
-
----
-
 ## Locked decisions (no need to revisit)
 
 | | Choice | Why |
 |---|---|---|
-| Content format | MDX (`@astrojs/mdx` or `@next/mdx`) | Lets posts embed React components for callouts + code |
+| **Framework** | **Astro** | Built for content-heavy static sites; zero JS by default; first-class MDX; faster builds; the design handoff README recommends it and the technical fit is right. Trades MM-stack familiarity (~2 hours of Astro orientation cost) for a genuinely better tool for this job. |
+| **v1 page scope** | **Core 4: /, /posts, /posts/[slug], /404** | Ship the design's reading surface fast with one good MM showcase post. Defer /projects + /projects/[slug] + /about + /now to v1.1 since those are content-blocked (need real bios + project blurbs beyond MM). The 404 is free brand voice — the "Claude returned a recipe" gag is a tone signature, costs nothing. |
+| Content format | MDX (`@astrojs/mdx`) | Lets posts embed React components for callouts + code |
 | Rendering | Static export (SSG) | Content is build-time; no SSR Lambda needed |
 | Deploy | AWS Amplify Hosting, us-east-2 | Same as MM. Let Amplify auto-issue the cert. |
 | Domain | `blog.megillini.dev` (subdomain, not apex) | Simpler DNS, no apex-record gymnastics |
