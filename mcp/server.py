@@ -1782,8 +1782,15 @@ def get_planning_context(
 
     0b. **Check for after-hours parties on the planning date.** Call
        `get_party_calendar(date=<plan_date>)` early — before laying
-       out the order — for any Magic Kingdom plan. Parties affect
-       the plan in two big ways:
+       out the order — for any Magic Kingdom OR Hollywood Studios
+       plan. Three parties currently tracked:
+         - **MNSSHP** (Mickey's Not So Scary Halloween Party) — MK,
+           Aug-Nov
+         - **MVMCP** (Mickey's Very Merry Christmas Party) — MK,
+           mid-Nov through late Dec
+         - **Jollywood Nights** — Hollywood Studios, mid-Nov through
+           mid-Dec, ~6-10 nights total
+       Parties affect the plan in two big ways:
 
        - **Park closes early (typically 6pm) for non-party guests
          on party days.** If the user is planning MK on a party
@@ -1819,7 +1826,16 @@ def get_planning_context(
        calendar before booking." Only assert confidently when
        `dates_status` is `verified_from_disney_calendar`.
 
-       Skip the call for EPCOT / HS / AK plans — parties are MK-only.
+       Skip the call for EPCOT or Animal Kingdom plans — neither
+       park hosts after-hours parties. Always call for MK and HS.
+
+       **When dates_status is "pending_disney_announcement"** (the
+       Jollywood Nights case until Disney publishes the schedule):
+       the dates array is empty, so the tool naturally returns no
+       matches. But if the user is planning HS for Nov-Dec, mention
+       that Jollywood Nights could fall during their trip dates and
+       you can't verify yet — suggest they check the official
+       schedule before locking in evening plans for those months.
 
     0. **Discover hard constraints first.** If the user gives you a
        multi-ride list without mentioning any of these, ASK ONCE
