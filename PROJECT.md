@@ -103,6 +103,57 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-11 — Public repo, real-world validation, calendar awareness
+
+Repo went **public** on GitHub today; MIT LICENSE added; final
+pre-public sweep confirmed no secrets in tracked files (`.env.local`
+is gitignored and was never committed). Live in-park-style alert
+testing surfaced and fixed two production bugs (BACK_UP flap cooldown,
+ride-completion semantics gap), and the planner gained calendar
+awareness for after-hours parties.
+
+**Production fixes (from real-world alert testing):**
+- **BACK UP cooldown.** Pre-existing bug: DOWN alerts had a 15-min
+  cooldown to suppress flap spam but BACK UP alerts had none.
+  Result: a flapping ride generated 1 DOWN alert + N BACK UP alerts.
+  New `COOLDOWN#BACK_UP` row pattern (15-min TTL) mirrors the DOWN
+  cooldown; same gate covers both favoriter and plan-aware UP
+  fanouts. Deployed via cdk deploy.
+- **Completion vs. abandonment semantics.** `remove_ride_from_plan`
+  was the only mid-trip exit, lumping "I rode it" with "I'm skipping
+  it" into one signal — calibration loop undercounted completions
+  and lost actuals. Schema gained `completed_rides` + `dropped_rides`
+  arrays. New tool `mark_ride_complete(plan_id, ride_id, ride_name,
+  actual_wait_min?, notes?)` captures actuals at the strongest signal
+  point (mid-trip, not end-of-day recall). `remove_ride_from_plan`
+  modified to MOVE to `dropped_rides` (preserves entry + adds
+  optional reason) instead of deleting. Calibration loop extended
+  to read prediction-vs-actual from completed_rides FIRST, with
+  per_item_feedback as legacy fallback. **22 tools total now.**
+
+**Calendar intelligence (M8 scaffolding):**
+- New `mcp/data/party_calendar.json` carries MNSSHP / MVMCP /
+  Jollywood Nights schedules with crowd_effects + non-party-ticket
+  implications + dates_status (verified vs estimated).
+- New `get_party_calendar(date?, days_ahead=14)` MCP tool.
+- Planner docstring section 0b: tells Claude to call this for any
+  MK or HS plan, surface the 6pm-closure constraint for non-party
+  guests BEFORE sequencing, apply ~0.80-0.85 load_ratio adjustment
+  for party-day daytime crowds.
+- MNSSHP 2026 dates verified from disneyworld.com (38 nights);
+  MVMCP estimated pending Disney's Christmas announcement;
+  Jollywood Nights pending Disney's HS announcement.
+
+**Portfolio infrastructure:**
+- **MIT LICENSE.** Repo is now public-ready and explicit on usage
+  rights.
+- **`docs/aws-setup-brief.md`** — self-contained briefing document
+  for spinning up sibling projects under the same AWS account.
+  Covers identity/auth, sibling project context (Watchtower, MM),
+  reuse-vs-fresh decisions, the five M2-B lessons, CDK conventions,
+  Python 3.12 default rationale, Megan's working preferences. Drop-in
+  prompt for fresh agents on new projects.
+
 #### MCP suite — agentic trip planner (✅ shipped 2026-05-10)
 
 Magic Monitor exposed as 17 MCP tools that any MCP client (Claude
@@ -271,16 +322,30 @@ Single-day wave that landed the most demo-visible web features:
 
 ### Next
 
-#### `party_calendar.json` — quick-win calendar dimension (~1 hr)
-- Static JSON in the repo with this season's MNSSHP and MVMCP party
-  dates (Disney publishes 6-12 months out, so manual-or-scrape annual
-  update; ~25-50 dates per year, very stable).
-- Planner reads it: "today is a MNSSHP day → daytime crowds typically
-  run lighter than a normal Saturday → be more aggressive with the
-  plan, plan to be OUT by 6pm if no party ticket."
-- Pre-positions M8 (Calendar Intelligence) without waiting for the
-  full cohort-filtering build. Cheapest possible thing that captures
-  the most-impactful calendar dimension.
+#### Update MVMCP + Jollywood Nights dates when Disney announces (~10 min, manual)
+- MNSSHP 2026 verified on 2026-05-11; MVMCP and Jollywood still
+  pending. When Disney publishes (typically May-June for the same
+  year), replace the estimated/empty `dates` arrays in
+  `mcp/data/party_calendar.json` and flip `dates_status` to
+  `verified_from_disney_calendar`. The planner docstring already
+  tells Claude to hedge confidence based on this status.
+
+#### Capture Claude Desktop screenshots (~30-45 min, mostly manual)
+- Brief at `docs/screenshot-brief.md`. Two required + one optional
+  (the optional one now genuinely demoable thanks to the
+  mark_ride_complete tool + the feedback loop).
+- Once PNGs land in `docs/screenshots/`, agent can wire them into
+  the README demo grid in ~2 minutes.
+
+#### Weather-shift alerts (~1-2 hr stretch)
+- Natural extension of the plan-aware alerts deployed 2026-05-11.
+  Poller already fetches weather forecast inside
+  `get_planning_context`; the alert path would compare a forecast
+  shift (e.g., thunderstorm now expected during a plan window when
+  it wasn't before) against active plans and fire a Pushover.
+- Closes the "the system noticed something that invalidates your
+  plan" loop along a second axis (currently only ride DOWN/UP
+  transitions trigger plan-disruption alerts).
 
 #### M6-B — Live AWS data plane (~1.5-2 days)
 
@@ -502,22 +567,28 @@ Original ordering (as of project start):
 4. **M4 + M5** — personal-use polish (real trip value, smaller
    demo lift).
 
-Status as of 2026-05-10: 1, 2, 3, and the M4 half of 4 all shipped.
+Status as of 2026-05-11: 1, 2, 3, and the M4 half of 4 all shipped.
 The MCP suite (added mid-roadmap, not in original order) became the
 new demo headline — agentic trip-planner using real WDW data is the
 single most distinctive piece of the project for an
-agentic-coding-flavored interview.
+agentic-coding-flavored interview. Repo is public.
 
 **Refreshed priority for the next interview window:**
 
-1. **`party_calendar.json` quick win + this Done-section drift fix
-   you're reading right now** — small but interview-blocking.
-2. **Fresh Claude Desktop screenshots of the agentic planner in
-   action** (see `docs/screenshot-brief.md`) — needed for the README
-   demo grid.
-3. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
-   days, strong architecture-evolution narrative. Optional pre-
-   interview if calendar permits; otherwise post-.
-4. **M9 (embedded chat)** — post-interview only.
-5. **M5 (trip planning)** — personal-use polish, can slip past the
-   interview.
+1. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+   has the three target queries. Highest portfolio-return-per-minute
+   item remaining.
+2. **Update MVMCP + Jollywood dates** when Disney publishes them
+   (~10 min, manual). Lets the planner assert party-day claims
+   confidently rather than hedging.
+3. **Weather-shift alerts** (~1-2 hr) — completes the agentic-loop
+   story along a second axis.
+4. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
+   days, strong architecture-evolution narrative. Pre- or post-
+   interview depending on calendar.
+5. **Blog at megillini.dev** — first post showcases Magic Monitor.
+   Separate project queued at `.planning/blog/`. Not interview-
+   blocking but adds a "writes about engineering choices" surface
+   to the portfolio.
+6. **M9 (embedded chat)** — post-interview only.
+7. **M5 (trip planning)** — personal-use polish, can slip.

@@ -20,7 +20,7 @@ hard-won lessons, and the runtime architecture as it actually exists.
 | AWS account | 601669029997 |
 | AWS region | us-east-2 |
 | AWS CLI profile | `watchtower` (SSO — refresh with `aws sso login --profile watchtower`) |
-| GitHub repo | https://github.com/illinigirl/MagicMonitor (private) |
+| GitHub repo | https://github.com/illinigirl/MagicMonitor (public as of 2026-05-11, MIT license) |
 | CFN stack name | `DisneyStack` |
 | Cognito user pool | `us-east-2_ORhu761AY` (owned by Watchtower stack, imported here) |
 | Cognito hosted-UI | https://auth.megillini.dev (owned by Watchtower stack, reused here) |
@@ -249,6 +249,63 @@ aws iam get-role --role-name WatchtowerStack-WebAppRole1AA0E641-... \
   --profile watchtower --query 'Role.AssumeRolePolicyDocument'
 ```
 If MM has Conditions and Watchtower doesn't, this is the cause.
+
+## Hand-maintained data files
+
+Two JSON files in `mcp/data/` carry data Disney doesn't expose via
+any public API. Updated manually; the MCP tools that consume them
+surface a freshness signal so callers know how stale the snapshot is.
+
+### `mcp/data/mll_tiers.json` — Multi-Pass tier rosters
+- Updates **roughly quarterly**. Disney revises tier assignments
+  when a major attraction opens, closes, or has its demand shift.
+- Source: My Disney Experience app's booking screen or
+  disneyworld.disney.go.com/genie/lightning-lane/.
+- ~5 min of work per revision: edit the tier_1 / tier_2 lists per
+  park, bump `updated_at`.
+- Read by the `get_mll_tiers(park)` MCP tool. Planner docstring
+  tells Claude to defer to the user's app if a specific ride's
+  tier doesn't match the snapshot.
+
+### `mcp/data/party_calendar.json` — After-hours party dates
+- Updates **twice a year per park**: Disney announces MNSSHP dates
+  in Feb-Mar, MVMCP in Apr-May, Jollywood Nights in May-Jun.
+- Source: `https://disneyworld.disney.go.com/events-tours/` — look
+  for the specific event page.
+- Procedure: replace the `dates` array, set `dates_status` to
+  `verified_from_disney_calendar`, update `dates_caveat` with the
+  verification date, bump top-level `updated_at`.
+- Read by the `get_party_calendar(date?, days_ahead=14)` MCP tool.
+- **Current verification status** (as of 2026-05-11):
+  - MNSSHP 2026 → verified
+  - MVMCP 2026 → estimated (Disney hasn't announced yet at time of writing)
+  - Jollywood Nights 2026 → pending Disney announcement (empty dates array)
+
+## Plan-aware alert path (deployed 2026-05-11)
+
+Beyond the favoriter-based DOWN/BACK UP/STILL DOWN/LOW WAIT alerts
+that have been running since M1/M3, the poller now also fires
+**plan-disruption alerts** to users who have the affected ride in
+TODAY's active plan, regardless of whether they favorited it.
+
+How it works:
+- At the top of each poller invocation, `db.build_active_plan_ride_index()`
+  scans active plans for the current park-day (`planned_for_date =
+  today AND outcome_recorded = false`). Returns a
+  `{ride_identifier: [(user_id, plan_id), ...]}` index keyed by
+  ride_id (preferred) and ride_name (fallback).
+- The DOWN and BACK UP transition blocks in `index.py` use this
+  index to fire `notifier.alert_plan_disruption(...)` for users
+  in the affected plan set, deduped against the favoriter set
+  (one notification per user per event).
+- Cooldowns (COOLDOWN#DOWN + COOLDOWN#BACK_UP, 15 min each) gate
+  both fanout paths together — a flapping ride doesn't spam plan
+  watchers any more than it spams favoriters.
+
+Scale note: at single-digit users, the scan is ~$0.09/day in DDB
+RCU. Add a GSI on `(planned_for_date, outcome_recorded)` if user
+count grows past ~100 to avoid scanning the full table on every
+poll.
 
 ## Operational tasks
 
