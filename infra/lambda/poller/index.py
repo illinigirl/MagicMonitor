@@ -34,8 +34,22 @@ from zoneinfo import ZoneInfo
 import wait_times
 import db
 import notifier
+import weather
 
 PARK_KEYS = os.environ["PARK_KEYS"].split(",")
+
+# Park-key → display-name lookup used by the weather-shift alert path,
+# which doesn't have a live attraction in hand to read park_name from.
+# Mirrors the labels themeparks.wiki returns; the regular DOWN/UP
+# alerts continue to use attr["park_name"] (the upstream source of
+# truth) so a name change in the wild propagates without needing a
+# code deploy.
+PARK_NAMES = {
+    "magic_kingdom":     "Magic Kingdom",
+    "epcot":             "EPCOT",
+    "hollywood_studios": "Hollywood Studios",
+    "animal_kingdom":    "Animal Kingdom",
+}
 SECOND_ALERT_MINS = int(os.environ.get("SECOND_ALERT_MINS", "45"))
 
 # Suppress alerts within this many minutes of park close — rides
@@ -157,25 +171,100 @@ def handler(event, context):
     # Plan-aware alerts (M9 bridge): build a {ride_identifier: [(user,
     # plan_id), ...]} index of today's active plans ONCE per invocation,
     # used to fan out plan-disruption Pushovers on DOWN/BACK UP
-    # transitions in addition to the favoriter fanout. Failure here is
-    # bonus-feature-degrades-gracefully — the favoriter alerts above
-    # still fire normally.
+    # transitions in addition to the favoriter fanout. The same scan
+    # also yields a per-plan summary used by the weather-shift fanout
+    # below. Failure here is bonus-feature-degrades-gracefully — the
+    # favoriter alerts above still fire normally.
+    # Counters initialized here (before the weather block) so the
+    # weather-shift fanout below can contribute to the same totals as
+    # the per-ride fanouts that follow.
+    total_changes = 0
+    total_alerts = 0
+
     today_local_iso = datetime.now(_EASTERN).date().isoformat()
-    plan_ride_index = db.build_active_plan_ride_index(today_local_iso)
+    plan_ride_index, active_plans = db.build_active_plan_ride_index(today_local_iso)
     if plan_ride_index:
         print(
             f"[poller] Active plans for {today_local_iso}: "
             f"{sum(len(v) for v in plan_ride_index.values())} ride-targets "
-            f"across {len(plan_ride_index)} distinct ride identifiers"
+            f"across {len(plan_ride_index)} distinct ride identifiers, "
+            f"{len(active_plans)} plan(s) total"
         )
+
+    # ── Plan-weather-shift alert path ──────────────────────────────
+    # Sibling of the per-ride DOWN/UP plan-disruption alerts above:
+    # detect when a thunderstorm newly appears in the next-6h forecast
+    # while users have active plans for today, and fire one Pushover
+    # per affected plan (deduped to one per user, since the weather
+    # itself is park-agnostic and a user with two MK plans today gets
+    # the same actionable signal once).
+    #
+    # Cost gate: only fetch weather when at least one active plan
+    # exists for today. Off-season days with no plans skip the HTTP
+    # call entirely.
+    if active_plans:
+        new_weather = weather.fetch_forecast()
+        if new_weather is not None:
+            prior_weather = db.get_prior_weather_snapshot()
+            shift = weather.detect_storm_shift(prior_weather, new_weather)
+            # Persist the new snapshot regardless of shift — this is
+            # what next poll compares against. Write AFTER detect so a
+            # spurious write that altered the payload can't mask the
+            # detection result.
+            db.put_weather_snapshot(new_weather)
+            if shift:
+                window_phrase = weather.format_storm_window(shift)
+                print(
+                    f"[poller] Weather shift detected: storm at "
+                    f"{shift.get('first_storm_at')} "
+                    f"(code {shift.get('first_storm_code')}, "
+                    f"{shift.get('next_6h_hit_count')} of next 6h). "
+                    f"Fanning out to {len(active_plans)} plan(s)."
+                )
+                seen_users: set[str] = set()
+                weather_alerts_sent = 0
+                for plan in active_plans:
+                    user_id = plan["user_id"]
+                    plan_id = plan["plan_id"]
+                    park_key = plan.get("park_key") or "magic_kingdom"
+                    # Dedup by user: if a single user has multiple
+                    # active plans (unusual but possible — e.g., a
+                    # family member planning back-to-back days who
+                    # left yesterday's plan unrecorded), they get one
+                    # alert, not N.
+                    if user_id in seen_users:
+                        continue
+                    if db.is_weather_alert_on_cooldown(user_id, plan_id):
+                        continue
+                    user_key = get_user_key(user_id)
+                    if not user_key:
+                        continue
+                    # Mark BEFORE send: same pattern as the other
+                    # cooldowns. If the Pushover send fails the
+                    # cooldown still prevents re-fire spam within the
+                    # window; the user can also check the dashboard.
+                    db.mark_weather_alert_sent(user_id, plan_id)
+                    park_name = PARK_NAMES.get(park_key, park_key.replace("_", " ").title())
+                    if notifier.alert_plan_weather_shift(
+                        user_key,
+                        park_name=park_name,
+                        park_key=park_key,
+                        window_phrase=window_phrase,
+                        plan_id=plan_id,
+                    ):
+                        weather_alerts_sent += 1
+                        seen_users.add(user_id)
+                if weather_alerts_sent:
+                    print(
+                        f"[poller] Weather-shift alerts sent: "
+                        f"{weather_alerts_sent} user(s)"
+                    )
+                    total_alerts += weather_alerts_sent
 
     # Track rides currently down across all parks for the post-loop
     # "second alert" sweep (rides down >= SECOND_ALERT_MINS get a
     # follow-up notification).
     currently_down: list[tuple[str, dict]] = []  # (ride_id, attraction)
-
-    total_changes = 0
-    total_alerts = 0
 
     for park_key in PARK_KEYS:
         try:

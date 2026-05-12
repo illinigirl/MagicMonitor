@@ -185,3 +185,39 @@ def alert_plan_disruption(
         print(f"[notifier] Unknown plan disruption_type: {disruption_type!r} (ride={ride_name})")
         return False
     return _send(user_key, title, body, priority=priority)
+
+
+def alert_plan_weather_shift(
+    user_key: str,
+    park_name: str,
+    park_key: str,
+    window_phrase: str,
+    plan_id: Optional[str] = None,
+) -> bool:
+    """Fire when a thunderstorm appears in the next-6-hour forecast that
+    wasn't there on the previous poll, and the recipient has an active
+    plan for the affected park today.
+
+    Sibling of `alert_plan_disruption` — fires on the second axis of
+    the agentic-loop story ("the system noticed something that
+    invalidates your plan"). DOWN/UP transitions are the per-ride
+    axis; this is the park-wide axis.
+
+    Priority 1: actionable — Disney pauses outdoor rides for
+    lightning, so re-sequencing the day before the storm hits is the
+    play. Sticks with the same priority convention as went_down
+    (also priority 1).
+
+    `window_phrase` comes from weather.format_storm_window — keeps the
+    body wording consistent with what the log line printed and avoids
+    locale assumptions in the notifier.
+    """
+    emoji = PARK_EMOJI.get(park_key, "🎢")
+    title = f"{emoji} Storm forecast — plan may shift"
+    body = (
+        f"{park_name}\n"
+        f"Thunderstorm now in the forecast {window_phrase}. "
+        f"Disney pauses outdoor rides for lightning — re-check with "
+        f"Claude when you can to slot indoor rides ahead of the storm."
+    )
+    return _send(user_key, title, body, priority=1)

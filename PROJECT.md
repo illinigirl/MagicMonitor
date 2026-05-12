@@ -103,6 +103,47 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-12 — Weather-shift alerts
+
+Completes the "system noticed something that invalidates your plan"
+loop along a second axis. The 2026-05-11 deploy added plan-aware
+DOWN/UP alerts (per-ride disruption); this deploy adds plan-aware
+weather alerts (park-wide disruption). Both fire to the same active-
+plan set from the same scan, deduped per user.
+
+**What it does:**
+- On every 2-min poll where active plans exist for today, fetch
+  Open-Meteo's 6-hour forecast for WDW.
+- Compare against the previously persisted snapshot
+  (`WEATHER#WDW/SNAPSHOT` row, 2-day TTL). If the new forecast
+  contains a thunderstorm code (95/96/99) in next_6h AND the prior
+  snapshot did not → fire a plan-weather-shift Pushover.
+- Per-(user, plan) cooldown (`USER#<id>/COOLDOWN#WEATHER#<plan_id>`,
+  60-min TTL) prevents re-pinging while the storm stays in the
+  window. A distinct second storm window later in the day can still
+  re-alert after cooldown.
+- Cost gate: zero weather HTTP calls on days when no one has an
+  active plan.
+
+**Why narrow (storm only, not precip-jump):**
+Florida summer rain shifts up/down all day and would generate noise.
+Storm = lightning hold = actual Disney behavior (outdoor rides
+pause) = real replan trigger. v1 trades coverage for signal quality.
+
+**Design pattern:**
+Mirrors the existing per-ride cooldown shape (DOWN/BACK UP/STILL DOWN/
+LOW WAIT) and the active-plan scan from 2026-05-11. One scan yields
+both views (per-ride index for DOWN/UP fanout, per-plan summary for
+weather fanout). New `weather.py` module duplicates a trimmed copy of
+the MCP server's `_fetch_weather_forecast` — different runtime, small
+enough to copy, deliberate.
+
+**Files:**
+- `infra/lambda/poller/weather.py` (new) — fetch + storm-shift detector
+- `infra/lambda/poller/db.py` — snapshot + per-plan cooldown helpers
+- `infra/lambda/poller/notifier.py` — `alert_plan_weather_shift`
+- `infra/lambda/poller/index.py` — integration after plan_ride_index
+
 #### 2026-05-11 — Public repo, real-world validation, calendar awareness
 
 Repo went **public** on GitHub today; MIT LICENSE added; final
@@ -337,16 +378,6 @@ Single-day wave that landed the most demo-visible web features:
 - Once PNGs land in `docs/screenshots/`, agent can wire them into
   the README demo grid in ~2 minutes.
 
-#### Weather-shift alerts (~1-2 hr stretch)
-- Natural extension of the plan-aware alerts deployed 2026-05-11.
-  Poller already fetches weather forecast inside
-  `get_planning_context`; the alert path would compare a forecast
-  shift (e.g., thunderstorm now expected during a plan window when
-  it wasn't before) against active plans and fire a Pushover.
-- Closes the "the system noticed something that invalidates your
-  plan" loop along a second axis (currently only ride DOWN/UP
-  transitions trigger plan-disruption alerts).
-
 #### M6-B — Live AWS data plane (~1.5-2 days)
 
 The C → B upgrade in the analytics data plane: stop relying on the
@@ -531,8 +562,9 @@ budget after MM's other costs.
 **Dependencies (all met):**
 - Cognito auth (M2-B ✓)
 - DDB Route Handler write pattern (M3 ✓)
-- Stable MCP tool layer (✓ as of 2026-05-10 — 17 tools incl.
-  full plan-feedback loop with calibration_summary)
+- Stable MCP tool layer (✓ as of 2026-05-11 — 22 tools incl.
+  full plan-feedback loop with calibration_summary,
+  mark_ride_complete, get_party_calendar)
 
 **Stretch follow-on (call it M9.1):** Pushover-driven proactive
 feedback collection. When `record_plan` writes a plan, schedule a
@@ -581,14 +613,12 @@ agentic-coding-flavored interview. Repo is public.
 2. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Lets the planner assert party-day claims
    confidently rather than hedging.
-3. **Weather-shift alerts** (~1-2 hr) — completes the agentic-loop
-   story along a second axis.
-4. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
+3. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
    days, strong architecture-evolution narrative. Pre- or post-
    interview depending on calendar.
-5. **Blog at megillini.dev** — first post showcases Magic Monitor.
+4. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not interview-
    blocking but adds a "writes about engineering choices" surface
    to the portfolio.
-6. **M9 (embedded chat)** — post-interview only.
-7. **M5 (trip planning)** — personal-use polish, can slip.
+5. **M9 (embedded chat)** — post-interview only.
+6. **M5 (trip planning)** — personal-use polish, can slip.

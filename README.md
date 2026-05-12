@@ -182,7 +182,7 @@ is already short, alerting "this is a short wait" is meaningless.
 
 ### Agentic planner with cross-session feedback loop
 
-MM is exposed as 17 MCP tools that any MCP client (Claude Desktop,
+MM is exposed as 22 MCP tools that any MCP client (Claude Desktop,
 agentic frameworks) can call conversationally. The interesting one
 is `get_planning_context` — a single tool call that returns
 per-ride live status + forecast + DOWN history + lat/lon + park
@@ -234,6 +234,51 @@ without restating the calibration per ride. Single-user-by-design
 for the family-use case (`user_id` defaults to `"megan"`);
 multi-user-via-MCP is out of scope until MCP carries the calling
 client's auth subject.
+
+### Plan-aware alerts on two axes
+
+The "system noticed something that invalidates your plan" loop fires
+along two independent axes, both reading from the same active-plan
+scan the poller runs at the top of every invocation.
+
+**Axis 1 — per-ride disruption.** When a ride in TODAY's plan
+transitions DOWN or BACK UP, every user with that ride in an active
+plan gets a Pushover — regardless of whether they favorited it.
+Being in today's plan is a stronger "I care right now" signal than
+generic favoriting. Deduped against the favoriter fanout so one event
+never produces two pings to the same user.
+
+**Axis 2 — park-wide weather shift.** When Open-Meteo's 6-hour
+forecast newly contains a thunderstorm code (95/96/99) that wasn't
+there on the previous poll, every user with an active plan today
+gets a Pushover. Storm = lightning hold = Disney pauses outdoor rides,
+so the alert IS the replan trigger. Per-(user, plan) cooldown
+prevents re-firing while the storm stays in the window; a distinct
+second storm window later in the day can re-alert.
+
+```python
+# index.py — one scan yields both views, both fanouts dedup per user
+plan_ride_index, active_plans = db.build_active_plan_ride_index(today)
+# Axis 1: ride goes DOWN → look up plan targets by ride identifier
+plan_targets = db.lookup_plan_targets(plan_ride_index, ride_id, name)
+# Axis 2: storm enters forecast → fan out to every active plan today
+if active_plans:
+    new_weather = weather.fetch_forecast()
+    if shift := weather.detect_storm_shift(prior_weather, new_weather):
+        for plan in active_plans:  # dedup by user_id below
+            ...
+```
+
+Pattern choice — narrow over noisy: precipitation_chance jumps were
+considered and rejected for v1. Florida afternoon rain shifts up and
+down all day, so a precip-jump trigger would generate noise. Storm
+codes are an actual operational event; precip-jumps mostly aren't.
+The trigger can broaden later if usage shows real plan-disruption
+moments slipping through.
+
+Cost gate: weather is fetched only when at least one active plan
+exists for today. Off-season days with no plans skip the HTTP call
+entirely.
 
 ### Trust-policy override in CDK
 
@@ -346,10 +391,6 @@ deploy hygiene, common debug commands, and known follow-ups.
 Captured in [`PROJECT.md` → Roadmap](PROJECT.md) and
 [`RUNBOOK.md` → Known follow-ups](RUNBOOK.md#known-follow-ups-low-priority):
 
-- **`party_calendar.json` quick win** — static JSON of MNSSHP +
-  MVMCP dates so the planner can flag "today's a Halloween party
-  day, daytime crowds typically lighter; plan to be out by 6pm if
-  no party ticket." ~1 hour, sets up M8.
 - **M6-B: live AWS data plane (~1.5-2 days)** — the analytics
   layer is currently a frozen JSON snapshot from a sibling Pi
   SQLite. Upgrade path is hourly-bucketed wait writes from the

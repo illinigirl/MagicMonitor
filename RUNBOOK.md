@@ -307,6 +307,50 @@ RCU. Add a GSI on `(planned_for_date, outcome_recorded)` if user
 count grows past ~100 to avoid scanning the full table on every
 poll.
 
+## Plan-weather-shift alert path (deployed 2026-05-12)
+
+Second axis of the plan-aware alert story. Sibling to the per-ride
+DOWN/UP plan-disruption alerts above, but park-wide: when Open-Meteo's
+next-6-hour forecast newly contains a thunderstorm code (95/96/99)
+that wasn't in the previous snapshot, every user with an active plan
+today gets a Pushover. Storm = lightning hold = Disney pauses outdoor
+rides.
+
+How it works:
+- The same `db.build_active_plan_ride_index()` scan that feeds the
+  per-ride fanout also yields a per-plan summary
+  (`active_plans: [{user_id, plan_id, park_key}, ...]`). Single scan,
+  two views — no extra DDB cost.
+- If `active_plans` is non-empty, `weather.fetch_forecast()` calls
+  Open-Meteo (no API key, ~300ms). When the list is empty, the call
+  is skipped entirely — off-season days pay nothing.
+- `weather.detect_storm_shift(prior, current)` compares prior snapshot
+  to current forecast. Fires only when the prior had no storm codes
+  in next_6h AND the current does. None prior (first poll after
+  deploy / 2-day TTL expiry) is treated as "no prior, storm is new"
+  — a single spurious post-deploy alert is contained by the per-plan
+  cooldown.
+- New snapshot persisted to `WEATHER#WDW/SNAPSHOT` row (2-day TTL)
+  for next poll's comparison.
+- Per-(user, plan) cooldown: `USER#<id>/COOLDOWN#WEATHER#<plan_id>`
+  with `WEATHER_SHIFT_COOLDOWN_SECS` (default 60 min) TTL. A user
+  with two active plans today gets one alert (dedup by user_id in
+  the handler loop), but a distinct second storm window later in
+  the day can still re-alert after the cooldown expires.
+
+Trigger is intentionally narrow (storm only, not precip-jump). FL
+afternoon rain shifts daily; storm codes track an actual Disney
+operational event. Broaden by lowering the threshold in
+`weather._STORM_CODES` or adding precip-jump logic to
+`detect_storm_shift` if real plans slip through.
+
+Inspect the latest snapshot:
+```
+aws dynamodb get-item --profile watchtower --region us-east-2 \
+  --table-name DisneyData \
+  --key '{"PK":{"S":"WEATHER#WDW"},"SK":{"S":"SNAPSHOT"}}'
+```
+
 ## Operational tasks
 
 ### Refresh AWS SSO (sessions last 8-12 hours)

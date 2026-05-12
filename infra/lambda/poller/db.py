@@ -39,6 +39,16 @@ LOW_WAIT_ALERT_COOLDOWN_SECS = int(os.environ.get("LOW_WAIT_ALERT_COOLDOWN_SECS"
 # 7 days lets us spot weekly recurrence in forecast-vs-actual analysis
 # without bloating the table. Tune via env if Phase C wants longer.
 FORECAST_RETENTION_DAYS = int(os.environ.get("FORECAST_RETENTION_DAYS", "7"))
+# Plan-weather-shift cooldown — one alert per (user, plan) per hour
+# default. Storm forecasts persist for a few hours once they appear,
+# so 60 min prevents a single weather event from generating multiple
+# pings while still letting a second, distinct storm window later in
+# the day re-alert.
+WEATHER_SHIFT_COOLDOWN_SECS = int(os.environ.get("WEATHER_SHIFT_COOLDOWN_SECS", "3600"))
+# Weather snapshots auto-expire after 2 days. The poller only needs
+# "what did we last see" — anything older than yesterday is just
+# debug-trail cruft.
+WEATHER_SNAPSHOT_TTL_SECS = int(os.environ.get("WEATHER_SNAPSHOT_TTL_SECS", "172800"))
 
 # Module-level resource — reused across warm invocations to avoid
 # reconnecting on every poll. Lambda freezes/thaws this between calls.
@@ -301,24 +311,33 @@ def get_user_favorites_for_park(user_id: str, park_key: str) -> set[str]:
 # `(planned_for_date, outcome_recorded)` so we don't scan inactive
 # plans + historical USER#* / RIDE#* partitions to find a few rows.
 
-def build_active_plan_ride_index(today_date_iso: str) -> dict:
-    """Build {ride_identifier: [(user_id, plan_id), ...]} for today's
-    active (outcome_recorded=false) plans.
+def build_active_plan_ride_index(today_date_iso: str) -> tuple[dict, list[dict]]:
+    """Scan today's active (outcome_recorded=false) plans and return two
+    derived views from a single scan:
 
-    `ride_identifier` is the ride_id when ride_sequence entries carry
-    one, falling back to the lowercased ride_name otherwise. The
-    handler's lookup tries both forms so plans recorded before the
-    ride_id field landed still match.
+      ride_index: {ride_identifier: [(user_id, plan_id), ...]}
+        Used by the per-ride DOWN/UP plan-aware fanout. `ride_identifier`
+        is the ride_id when ride_sequence entries carry one, falling
+        back to the lowercased ride_name otherwise — the handler's
+        lookup tries both forms so plans recorded before the ride_id
+        field landed still match.
+
+      active_plans: list of {user_id, plan_id, park_key, park_name}
+        Used by the plan-weather-shift fanout, which is plan-scoped
+        rather than ride-scoped. We need park info to compose the
+        alert body — extracted from the same scan so we don't pay for
+        a second DDB pass.
 
     Called once per poll invocation, cached in the local handler
-    scope. Returns an empty dict on failure rather than raising —
-    plan alerts are bonus, not load-bearing for the M1 alert path.
+    scope. Returns ({}, []) on failure rather than raising — plan
+    alerts are bonus, not load-bearing for the M1 alert path.
     """
     # Paginate the scan — DDB returns 1MB pages max, and on a table
     # with many RIDE# rows the PLAN# rows may not land in the first
     # page (DDB scans don't guarantee any partition ordering). Without
     # pagination this silently returns zero matches.
     index: dict = {}
+    active_plans: list[dict] = []
     last_evaluated_key = None
     page_count = 0
     while True:
@@ -340,13 +359,23 @@ def build_active_plan_ride_index(today_date_iso: str) -> dict:
             resp = _table.scan(**kwargs)
         except Exception as e:
             print(f"[poller] build_active_plan_ride_index scan failed (page {page_count}): {e}")
-            return index  # whatever we built so far is better than nothing
+            # Whatever we built so far is better than nothing.
+            return index, active_plans
         page_count += 1
         for item in resp.get("Items", []):
             user_id = item.get("PK", "").removeprefix("USER#")
             plan_id = item.get("SK", "").removeprefix("PLAN#")
             if not user_id or not plan_id:
                 continue
+            active_plans.append({
+                "user_id":   user_id,
+                "plan_id":   plan_id,
+                "park_key":  item.get("park_key"),
+                # park_name isn't stored on the plan row, but it's
+                # derivable from park_key in the handler via the same
+                # PARK_NAME lookup the notifier uses. Leaving the slot
+                # here for clarity.
+            })
             for ride in item.get("ride_sequence", []) or []:
                 ride_id = ride.get("ride_id")
                 ride_name = ride.get("ride_name")
@@ -362,7 +391,7 @@ def build_active_plan_ride_index(today_date_iso: str) -> dict:
         if page_count >= 50:
             print(f"[poller] build_active_plan_ride_index hit page cap (50), stopping early")
             break
-    return index
+    return index, active_plans
 
 
 def lookup_plan_targets(
@@ -384,3 +413,82 @@ def lookup_plan_targets(
             seen.add(entry)
             out.append(entry)
     return out
+
+
+# ─── Weather snapshot (plan-weather-shift alert path) ───────────────
+# One row per WDW (single lat/lon serves all four parks). The poller
+# reads the prior on each invocation, compares to the freshly-fetched
+# forecast, and writes the new snapshot back. Compared payload is
+# pruned to just the keys the shift detector consumes — full Open-
+# Meteo response would bloat the row for no operational gain.
+#
+# Row: WEATHER#WDW / SNAPSHOT, TTL = WEATHER_SNAPSHOT_TTL_SECS.
+
+_WEATHER_PK = "WEATHER#WDW"
+_WEATHER_SK = "SNAPSHOT"
+
+
+def get_prior_weather_snapshot() -> Optional[dict]:
+    """Return the last persisted weather snapshot, or None if absent.
+
+    Treat None as "first invocation after a deploy / TTL expired" —
+    the shift detector handles that case as "no prior, treat any
+    storm in the new forecast as new." A spurious post-deploy alert
+    is contained by the per-plan cooldown.
+    """
+    try:
+        resp = _table.get_item(Key={"PK": _WEATHER_PK, "SK": _WEATHER_SK})
+    except Exception as e:
+        print(f"[poller] get_prior_weather_snapshot failed: {e}")
+        return None
+    return resp.get("Item", {}).get("payload")
+
+
+def put_weather_snapshot(snapshot: dict) -> None:
+    """Persist the latest fetched forecast for next poll's comparison.
+
+    Wrapped in a defensive try — a weather-write failure should never
+    abort the rest of the alert pipeline. Worst case is we lose the
+    snapshot for one poll and re-trigger the same shift in 2 min,
+    which the cooldown will suppress.
+    """
+    expire_ts = int(time.time()) + WEATHER_SNAPSHOT_TTL_SECS
+    try:
+        _table.put_item(
+            Item={
+                "PK":      _WEATHER_PK,
+                "SK":      _WEATHER_SK,
+                "payload": snapshot,
+                "ttl":     expire_ts,
+            }
+        )
+    except Exception as e:
+        print(f"[poller] put_weather_snapshot failed: {e}")
+
+
+# ─── Plan-weather cooldown (per-user, per-plan) ─────────────────────
+# Mirrors the existing per-ride cooldown pattern but keyed on the plan
+# instead of the ride — a weather shift is a plan-scoped event, not a
+# ride-scoped one. Without this, a storm sitting in the 6-hour window
+# for an hour would generate ~30 pings.
+
+def is_weather_alert_on_cooldown(user_id: str, plan_id: str) -> bool:
+    resp = _table.get_item(
+        Key={
+            "PK": f"USER#{user_id}",
+            "SK": f"COOLDOWN#WEATHER#{plan_id}",
+        }
+    )
+    return "Item" in resp
+
+
+def mark_weather_alert_sent(user_id: str, plan_id: str) -> None:
+    expire_ts = int(time.time()) + WEATHER_SHIFT_COOLDOWN_SECS
+    _table.put_item(
+        Item={
+            "PK":      f"USER#{user_id}",
+            "SK":      f"COOLDOWN#WEATHER#{plan_id}",
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "ttl":     expire_ts,
+        }
+    )
