@@ -378,6 +378,104 @@ Single-day wave that landed the most demo-visible web features:
 - Once PNGs land in `docs/screenshots/`, agent can wire them into
   the README demo grid in ~2 minutes.
 
+#### LOW_VS_FORECAST alert — crowd-adjusted opportunity detection (~2-3 hr)
+
+Second baseline for the low-wait opportunity alert path. Where the
+existing LOW_WAIT compares current wait to a STATIC historical
+baseline from `baselines.json` (Pi-fed, regenerated when
+`aggregate-analytics.py` runs), this new alert compares against
+themeparks.wiki's DYNAMIC per-hour forecast for the same ride today.
+
+**Why two baselines instead of one.** The signals catch different
+classes of opportunity:
+- LOW_WAIT (historical): "*This ride is anomalously low for this
+  hour, all-time.*" Catches end-of-day Pirates, fireworks-time
+  Carousel of Progress — moments rare across history.
+- LOW_VS_FORECAST (today-aware): "*This ride is beating today's
+  specific expectation.*" Catches the heavy-crowd day where Big
+  Thunder hits 40 min when today's forecast said 65 — an opportunity
+  LOW_WAIT misses because absolute wait is still above its all-time
+  half-typical threshold.
+
+**Killer case.** On a heavy-crowd day (today_vs_forecast > 1.15),
+the park is running hotter than the historical baselines expect.
+LOW_WAIT will essentially never fire. LOW_VS_FORECAST is what catches
+genuinely-better-than-today's-load moments on those days.
+
+**Park-wide normalization (the design wrinkle).** A naive
+`current_wait < forecast` rule over-fires on "crowds light today"
+days when *everything* is below forecast. The alert needs to fire
+only when this specific ride is doing *meaningfully better* than the
+park-wide load this hour, not just "below its own forecast":
+
+```python
+ride_ratio = current_wait / forecast_for_this_hour
+park_ratio = today_vs_forecast.ratio   # already computed server-side
+# Fire when this ride is ≥25% ahead of park average AND the gap is
+# meaningful in absolute minutes.
+fire = ride_ratio <= 0.75 * park_ratio  AND  current_wait <= forecast - 15
+```
+
+This mirrors the `today_vs_forecast` pattern already used by the
+MCP planner — same data plane signal, applied to alerting.
+
+**Threshold tuning caveat.** As of 2026-05-12 we have ~2 days of
+FORECAST# data. The feature will *function* on minimal data, but the
+threshold values above are first-pass guesswork. Plan to re-tune from
+observation after ~30 days of data. All thresholds env-var
+configurable (mirror the LOW_WAIT pattern) so tuning is a config
+change, not a redeploy.
+
+**Dedup with existing LOW_WAIT.** A single ride could in principle
+satisfy both conditions at the same moment. Options:
+- *Single combined alert* — "Big Thunder: 35 min, way under both
+  typical and today's forecast." Strongest signal, single push.
+- *Separate cooldowns, separate alerts* — two pushes for the same
+  ride at the same moment is noisy; reject this.
+- *Shared cooldown row* (`COOLDOWN#LOW`) covering both alert types
+  — at most one low-wait push per ride per cooldown window, body
+  text picks the strongest applicable signal.
+
+Recommendation: shared cooldown, body text adapts. Cleanest UX.
+
+**Files affected:**
+- `infra/lambda/poller/db.py` — helper to fetch latest FORECAST# row
+  per ride for the current hour; potentially share LOW_WAIT cooldown
+  row.
+- `infra/lambda/poller/forecast_signal.py` (new) — per-ride
+  ratio-vs-park computation, threshold check.
+- `infra/lambda/poller/index.py` — after the existing LOW_WAIT check,
+  evaluate LOW_VS_FORECAST; pick body text based on which signal is
+  strongest.
+- `infra/lambda/poller/notifier.py` — extend `alert_low_wait` (or
+  add `alert_low_vs_forecast`) — decide based on the dedup design.
+
+**Today_vs_forecast aggregation in the poller.** The MCP server
+computes this on demand inside `get_planning_context`. The poller
+would need its own implementation (Lambda runtime, no MCP deps) — a
+small function that scans current STATE rows for the park, joins
+against the latest FORECAST# row per ride, returns the per-park
+ratio. ~30 lines. Same logic, second copy — same trade-off as the
+showtimes classifier dual-impl.
+
+**Interview narrative.** "I started with a historical baseline and
+realized it blinded the alert path on heavy-crowd days. So I added a
+second baseline using the live forecast the planner already
+consumed, normalized against park-wide load so the signal stays
+clean on quiet days too. Same data plane, two complementary alerts —
+one catches all-time anomalies, the other catches today-specific
+opportunities."
+
+**Acceptance criteria:**
+1. Active rides where current_wait is ≥25% ahead of park-wide
+   today_vs_forecast AND ≥15 min under forecast trigger an alert.
+2. Quiet days (park_ratio < 0.9) don't generate per-ride spam.
+3. Cooldown shared with LOW_WAIT — one low-wait-class push per ride
+   per cooldown window.
+4. Body text indicates which baseline triggered ("vs typical" /
+   "vs today's forecast" / "both").
+5. All thresholds env-var configurable.
+
 #### M6-B — Live AWS data plane (~1.5-2 days)
 
 The C → B upgrade in the analytics data plane: stop relying on the
@@ -609,11 +707,16 @@ agentic-coding-flavored interview. Repo is public.
 
 1. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Highest portfolio-return-per-minute
-   item remaining.
+   item remaining. Deferred from 2026-05-12 to a session at the
+   bigger desktop monitor.
 2. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Lets the planner assert party-day claims
    confidently rather than hedging.
-3. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
+3. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+   low-wait alert path. Catches heavy-crowd-day opportunities the
+   historical baseline blinds you to. Single-session work, additive
+   to the poller. Designed 2026-05-12.
+4. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
    days, strong architecture-evolution narrative. Pre- or post-
    interview depending on calendar.
 4. **Blog at megillini.dev** — first post showcases Magic Monitor.
