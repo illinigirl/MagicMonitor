@@ -1,7 +1,7 @@
 {
   "updated_at": "2026-05-11",
   "source_hint": "https://disneyworld.disney.go.com/events-tours/",
-  "maintenance_note": "Disney publishes the official party calendar in spring (Halloween) and summer (Christmas) each year. The dates below for 2026 are ESTIMATED from typical Disney scheduling patterns — they're plausible but not verified against the official calendar. Replace the `dates` arrays with the actual published schedule when you have time (~10 min of manual work per season). Look for 'After Hours' or 'Special Events' at the source URL above.",
+  "maintenance_note": "Disney publishes the official party calendar in spring (Halloween) and summer (Christmas) each year. Replace the `dates` arrays with the actual published schedule when Disney announces (~10 min of manual work per season). Look for 'After Hours' or 'Special Events' at the source URL above. Flip each party's dates_status to verified_from_disney_calendar once updated.",
   "parties": {
     "MNSSHP": {
       "full_name": "Mickey's Not So Scary Halloween Party",
@@ -10,8 +10,8 @@
       "park_closes_early_for_non_party": "18:00",
       "party_hours": {"start": "19:00", "end": "00:00"},
       "ticketed_separately": true,
-      "dates_status": "estimated_from_typical_pattern_for_2026",
-      "dates_caveat": "Replace with verified 2026 dates from disneyworld.com/events. Disney usually announces in Feb-Mar for the same year, so this should be available now.",
+      "dates_status": "verified_from_disney_calendar",
+      "dates_caveat": "Verified from disneyworld.com/events on 2026-05-11. 38 party nights across August-October.",
       "crowd_effects": {
         "daytime_at_host_park": "lighter than typical",
         "reason_daytime_lighter": "AP holders and locals avoid days where the park closes early at 6pm for non-party guests; family/leisure guests skew toward other parks",
@@ -24,15 +24,15 @@
         "If user mentions they're going on a party day WITHOUT a party ticket: warn about the 6pm closure upfront and suggest moving evening rides to mid-day"
       ],
       "dates": [
-        "2026-08-11", "2026-08-13", "2026-08-16", "2026-08-18", "2026-08-20",
-        "2026-08-23", "2026-08-25", "2026-08-27", "2026-08-30",
-        "2026-09-01", "2026-09-03", "2026-09-06", "2026-09-08", "2026-09-10",
-        "2026-09-13", "2026-09-15", "2026-09-17", "2026-09-20", "2026-09-22",
-        "2026-09-24", "2026-09-27", "2026-09-29",
-        "2026-10-01", "2026-10-04", "2026-10-06", "2026-10-08", "2026-10-11",
-        "2026-10-13", "2026-10-15", "2026-10-18", "2026-10-20", "2026-10-22",
-        "2026-10-25", "2026-10-27", "2026-10-29", "2026-10-30", "2026-10-31",
-        "2026-11-01"
+        "2026-08-07", "2026-08-11", "2026-08-14", "2026-08-18", "2026-08-21",
+        "2026-08-23", "2026-08-25", "2026-08-28", "2026-08-30",
+        "2026-09-01", "2026-09-04", "2026-09-08", "2026-09-11", "2026-09-13",
+        "2026-09-15", "2026-09-18", "2026-09-20", "2026-09-22", "2026-09-24",
+        "2026-09-25", "2026-09-27", "2026-09-29",
+        "2026-10-01", "2026-10-02", "2026-10-04", "2026-10-06", "2026-10-08",
+        "2026-10-09", "2026-10-13", "2026-10-15", "2026-10-16", "2026-10-18",
+        "2026-10-22", "2026-10-23", "2026-10-25", "2026-10-27", "2026-10-29",
+        "2026-10-31"
       ]
     },
     "MVMCP": {
