@@ -144,6 +144,7 @@ DynamoDB table.
 | `remove_ride_from_plan` | DDB write | User SKIPPED the ride. Moves it from `ride_sequence` into `dropped_rides` with optional `reason`. Negative signal for calibration ("plan was too aggressive"). Don't call this for rides the user actually rode — undercounts their completions |
 | `add_ride_to_plan` | DDB write | Adds a spontaneous ride to `ride_sequence`. Poller starts watching within ~2 min |
 | `get_mll_tiers` | static JSON | Current Multi-Pass tier rosters per park (Tier 1 / Tier 2 for MK/EPCOT/HS; no-tiers + LL-eligible list for AK). Used when the planner reasons about pre-arrival bookings (3-ride allocation, 1 Tier 1 + 2 Tier 2 at the tiered parks). Hand-maintained data file at `mcp/data/mll_tiers.json`; `updated_at` field on the response tells callers how fresh the snapshot is |
+| `get_party_calendar` | static JSON | After-hours party dates (MNSSHP, MVMCP) on or near a given date. Surfaces park-close-early constraint for non-party guests + crowd-effect interpretation (daytime lighter, evening waits shorter during party). Used at plan-time to catch the "MK closes for non-party guests at 6pm" trap before it ruins someone's evening. Hand-maintained data file at `mcp/data/party_calendar.json`; carries `dates_status` so callers know if dates are verified or estimated |
 
 Future tools (planned):
 

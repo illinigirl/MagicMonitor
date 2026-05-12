@@ -1780,6 +1780,47 @@ def get_planning_context(
        If `calibration_summary` is null, this is the first recorded
        trip — proceed with baselines and don't fabricate calibration.
 
+    0b. **Check for after-hours parties on the planning date.** Call
+       `get_party_calendar(date=<plan_date>)` early — before laying
+       out the order — for any Magic Kingdom plan. Parties affect
+       the plan in two big ways:
+
+       - **Park closes early (typically 6pm) for non-party guests
+         on party days.** If the user is planning MK on a party
+         date AND hasn't mentioned a party ticket: surface this
+         FIRST, before sequencing. "MK closes for non-party guests
+         at 6pm on this date — your plan needs to fit in the
+         9am-6pm window, or move to another park for the evening."
+         Don't bury this in a footnote; it's a hard ceiling on the
+         day's length.
+       - **Daytime crowds run lighter than typical on party days**
+         (locals avoid the early close). When `is_party_day_on_target_date`
+         is true, treat predicted ride waits as if today_vs_forecast
+         park_load_ratio were ~0.80-0.85. If you ALSO have a real
+         load_ratio signal from the live data, combine them — don't
+         double-count, just use the lower value.
+       - **Evening party hours are the sweet spot for guests WITH
+         party tickets.** Capped attendance, shorter waits than
+         typical evening waits. Tell the user this if they're
+         heading into the party.
+       - **December non-party days are some of the highest-crowd
+         days of the year.** If the user is planning a December
+         MK day, the get_party_calendar response tells you which
+         dates are party days nearby — and the surrounding
+         non-party days are NOT lighter, they're the opposite
+         (holiday tourists piling in). Worth flagging when the
+         user has flexibility on which day to go.
+
+       Hedge the language when the tool's `dates_status` is
+       `estimated_from_typical_pattern_for_<year>` (the file hasn't
+       been verified against Disney's published calendar yet): say
+       "this LOOKS like it'll be a party day based on typical
+       Disney scheduling — worth double-checking the official
+       calendar before booking." Only assert confidently when
+       `dates_status` is `verified_from_disney_calendar`.
+
+       Skip the call for EPCOT / HS / AK plans — parties are MK-only.
+
     0. **Discover hard constraints first.** If the user gives you a
        multi-ride list without mentioning any of these, ASK ONCE
        before laying out the order — they materially change the plan
@@ -2867,6 +2908,141 @@ def find_rides_matching(
 # of work per revision.
 
 _MLL_TIERS_PATH = _ROOT / "mcp" / "data" / "mll_tiers.json"
+_PARTY_CALENDAR_PATH = _ROOT / "mcp" / "data" / "party_calendar.json"
+
+
+@lru_cache(maxsize=1)
+def _party_calendar() -> dict[str, Any]:
+    """Load party calendar once per process. Returns {} on missing
+    file so the tool can degrade gracefully."""
+    if not _PARTY_CALENDAR_PATH.exists():
+        return {}
+    return json.loads(_PARTY_CALENDAR_PATH.read_text())
+
+
+@mcp.tool()
+def get_party_calendar(
+    date: str | None = None,
+    days_ahead: int = 14,
+) -> dict[str, Any]:
+    """Check for WDW after-hours parties (MNSSHP, MVMCP) on or near
+    a date.
+
+    Call this when planning ANY trip — present-day or future. Even
+    knowing a trip date is NOT a party day is useful (rules out the
+    6pm-closure concern). Returns parties happening on the specified
+    date and within the next N days.
+
+    **Crowd dynamics to apply when a planning day IS a party day:**
+    - Daytime crowds at the host park are LIGHTER than typical
+      (AP holders and locals avoid because of 6pm early close).
+      Treat predicted waits as if today_vs_forecast.park_load_ratio
+      were ~0.80-0.85; combine with the actual load_ratio if both
+      signals are available.
+    - **The park closes for non-party guests at the party start
+      time (typically 6pm).** This is THE most important constraint
+      to surface upfront. If the user is planning a Magic Kingdom
+      day on a party date AND doesn't have a party ticket: warn
+      them BEFORE laying out the plan ("MK closes for non-party
+      guests at 6pm on this date — your plan needs to fit in the
+      9am-6pm window, or move to another park for the evening").
+    - Evening-during-party waits are often SHORTER than typical
+      daytime waits — capped attendance is the whole point of the
+      hard-ticket event. If the user HAS a party ticket, evenings
+      are the best ride window of the day.
+
+    **Specific scenarios to flag:**
+    - **December non-party days** are some of the highest-crowd
+      days of the year (holiday tourists, no AP block). Even
+      without a party ticket, a December PARTY day daytime can be
+      a better choice for actually riding things than a non-party
+      day — fewer locals, similar tourist numbers.
+    - **Halloween night specifically** (October 31): party-only on
+      most years. Non-party-ticket guests cannot be in MK after
+      ~6pm on that single date. Make this explicit.
+
+    **Data caveat the tool surfaces:**
+    The current dataset's dates_status will tell you whether the
+    listed dates are verified ("verified_from_disney_calendar") or
+    estimated typical pattern ("estimated_from_typical_pattern_for_<year>").
+    If estimated, phrase party-day claims with appropriate hedging:
+    "this looks like it'll be a party day based on typical Disney
+    scheduling — you'll want to double-check the official calendar
+    before booking" rather than asserting confidently. The dates
+    are updated manually; the file's updated_at field tells you
+    when last refreshed.
+
+    Args:
+        date: ISO date string (YYYY-MM-DD). Defaults to today in
+            America/New_York.
+        days_ahead: Days from `date` to include in the lookahead.
+            Default 14 days — covers a typical short-trip planning
+            window.
+
+    Returns:
+        Dict with date_checked, days_ahead, end_date, parties (list
+        of {abbreviation, full_name, park, dates_in_range,
+        is_party_day_on_target_date, park_closes_early_for_non_party,
+        party_hours, crowd_effects, non_party_ticket_implications,
+        dates_status, dates_caveat}), data_updated_at,
+        maintenance_note. Empty parties list = no party-day
+        constraints to apply.
+    """
+    data = _party_calendar()
+    if not data:
+        return {
+            "error": "Party calendar data file missing",
+            "error_message": (
+                "mcp/data/party_calendar.json not found. Tool degrades "
+                "gracefully — proceed with normal planning, but note "
+                "that the planner can't catch party-day constraints "
+                "without this data file."
+            ),
+        }
+
+    if date is None:
+        target_date = datetime.now(_EASTERN).date()
+    else:
+        try:
+            target_date = datetime.fromisoformat(date).date()
+        except ValueError:
+            return {
+                "error": "Invalid date format",
+                "error_message": f"Could not parse '{date}'. Use YYYY-MM-DD.",
+            }
+
+    end_date = target_date + timedelta(days=max(0, days_ahead))
+    target_iso = target_date.isoformat()
+    end_iso = end_date.isoformat()
+
+    matches: list[dict[str, Any]] = []
+    for party_key, party in (data.get("parties") or {}).items():
+        all_dates = sorted(set(party.get("dates") or []))
+        in_range = [d for d in all_dates if target_iso <= d <= end_iso]
+        if not in_range:
+            continue
+        matches.append({
+            "abbreviation": party_key,
+            "full_name": party.get("full_name"),
+            "park": party.get("park"),
+            "dates_in_range": in_range,
+            "is_party_day_on_target_date": target_iso in in_range,
+            "park_closes_early_for_non_party": party.get("park_closes_early_for_non_party"),
+            "party_hours": party.get("party_hours"),
+            "crowd_effects": party.get("crowd_effects"),
+            "non_party_ticket_implications": party.get("non_party_ticket_implications"),
+            "dates_status": party.get("dates_status"),
+            "dates_caveat": party.get("dates_caveat"),
+        })
+
+    return {
+        "date_checked": target_iso,
+        "days_ahead": days_ahead,
+        "end_date": end_iso,
+        "parties": matches,
+        "data_updated_at": data.get("updated_at"),
+        "maintenance_note": data.get("maintenance_note"),
+    }
 
 
 @lru_cache(maxsize=1)
