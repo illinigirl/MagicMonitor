@@ -380,5 +380,5 @@ Captured in [`PROJECT.md` → Roadmap](PROJECT.md) and
 
 ## License
 
-Source-available, no formal license yet. If you want to deploy your
-own copy, ping me — happy to put a real license on it.
+[MIT](LICENSE). Copy, fork, deploy your own — attribution appreciated
+but not required.
