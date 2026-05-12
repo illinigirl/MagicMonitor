@@ -1,11 +1,13 @@
 # Blog at megillini.dev — project queue
 
-Personal blog at `blog.megillini.dev`. First post showcases Magic
-Monitor; subsequent posts cover engineering decisions, project
-post-mortems, and whatever Megan finds worth writing about.
+**Brand:** Megan Builds. Personal blog at `blog.megillini.dev`. First
+post showcases Magic Monitor; broader purpose is a long-form portfolio
+surface for writing about engineering decisions in a voice that
+matches who Megan actually is.
 
-Status: **queued** (not yet started — handed off to a fresh agent
-when ready to begin).
+Status: **queued, design locked** (visual direction + tokens locked
+via Claude Design — see `.planning/blog/design-handoff/`).
+Implementation hasn't started.
 
 ---
 
@@ -13,156 +15,256 @@ when ready to begin).
 
 - Adds a "writes about engineering choices" surface to the portfolio
   alongside the MM agentic demo and the Watchtower sibling project.
-- Gives the Magic Monitor project a long-form narrative home — the
-  README is portfolio-grade but doesn't capture the *decision*
-  story (why MCP suite over embedded chat first, why pre-aggregated
-  analytics over Athena, etc.).
-- Forcing function for writing things up — turns conversation-with-Claude
-  iteration into shareable artifacts.
+- Gives Magic Monitor a long-form narrative home — the MM README is
+  portfolio-grade but doesn't capture the *decision* story.
+- Showcases who Megan is, not just what she ships — femininity is
+  a differentiator, not a footnote.
+- Forcing function for writing things up — turns conversation-with-
+  Claude iteration into shareable artifacts.
 
 ---
 
-## Stack decisions (locked)
+## Voice & tone (locked from design handoff)
+
+- **Casual, funny, sarcastic** — like talking to a friend who happens
+  to ship things.
+- **Confident but self-deprecating** — *"I let Claude run my house
+  and lived to tell about it,"* not *"Exploring agentic orchestration
+  patterns."*
+- **Specific over generic** — *"erythritol crystallization is a
+  personal enemy"* beats *"I tried different sweeteners."*
+- **Femininity is a differentiator** — the hot pink is the point.
+  Sundress at standup energy.
+- **Recurring jokes** worth weaving in: the Roomba is sentient,
+  erythritol is the enemy, Claude is a coworker now, *"I will
+  spreadsheet anything."*
+- **Avoid:** corporate speak, "passionate about," "leveraging,"
+  self-deprecation that reads as actually insecure.
+
+Titles are full sentences with a joke. Excerpts deliver a punchline,
+not a summary. Read times honest — short posts (3-5 min) flagged
+as such; variety is part of the texture.
+
+---
+
+## Visual design (locked from Claude Design — `design-handoff/`)
+
+**Direction: A2 — Zine, rebalanced.** Hot pink lives in the masthead
+band and as a recurring accent (chips, rules, marker scrawls). Body
+breathes on cream paper so the writing leads and the pink reads as
+*signature*, not noise.
+
+### Design tokens (in `design-handoff/tokens.css`)
+- `--paper: #fbf6ef` (main background) + `--paper-2: #f3e8d8`
+- `--ink: #1a0d1f` (primary text + structural lines)
+- `--hot: #ff2d87` (signature hot pink) + `--hot-soft: #ffe2ee`
+- `--pop: #ffd23f` (canary yellow accent)
+- `--mint: #6be3b8` (tertiary accent)
+
+### Typography
+- **Display** — Caprasimo (decorative serif, riso vibe)
+- **Marker** — Caveat (handwritten accent)
+- **Body** — Inter (shared with Magic Monitor for visual lineage)
+- **Mono** — JetBrains Mono (shared with MM)
+
+### Signature aesthetic
+- **Hard offset shadow** (`2px 4px 0 ink`) on cards — riso print
+  signature, NOT soft drop shadows.
+- **Slight rotation** (±1.2°, max 2°) on cards in grids for
+  hand-pasted feel. Masthead, footer, primary-CTA cards stay at 0°.
+- **Hover state:** shadow grows to `3px 6px 0 ink`, card translates
+  -1px/-2px.
+
+### Components (templates in `design-handoff/pages/`)
+Masthead, Footer, Chip, Card, Stamp, Tape, Marker text, PullQuote,
+CodeBlock, ProjectRow, PostCard. The JSX in `pages/home.jsx` and
+`pages/templates.jsx` are the source of truth — port to whichever
+framework gets picked.
+
+---
+
+## Open stack decisions (need user input before handoff)
+
+Two things changed from my original PROJECT.md after the design
+handoff landed:
+
+### Decision 1: Astro vs Next.js 16
+
+The design handoff README says: *"Astro is probably the right call
+for a blog of this size — content in MDX, ship fast, no JS for
+static pages."*
+
+| | Astro | Next.js 16 |
+|---|---|---|
+| **Static export** | First-class, zero JS by default for static pages | Supported, but the framework is SSR-first |
+| **MDX support** | First-class via `@astrojs/mdx` | First-class via `@next/mdx` |
+| **Familiarity** | New territory for Megan | Same stack as Magic Monitor |
+| **Build perf** | Faster for static sites | Heavier |
+| **Component islands** | Built-in (opt into React per-component) | Always-React |
+| **Visual cohesion w/ MM** | Different framework, but the typography + components are tokens-level, not framework-level | Same framework but the blog has a distinct visual identity anyway |
+
+**My lean:** Astro. The design handoff is right about the trade —
+this is a content-heavy static site and Astro is the correct tool.
+The "share stack with MM" argument doesn't really apply once the
+visual identity diverges anyway (and it has, deliberately). The
+learning cost is real but small (~2 hours of orientation).
+
+Megan to decide.
+
+### Decision 2: Page scope for v1
+
+Design handoff lists 7-8 pages:
+- `/` (homepage with hero + dispatches + bench preview + now)
+- `/posts` (archive, filterable by tag)
+- `/posts/[slug]` (reading view with drop cap, pull quotes, code)
+- `/projects` (projects index, 4 detailed project rows)
+- `/projects/[slug]` (optional — post format works for most)
+- `/about` (bio + "shape of me" grid + how to reach + recurring jokes)
+- `/now` (could be a card on homepage)
+- `/404` (the "I asked Claude to find this page and it returned a
+  recipe" gag)
+
+My original v1 scope was 3 pages (/, /blog, /blog/[slug]). The
+design has more.
+
+| | Minimum (3 pages) | Design's full set (7-8 pages) |
+|---|---|---|
+| **Time-to-first-post** | Fast — can ship in ~half a day | Slower — ~1-2 days |
+| **Content burden** | One post needed to launch | About + projects index need real content beyond the showcase post |
+| **Portfolio impact** | Lower — looks like a thin scaffold | Higher — looks like a real personal site |
+| **Scope-creep risk** | Low | Medium — but design is locked, which contains it |
+
+**My lean:** ship the design's homepage + posts + posts/[slug] +
+404 in v1 (4 pages — the design's core reading surface). Defer
+projects + about to a fast v1.1 once the first post is live. The
+"projects" page needs real project blurbs and the "about" page
+needs a bio — those are content tasks that shouldn't block the
+scaffold.
+
+Megan to decide.
+
+---
+
+## Locked decisions (no need to revisit)
 
 | | Choice | Why |
 |---|---|---|
-| Framework | Next.js 16 App Router + Turbopack | Same family as MM; Megan already fluent with the stack |
-| Rendering | **Static export (SSG)** | Content is build-time. No DDB, no auth, no SSR Lambda cost. Edge-cached out of the box on Amplify Hosting. |
-| Styling | Tailwind 4 + `@tailwindcss/typography` | MM uses Tailwind 4; reuse the same primitives |
-| Content | MDX via `@next/mdx` | Standard pattern. MDX lets posts embed React components when needed (callouts, custom code blocks) without becoming a full CMS |
-| Code highlighting | `rehype-pretty-code` with `github-dark-default` | Battle-tested, no runtime cost, looks good with both light + dark themes |
-| Typography | Fraunces (headings) + Inter (body) + JetBrains Mono (code) via `next/font/google` | **Shared visual lineage with MM** — reads as a family. Important for portfolio cohesion. |
-| Palette | Calmer than MM's castle pink — readability-first for long-form text | MM is on-brand for Disney; the blog needs to read calmly across many posts. Pick a neutral palette with one accent color. |
-| Deploy | AWS Amplify Hosting, us-east-2 | Same as MM. Let Amplify auto-issue the cert (do NOT pass `customCertificate`). |
-| Domain | `blog.megillini.dev` | Subdomain, simpler DNS than apex |
-| IaC | AWS CDK (TypeScript), single stack `BlogStack` | Same pattern as MM's `DisneyStack` |
-| GitHub | New repo under `illinigirl` org | Megan's GitHub org |
-| Auth | None (public read-only site) | Personal blog; no signup, no comments, no analytics in v1 |
-
----
-
-## Page structure (v1 scope)
-
-- `/` — Landing page: short intro paragraph + reverse-chronological
-  list of posts (title + date + summary).
-- `/blog` — Same list, slightly more detail per entry.
-- `/blog/[slug]` — Full post.
-
-That's it. No other pages in v1.
+| Content format | MDX (`@astrojs/mdx` or `@next/mdx`) | Lets posts embed React components for callouts + code |
+| Rendering | Static export (SSG) | Content is build-time; no SSR Lambda needed |
+| Deploy | AWS Amplify Hosting, us-east-2 | Same as MM. Let Amplify auto-issue the cert. |
+| Domain | `blog.megillini.dev` (subdomain, not apex) | Simpler DNS, no apex-record gymnastics |
+| Auth | None (public read-only) | Personal blog; no signup, no comments, no view tracking |
+| IaC | AWS CDK (TypeScript), single stack `BlogStack` | Same pattern as MM `DisneyStack` |
+| GitHub | New repo under `illinigirl` | Megan's GitHub org |
+| Code highlighting | `rehype-pretty-code` with the syntax palette from `tokens.css` (`.kw` hot pink, `.mod` pop yellow, `.com` mint green) | Matches the design — codeblock styling is a signature element |
 
 ---
 
 ## Content model
 
-Posts live in `content/blog/<slug>.mdx`. Frontmatter:
+Posts live in `content/blog/<slug>.mdx` (Astro) or
+`content/blog/<slug>.mdx` (Next.js — same shape). Frontmatter:
 
 ```yaml
 ---
-title: "Post title"
+title: "Full sentence title, ideally with a joke"
 date: "2026-MM-DD"
-summary: "1-2 sentence summary for the index page"
+readTime: 7
+tag: "Agentic Coding"     # one of ~6 domain tags
+excerpt: "Punchline, not a summary. Set up a moment, drop a line."
 ---
 ```
 
-Body is MDX — can include code blocks, headings, lists, links, and
-embedded React components if Megan wires them up later.
-
-Build-time resolution: at `next build`, the framework reads
-`content/blog/*.mdx`, generates static pages for each, and prerenders
-the index.
+See `design-handoff/data.js` for the shape of sample posts —
+particularly the title voice and excerpt punch.
 
 ---
 
-## Out of scope for v1 (resist scope creep)
+## Out of scope for v1
 
 The agent will be tempted to add these. Don't.
 
-- **Tags / categories.** Add when there are 10+ posts and natural
-  clusters emerge. Not before.
-- **Search.** Static search needs a build-time index + client-side
-  fuzzy matcher (FlexSearch, Pagefind). Worth it later; not v1.
-- **RSS feed.** Real value but adds a build step. Add when there
-  are subscribers asking for it.
-- **Comments.** Either you self-host (Isso, Commento) or use a
-  third party (Disqus, Giscus). Both pull focus from writing.
-- **Newsletter signup.** Requires a third-party service (Buttondown,
-  Substack). Add when the post backlog justifies it.
-- **View counts.** Privacy-respecting analytics (Plausible, Fathom)
-  cost money and add a third-party dep. Public blogs work fine
-  without them.
-- **OG image generation.** Per-post social-share cards via
-  `@vercel/og` or similar. Nice to have for shared posts; not
-  blocking v1.
-- **Sitemap.** Trivial to add later when SEO matters; not v1.
-- **Dark mode toggle.** Pick a single readable palette in v1.
-  Theme-switching is a real engineering surface (CSS variables +
-  user pref storage); not free.
-- **CMS / admin UI.** Content is git; that's the feature. Headless
-  CMS layers are an anti-pattern for a personal blog.
+- **Tags / categories** as a navigation surface — single tag per
+  post is fine in the schema; tag-filtered views land in v1.1.
+- **Search.** Add when there are 10+ posts.
+- **RSS feed.** Add when readers ask.
+- **Comments.** No.
+- **Newsletter signup.** No.
+- **View counts.** No.
+- **OG image generation.** Nice-to-have for shared posts, not v1.
+- **Sitemap.** Trivial to add later when SEO matters.
+- **Dark mode toggle.** The cream paper IS the brand. If added
+  later, invert to ink background with cream text and keep hot
+  pink + pop yellow unchanged.
+- **CMS / admin UI.** Content is git.
 
 ---
 
 ## First post: Magic Monitor showcase
 
-The first post is the reason this project exists right now.
+**Working title (in Megan's voice — sample, she'll tune):**
+*"I built a Disney wait-time predictor instead of doing my actual
+job — and then taught Claude to plan rides for my sister"*
 
-**Working title:** TBD (Megan picks). Candidates:
-- "Building an Agentic Disney Trip Planner with MCP and Claude"
-- "Magic Monitor: A WDW Dashboard That Learned to Plan Rides"
-- "From Pi-fed snapshot to agentic loop: 30 days of building Magic Monitor"
+Note `design-handoff/data.js` already has a sample
+`park-whisperer` post entry with similar voice — use that as the
+tone reference.
 
-**What it should cover (rough outline — Megan refines):**
+**What it should cover (rough outline):**
 1. The problem: every WDW family member wants live wait times +
    alerts when their planned rides go down.
 2. The architecture choice: serverless single-table DynamoDB + a
-   poller Lambda + Next.js SSR on Amplify. Cost: ~$0.30/mo.
+   poller Lambda + Next.js SSR on Amplify. Cost: ~$0.30/mo. Joke
+   about how this is somehow LESS than her phone bill.
 3. The MCP pivot: turning MM's read model into 22 tools an MCP
-   client can call conversationally. Demo: agentic trip-planner
-   answering "I'm at MK with these 5 rides, what should I ride
-   next?" using one `get_planning_context` call.
-4. The cross-session feedback loop: `record_plan` /
-   `mark_ride_complete` / `get_user_plan_history` with server-side
-   calibration. The data plane does the math; the LLM narrates
-   the lesson.
-5. Real-world fixes: the BACK UP cooldown flap bug, the LL
-   verification refusal rule, the today-only data caveat —
-   examples of how usage shaped the system.
-6. What's next: M6-B (live AWS data plane), M9 (embedded chat),
-   M8 (calendar intelligence with party-day cohort filtering).
+   client can call conversationally. Demo: the agentic planner
+   answering *"I'm at MK with these 5 rides, what should I ride
+   next?"* — show a screenshot of the actual exchange.
+4. The cross-session feedback loop: the system learns from her
+   sister's actual trips. Joke about how she'll spreadsheet
+   anything, including her family's ride preferences.
+5. Real-world fixes — the BACK UP cooldown flap bug shipped while
+   testing, the LL verification refusal rule, the today-only data
+   caveat. Stories of how usage shaped the system.
+6. What's next: M6-B (live AWS data plane), M9 (embedded chat for
+   non-Claude-Desktop users like her sister), the calendar
+   intelligence build.
 
-Target length: 1500-2500 words. Long enough to capture the
-decisions, short enough to read in one sitting. Code snippets +
-maybe 2-3 screenshots from the MM screenshot brief.
+Target length: 1500-2500 words. Code snippets + 2-3 MM screenshots.
 
 ---
 
-## Future post backlog (for after the blog ships)
+## Future post backlog
 
 - "The five AWS lessons from deploying Amplify Hosting in CDK"
-  (the M2-B post-mortem — content already exists in RUNBOOK.md,
-  just needs blog-shaping)
+  (the M2-B post-mortem — content already in `RUNBOOK.md`, just
+  needs blog-shaping into Megan-voice)
 - "Why I picked MCP over an embedded chat first" (the agentic-
   architecture decision)
-- "Pre-aggregated analytics vs streams→Athena: when each is right"
+- "Sub-agents, but make them deranged" — the sample post title is
+  fine as-is, content TBD
+- "Pre-aggregated analytics vs streams → Athena: when each is right"
   (the M6 design call, with cost math)
-- The Watchtower project itself — assuming Megan wants to write
-  about its origin too
+- Anything from `design-handoff/data.js` sample posts that captures
+  a real Megan thing (keto ice cream, Roomba opinions, etc.)
 
 ---
 
 ## Reference docs the agent should read first
 
-- `docs/aws-setup-brief.md` — covers AWS account, region, profile,
-  sibling project conventions, the five M2-B AWS lessons, Python
-  3.12 default, Megan's working preferences. **Drop-in prompt for
-  fresh agents — paste it before anything else.**
-- `infra/lib/disney-stack.ts` — canonical reference for the CDK
-  pattern (Amplify Hosting + custom domain + Cognito + GitHub
-  OIDC role). The blog stack is simpler (no DDB, no Lambda, no
-  Cognito), but the Amplify + domain pattern is identical.
-- `web/next.config.ts` and `web/package.json` — reference for the
-  Next.js 16 + Tailwind 4 + Turbopack baseline. Bump to MDX +
-  static export for the blog.
-- Magic Monitor's `README.md` and `PROJECT.md` — reference for
-  tone and structure of project documentation if the agent ends
-  up writing similar docs for the blog repo.
+1. **`docs/aws-setup-brief.md`** — AWS account, region, profile,
+   sibling project conventions, the five M2-B AWS lessons, Python
+   3.12 default, Megan's working preferences. Drop-in prompt for
+   fresh agents.
+2. **`.planning/blog/design-handoff/README.md`** — voice/tone,
+   component inventory, page structure, content guidelines.
+3. **`.planning/blog/design-handoff/tokens.css`** — copy-paste-able
+   design tokens. The canonical color/type/shape values.
+4. **`.planning/blog/design-handoff/pages/home.jsx`** +
+   **`templates.jsx`** — JSX source of truth for component
+   structure. Port to chosen framework.
+5. **`.planning/blog/design-handoff/data.js`** — sample post shape
+   + voice reference. Don't ship as-is; use as voice anchor.
+6. **`infra/lib/disney-stack.ts`** (in this repo, MM) — CDK pattern
+   reference for the Amplify + custom domain + GitHub OIDC role.
+   Blog stack is simpler (no DDB, no Lambda, no Cognito).

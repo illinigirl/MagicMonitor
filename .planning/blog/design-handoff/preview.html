@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Megan Builds — handoff preview</title>
+  <link href="https://fonts.googleapis.com/css2?family=Caprasimo&family=Caveat:wght@400;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="tokens.css" />
+  <style>
+    html, body { margin: 0; padding: 0; background: #1a0d1f; }
+    body { font-family: "Inter", system-ui, sans-serif; }
+    /* page switcher chrome */
+    .switcher {
+      position: fixed; top: 0; left: 0; right: 0;
+      background: #1a0d1f; color: #fbf6ef;
+      padding: 10px 18px;
+      display: flex; align-items: center; gap: 14px;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+      z-index: 1000; border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    .switcher .label { opacity: 0.5; }
+    .switcher button {
+      background: transparent; color: #fbf6ef;
+      border: 1px solid rgba(255,255,255,0.2);
+      padding: 6px 12px; font: inherit; cursor: pointer;
+      border-radius: 3px; letter-spacing: 0.1em;
+    }
+    .switcher button.on { background: #ff2d87; border-color: #ff2d87; color: white; }
+    .switcher button:hover:not(.on) { border-color: #ff2d87; color: #ff2d87; }
+    .switcher .note { margin-left: auto; opacity: 0.5; font-size: 10px; }
+    #stage { padding-top: 41px; background: #fbf6ef; min-height: 100vh; }
+    #stage > * { max-width: 1280px; margin: 0 auto; box-shadow: 0 0 0 1px rgba(0,0,0,0.04); }
+  </style>
+</head>
+<body>
+  <div class="switcher" role="tablist">
+    <span class="label">Megan Builds —</span>
+    <button data-page="home" class="on">Home</button>
+    <button data-page="post">Post detail</button>
+    <button data-page="projects">Projects</button>
+    <button data-page="about">About</button>
+    <button data-page="notfound">404</button>
+    <span class="note">handoff preview · all directions in MeganBuilds.html</span>
+  </div>
+  <div id="stage"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+  <script type="text/babel" src="data.js"></script>
+  <script type="text/babel" src="pages/home.jsx"></script>
+  <script type="text/babel" src="pages/templates.jsx"></script>
+
+  <script type="text/babel">
+    const PAGES = {
+      home:     () => <DirZineV2 />,
+      post:     () => <ZinePost />,
+      projects: () => <ZineProjects />,
+      about:    () => <ZineAbout />,
+      notfound: () => <Zine404 />,
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('stage'));
+    let current = 'home';
+
+    function render() {
+      const Page = PAGES[current];
+      root.render(<Page />);
+      document.querySelectorAll('.switcher button').forEach(b => {
+        b.classList.toggle('on', b.dataset.page === current);
+      });
+    }
+
+    document.querySelectorAll('.switcher button').forEach(b => {
+      b.addEventListener('click', () => {
+        current = b.dataset.page;
+        render();
+        window.scrollTo({ top: 0 });
+      });
+    });
+
+    render();
+  </script>
+</body>
+</html>

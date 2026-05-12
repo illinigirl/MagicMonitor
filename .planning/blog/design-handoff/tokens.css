@@ -1,0 +1,208 @@
+/* Megan Builds — design tokens
+ * Hot-pink-as-signature zine. Paste this into the root stylesheet.
+ */
+
+:root {
+  /* ─── Color ──────────────────────────────────────── */
+  --paper:      #fbf6ef;
+  --paper-2:    #f3e8d8;
+  --ink:        #1a0d1f;
+  --hot:        #ff2d87;
+  --hot-soft:   #ffe2ee;
+  --pop:        #ffd23f;
+  --mint:       #6be3b8;
+
+  /* Tag colors — generated via oklch from a tag's hue. */
+  --tag-home:   oklch(0.55 0.20 332);
+  --tag-agent:  oklch(0.55 0.20 280);
+  --tag-life:   oklch(0.55 0.20 12);
+  --tag-side:   oklch(0.55 0.20 200);
+  --tag-proj:   oklch(0.55 0.20 168);
+  --tag-career: oklch(0.55 0.20 348);
+
+  /* ─── Type ───────────────────────────────────────── */
+  --font-display: "Caprasimo", serif;
+  --font-marker:  "Caveat", cursive;
+  --font-body:    "Inter", system-ui, sans-serif;
+  --font-mono:    "JetBrains Mono", monospace;
+
+  --fs-display-xl: 104px;  /* masthead */
+  --fs-display-lg: 64px;   /* hero title */
+  --fs-display-md: 36px;   /* section heads */
+  --fs-display-sm: 22px;   /* card titles */
+  --fs-body:       16px;
+  --fs-body-sm:    14px;
+  --fs-meta:       11px;
+
+  /* ─── Shape ──────────────────────────────────────── */
+  --radius:    4px;
+  --radius-pill: 999px;
+
+  --shadow:     2px 4px 0 var(--ink);
+  --shadow-lg:  3px 6px 0 var(--ink);
+  --shadow-pink: 3px 5px 0 var(--hot);
+
+  --rule:       3px solid var(--ink);
+  --rule-thin:  1px solid var(--ink);
+  --rule-pink:  6px solid var(--hot);
+  --rule-dashed: 1px dashed rgba(0,0,0,0.15);
+
+  /* ─── Spacing scale ──────────────────────────────── */
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3:  12px;
+  --s-4:  16px;
+  --s-5:  20px;
+  --s-6:  24px;
+  --s-8:  32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --s-16: 64px;
+
+  /* ─── Motion ─────────────────────────────────────── */
+  --ease:     cubic-bezier(.2,.7,.3,1);
+  --dur-quick: 120ms;
+  --dur:      200ms;
+}
+
+html, body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--fs-body);
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* ─── Atom classes ─────────────────────────────────── */
+
+.display { font-family: var(--font-display); font-weight: 400; letter-spacing: -0.01em; }
+.marker  { font-family: var(--font-marker); }
+.mono    { font-family: var(--font-mono); }
+
+.chip {
+  display: inline-block;
+  padding: 4px 12px;
+  font-size: var(--fs-meta);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: var(--hot);
+  color: white;
+  border-radius: var(--radius-pill);
+}
+.chip--inverse { background: var(--ink); color: var(--pop); }
+
+.card {
+  background: white;
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: var(--shadow);
+  position: relative;
+  transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.card--tilt-l { transform: rotate(-1.2deg); }
+.card--tilt-r { transform: rotate(0.9deg); }
+.card--accent { border-left: 4px solid var(--hot); }
+.card--top    { border-top: 8px solid var(--hot); }
+.card:hover {
+  box-shadow: var(--shadow-lg);
+  transform: translate(-1px, -2px) rotate(var(--tilt, 0deg));
+}
+
+.stamp {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: var(--fs-meta);
+  letter-spacing: 0.12em;
+  padding: 4px 8px;
+  border: 1.5px solid var(--ink);
+  background: var(--pop);
+  transform: rotate(-3deg);
+  color: var(--ink);
+}
+
+.tape {
+  position: absolute;
+  background: rgba(255, 210, 63, 0.85);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+  border-left: 1px dashed rgba(0,0,0,0.05);
+  border-right: 1px dashed rgba(0,0,0,0.05);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+  opacity: 0.55;
+}
+
+.masthead {
+  background: var(--hot);
+  color: white;
+  padding: 18px 40px 20px;
+  position: relative;
+}
+.masthead h1 {
+  font-family: var(--font-display);
+  font-size: var(--fs-display-xl);
+  line-height: 0.88;
+  margin: 6px 0 0;
+  letter-spacing: -0.02em;
+}
+
+.button {
+  background: var(--ink);
+  color: var(--pop);
+  padding: 10px 18px;
+  border: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform var(--dur-quick) var(--ease);
+}
+.button:hover { transform: translateY(-1px); }
+.button--pink { background: var(--hot); color: white; }
+.button--ghost { background: white; color: var(--ink); border: 2px solid var(--ink); }
+
+.pullquote {
+  margin: 32px -40px;
+  padding: 24px 40px;
+  border-left: var(--rule-pink);
+  background: var(--hot-soft);
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.codeblock {
+  background: var(--ink);
+  color: var(--paper);
+  padding: 18px 22px;
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.55;
+  overflow: auto;
+  box-shadow: var(--shadow-pink);
+}
+.codeblock .kw   { color: var(--hot); }
+.codeblock .mod  { color: var(--pop); }
+.codeblock .com  { color: var(--mint); }
+.codeblock .str  { color: var(--paper); }
+
+.dropcap::first-letter {
+  font-family: var(--font-display);
+  font-size: 72px;
+  line-height: 0.85;
+  float: left;
+  padding: 6px 10px 0 0;
+  color: var(--hot);
+}
