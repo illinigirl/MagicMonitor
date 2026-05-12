@@ -249,6 +249,30 @@ Lambda, so its venv is 3.13).
 > in a real terminal (Terminal.app, iTerm, etc.), confirm in the
 > browser, then return to the agent session.
 
+> **Git push from the agent shell.** SSH-based pushes fail because
+> the agent's shell doesn't have the user's SSH keys loaded — you'll
+> see `Permission denied (publickey)`. **Do NOT switch the remote to
+> HTTPS permanently** (that mutates user config). Instead, push
+> one-shot via HTTPS inline:
+> ```bash
+> git push https://github.com/illinigirl/<repo>.git <branch>
+> ```
+> This works because `gh` CLI is logged in (`gh auth status` ✓) and
+> set as the git credential helper for github.com (verify with
+> `git config --get-all credential.https://github.com.helper` →
+> should include `!/opt/homebrew/bin/gh auth git-credential`). The
+> token is stored in the macOS keychain; the helper supplies it
+> automatically for HTTPS pushes.
+>
+> If `gh auth status` shows logged out, that's a user-level fix —
+> ask Megan to run `gh auth login` in a real terminal. Don't try to
+> work around it with `git config` mutations.
+>
+> Repos that are already HTTPS (e.g., Magic Monitor's
+> `MagicMonitor.git`) push normally with `git push origin <branch>`.
+> Repos using SSH remotes (e.g., `megan-builds`) need the HTTPS-URL-
+> inline form above per push.
+
 ```bash
 # Refresh SSO (every 8-12h) — must run in a real terminal, not via `!`
 aws sso login --profile watchtower
