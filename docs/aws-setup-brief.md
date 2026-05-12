@@ -98,9 +98,11 @@ GitHub OIDC role.
 
 ## Hard-won AWS lessons (don't re-learn these)
 
-All five of these cost real hours during Magic Monitor's M2-B deploy.
-Full debug logs in `/Users/meganschott/Documents/Pi/Disney/RUNBOOK.md`
-under "M2-B journey."
+All seven of these cost real hours. The first five came from
+Magic Monitor's M2-B deploy; #6 and #7 came from setting up the
+Megan Builds blog. Full debug logs for #1-5 in
+`/Users/meganschott/Documents/Pi/Disney/RUNBOOK.md` under
+"M2-B journey."
 
 1. **Amplify Hosting needs the GitHub App installed.** New Amplify
    apps fail to assume their build role until the
@@ -151,6 +153,39 @@ under "M2-B journey."
    ```
    Defensive no-op today if the current alpha doesn't generate
    conditions; reapplies if a future alpha re-introduces them.
+
+6. **`@aws-cdk/aws-amplify-alpha` with `platform: WEB` (static)
+   silently fails to assume its IAM role.** Every build errors
+   with "Unable to assume specified IAM Role" regardless of role
+   config or trust-policy overrides. The same module with
+   `platform: WEB_COMPUTE` (SSR) works fine on the same trust
+   policy. Reproduced on `2.251.0-alpha.0`. Spent a full
+   afternoon ruling out IAM before discovering it's an alpha bug
+   specific to the static platform.
+   **Workaround:** provision `Amplify::App` + `Branch` + `Domain`
+   through the AWS Console instead of CDK. Keep CDK for the
+   IAM/secrets layer only (GitHub OIDC deploy role, SSM params).
+   Drop an `amplify.yml` at the repo root so the Console reads
+   the buildSpec from source — that part still works the way
+   you'd expect.
+
+7. **A repeatedly delete/recreated Amplify custom domain leaves
+   a stale CloudFront alias claim that takes hours to clear —
+   sometimes longer than you have.** Symptom: domain association
+   status flips to `FAILED` with "incorrectly configured DNS
+   record points to another CloudFront distribution," even though
+   DNS resolves correctly. Waiting 45+ minutes does not clear it.
+   The claim is internal to CloudFront's alias registry; you
+   can't see or release it from the console.
+   **Diagnostic:** try a fresh subdomain (one with no prior
+   association history). If that succeeds, the failure was the
+   stale claim, not your DNS or cert config.
+   **Decision-time tradeoff:** wait a day-plus for the original
+   subdomain to clear, or pivot to a different subdomain
+   permanently. Megan Builds picked the latter
+   (`blog.megillini.dev` → `meganbuilds.megillini.dev`) and the
+   pivot was actually a brand upgrade — worth knowing the option
+   exists when the wait would block a deploy day.
 
 ---
 
@@ -206,8 +241,16 @@ Lambda, so its venv is 3.13).
 
 ## Operational commands the agent will likely need
 
+> **SSO refresh caveat.** `aws sso login` opens a browser to confirm
+> the device code. Claude Code's `!` shell-exec prefix runs in a
+> non-interactive subprocess and won't actually launch the browser,
+> so the refresh silently fails and every subsequent AWS call still
+> returns "Token has expired." Run `aws sso login --profile watchtower`
+> in a real terminal (Terminal.app, iTerm, etc.), confirm in the
+> browser, then return to the agent session.
+
 ```bash
-# Refresh SSO (every 8-12h)
+# Refresh SSO (every 8-12h) — must run in a real terminal, not via `!`
 aws sso login --profile watchtower
 
 # Smoke-test live URL
