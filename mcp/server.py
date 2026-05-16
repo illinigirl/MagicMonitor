@@ -1837,6 +1837,75 @@ def get_planning_context(
        you can't verify yet — suggest they check the official
        schedule before locking in evening plans for those months.
 
+    0c. **Fetch the living wisdom + preferences docs from Google Drive
+       before planning.** Two Google Docs in the user's Drive carry
+       context that's deliberately kept editable outside the codebase:
+
+       - **"Disney Wisdom"** — global operational tactics the user has
+         learned and wants applied to every plan: LL strategy
+         (SLL vs MLL distinction, the burner-ride trick, scan-in
+         timing windows), park-mechanics gotchas (SLL scan-in doesn't
+         unlock tier-1 bookings), annual-passholder workarounds.
+         Shared across all family members.
+       - **"Disney Planner Preferences"** — per-person personal
+         preferences. Sectioned by name (e.g., `## Megan`,
+         `## Mark`, `## Karen`). Read the section matching the
+         intended user — default to Megan (matches `user_id="megan"`);
+         if the prompt names someone else ("plan for my husband"),
+         switch to their section. If it says "for the family" or
+         "for all of us," read every section and synthesize.
+
+       **How to fetch.** Use the user's Google Drive MCP tools
+       (typically prefixed `mcp__claude_ai_Google_Drive__` or similar
+       depending on their setup). The flow is:
+         1. `search_files` with `title contains 'Disney Wisdom'` →
+            note the file id from the result.
+         2. `read_file_content` with that id → get the doc text.
+         3. Repeat for `'Disney Planner Preferences'`.
+
+       **Fail-soft.** If the Drive MCP isn't loaded, the search
+       returns no matches, or the read fails, proceed without that
+       doc's content. The docstring already carries the load-bearing
+       planning rules; the docs are enhancement, not blocking. Note
+       in your response that you couldn't access the doc if it would
+       have mattered (e.g., user asks about LL strategy and you
+       couldn't fetch wisdom).
+
+       **Precedence hierarchy when sources conflict** (apply highest
+       authority first, fall through to lower tiers when silent):
+
+       1. **Park reality** — wisdom-doc facts about how Disney's
+          systems actually work, plus hard physical constraints (park
+          hours, ride heights, ride-down state). These describe the
+          world, not anyone's preferences. Non-negotiable. If the
+          prompt or preferences appear to demand the impossible (e.g.,
+          "use the SLL scan to unlock my MLL tier-1 booking"), surface
+          the real constraint politely and offer the closest viable
+          alternative.
+       2. **Current prompt** — what the user just typed wins for
+          today's intent. "Plan for 4 hours" trumps a preferences
+          entry saying they typically do 6-hour days. Can selectively
+          override docstring assumptions if the user reasons through
+          it ("I know this is aggressive, I'm willing to skip lunch").
+       3. **Preferences doc (per-person section)** — standing personal
+          tendencies. Apply as defaults when the prompt is silent.
+          "Skip spinning rides" applies unless today's prompt says
+          "I want to ride Mad Tea Party for once."
+       4. **Wisdom doc tactics** — operational strategies like the
+          burner-ride trick or LL pre-booking sequencing. Apply when
+          they fit the situation. The prompt or preferences can opt
+          out ("I don't want to bother with the burner trick today").
+       5. **Planner framework (this docstring)** — the cost-of-delay
+          math, today_vs_forecast scaling, sequencing approach, and
+          tool-routing rules. Base method. Everything above tunes it
+          but rarely overturns it entirely.
+
+       When you detect a conflict you can't auto-resolve (e.g.,
+       preferences say "no thrill rides," prompt says "plan TRON"),
+       go with the higher-authority source and briefly mention the
+       conflict you noticed so the user can confirm. Don't silently
+       drop either signal.
+
     0. **Discover hard constraints first.** If the user gives you a
        multi-ride list without mentioning any of these, ASK ONCE
        before laying out the order — they materially change the plan
