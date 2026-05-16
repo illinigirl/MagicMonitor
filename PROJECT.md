@@ -782,32 +782,49 @@ single most distinctive piece of the project for an
 agentic-coding-flavored interview. Repo is public.
 
 **Refreshed priority for the next interview window
-(reordered 2026-05-16 after mobile gap surfaced as load-bearing):**
+(reordered 2026-05-16 after pre-interview bandwidth + OAuth reality
+surfaced):**
 
-1. **M9 Phase 1 — HTTPS MCP transport for Claude mobile** (~3-4 hr,
-   single session). NEXT-SESSION PICKUP. Starts with a 15-30 min
-   auth-model spike (bearer-token vs OAuth 2.1) before any code.
-   Duplicate-first approach insulates the Claude Desktop demo.
-   Designed 2026-05-16; full design in the Next section above.
-2. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+**Path chosen: protect what's shipped + add LOW_VS_FORECAST if
+bandwidth, push everything else post-interview.** Interview is
+1.5-2 weeks out; user is balancing full-time job + family. M9 Phase
+1 was almost picked as next-session work but the auth-model question
+resolved against bearer-token (Claude mobile MCP UI only accepts
+OAuth 2.1), which would have ballooned scope to ~6-10 hr. Decision:
+defer mobile entirely rather than rush an OAuth flow. What's shipped
+is already strong; the "next milestone" story is well-captured and
+honest.
+
+1. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
-   to the poller. Designed 2026-05-12.
-3. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
-   days, strong architecture-evolution narrative. Pre- or post-
-   interview depending on calendar.
-4. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
-   has the three target queries. Deferred from 2026-05-12 to a
-   session at the bigger desktop monitor. Manual work, no session
-   commitment needed.
-5. **Update MVMCP + Jollywood dates** when Disney publishes them
-   (~10 min, manual). Lets the planner assert party-day claims
-   confidently rather than hedging.
-6. **Blog at megillini.dev** — first post showcases Magic Monitor.
+   to the poller. Designed 2026-05-12. **Ship if you have a single
+   2-3 hour window; skip cleanly if you don't.**
+2. **M6-B (live AWS data plane)** — the heaviest single piece left
+   (~1.5-2 days, 12-16 hr). Strong architecture-evolution narrative
+   for the interview. Pre-interview if you can carve out the time;
+   post-interview if not. Either way the design is captured.
+3. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+   has the three target queries. Manual work at a bigger monitor
+   when convenient. No session commitment needed.
+4. **Update MVMCP + Jollywood dates** when Disney publishes them
+   (~10 min, manual). Gated on Disney announcing.
+5. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not interview-
-   blocking but adds a "writes about engineering choices" surface
-   to the portfolio.
-7. **M9 Phases 2-6 (custom web chat UI)** — post-interview only.
-   Phase 1 above already unlocks mobile; Phases 2-6 add the
-   embedded `/chat` page on the web app.
+   blocking.
+6. **M9 Phase 1 (mobile HTTPS MCP)** — **POST-INTERVIEW.** Design
+   captured in the Next section above. OAuth 2.1 with PKCE required
+   (confirmed empirically — Claude mobile UI only offers OAuth on
+   "Add MCP Server"). Real estimate is ~6-10 hr with Cognito as
+   OAuth provider + DCR proxy gap. Worth shipping properly when
+   there's bandwidth; not worth rushing.
+7. **M9 Phases 2-6 (custom web chat UI)** — post-interview.
 8. **M5 (trip planning)** — personal-use polish, can slip.
+
+**Interview framing for what's not shipped:** The mobile gap and
+the M6-B-not-yet-cut-over are real, but they're sequenced
+deliberately. Stdio-first MCP demo validated the agentic-coding
+workflow before investing in HTTPS infrastructure; the Pi-fed
+analytics snapshot is intentional ("shipped what was demoable
+fast, evolved toward MM-native later, consumer interface stays
+put"). Both are mature engineering judgment, not gaps to defend.
