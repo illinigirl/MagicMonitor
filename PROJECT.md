@@ -378,6 +378,84 @@ Single-day wave that landed the most demo-visible web features:
 - Once PNGs land in `docs/screenshots/`, agent can wire them into
   the README demo grid in ~2 minutes.
 
+#### M9 Phase 1 — HTTPS MCP transport for Claude mobile (~3-4 hr)
+
+Broken out from the full M9 (queued post-interview) because the
+mobile use case is product-load-bearing: the family uses MM in the
+parks, and the planner needs to be reachable from a phone. The
+Claude mobile app only supports remote MCP servers (HTTPS), not
+local stdio like the current setup — so this work unlocks
+mobile-from-the-park usage without shipping the full M9 web-chat UI.
+
+**Designed 2026-05-16 with a risk-managed shape:**
+
+- **Duplicate-first, not refactor-first.** Don't touch `mcp/server.py`.
+  Create `mcp/server_http.py` from scratch with verbatim copies of
+  the tool definitions. Extract-to-shared-impl-module is a future
+  cleanup once HTTP is proven working. This keeps the Claude Desktop
+  stdio demo 100% unaffected — worst case is "mobile doesn't work
+  yet, but stdio works as before."
+- **Net-new AWS resources only.** New Lambda + API Gateway + SSM
+  bearer-secret param. Doesn't touch the Amplify App (avoiding
+  RUNBOOK Lesson 5-2 territory) or the existing poller stack.
+- **Rollback is `cdk destroy` of just the new constructs** —
+  ~10 min worst case if anything misbehaves.
+
+**Auth-model spike (FIRST step, before any code):**
+The single uncertainty is whether Claude mobile's MCP integration
+supports bearer-token auth or requires full OAuth 2.1 with PKCE
+(which is in the MCP spec for remote servers). Spend 15-30 min
+upfront reading Anthropic's mobile MCP docs OR opening the Claude
+mobile app's "Add MCP Server" screen to see what fields it asks for.
+
+- If bearer-token works → proceed with the 3-4 hr build below
+- If OAuth 2.1 required → scope balloons to ~6-8 hr (Cognito as
+  OAuth provider, dynamic-client-registration). Present the tradeoff
+  before writing code; decide whether to ship pre-interview or punt.
+
+**The 3-4 hr build (after spike confirms bearer-token path):**
+
+1. **HTTP transport** (~1 hr) — `mcp/server_http.py` using the
+   MCP SDK's HTTP transport. Verbatim tool definitions copied from
+   `server.py` for now. Includes the same wisdom/preferences fetch
+   docstring section 0c.
+2. **Lambda handler wrapper** (~30 min) — Lambda-style entrypoint
+   that wraps the HTTP transport for the API Gateway invocation
+   pattern. MCP SDK has Lambda examples to reference.
+3. **CDK Lambda + API Gateway + SSM secret** (~45 min) — new
+   constructs in `disney-stack.ts`. Bearer-token auth via APIGW
+   authorizer Lambda or direct header validation in the handler.
+   DDB read/write permissions matching what `server.py` uses.
+4. **Smoke test via curl** (~15 min) — list tools endpoint, call
+   one tool with auth header, verify response shape. DO NOT
+   configure mobile until curl tests pass.
+5. **Configure Claude mobile** (~10 min) — mobile Settings →
+   Connectors / MCP Servers → Add → paste HTTPS URL + bearer
+   token. Verify `magic-monitor.*` tools appear in mobile's tools
+   menu.
+6. **Real-world test on phone** (~30 min) — run a planning query
+   from the phone. Test screenshot upload + tool integration
+   (Disney app screenshot → Claude reads → planner sees current LL
+   bookings). Verify the Drive MCP for wisdom/preferences also
+   works on mobile (needs Drive integration enabled in mobile
+   Claude account separately, same Google account).
+
+**Interview narrative this unlocks:** *"I built the dual-transport
+architecture — same tool implementations served over both stdio
+(Claude Desktop) and HTTPS (Claude mobile in the park). Shipped
+stdio first to validate the agentic-coding workflow with the demo
+before investing in HTTPS infrastructure; ported once usage proved
+the planning loop was valuable."*
+
+**Auth upgrade path (post-mobile-bootstrap):** Bearer secret is
+v1 — sufficient behind a non-discoverable URL for single-family
+use. Upgrade target is Cognito JWT validation on each request,
+reusing the user pool the web app already uses. Slot in alongside
+full M9 (Phases 2-6) post-interview.
+
+**Cost impact:** ~$1-2/mo additional (API Gateway @ $1/mo +
+Lambda free tier covers usage). Within budget.
+
 #### LOW_VS_FORECAST alert — crowd-adjusted opportunity detection (~2-3 hr)
 
 Second baseline for the low-wait opportunity alert path. Where the
@@ -703,25 +781,33 @@ new demo headline — agentic trip-planner using real WDW data is the
 single most distinctive piece of the project for an
 agentic-coding-flavored interview. Repo is public.
 
-**Refreshed priority for the next interview window:**
+**Refreshed priority for the next interview window
+(reordered 2026-05-16 after mobile gap surfaced as load-bearing):**
 
-1. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
-   has the three target queries. Highest portfolio-return-per-minute
-   item remaining. Deferred from 2026-05-12 to a session at the
-   bigger desktop monitor.
-2. **Update MVMCP + Jollywood dates** when Disney publishes them
-   (~10 min, manual). Lets the planner assert party-day claims
-   confidently rather than hedging.
-3. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+1. **M9 Phase 1 — HTTPS MCP transport for Claude mobile** (~3-4 hr,
+   single session). NEXT-SESSION PICKUP. Starts with a 15-30 min
+   auth-model spike (bearer-token vs OAuth 2.1) before any code.
+   Duplicate-first approach insulates the Claude Desktop demo.
+   Designed 2026-05-16; full design in the Next section above.
+2. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
    to the poller. Designed 2026-05-12.
-4. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
+3. **M6-B (live AWS data plane)** — the next major build, ~1.5-2
    days, strong architecture-evolution narrative. Pre- or post-
    interview depending on calendar.
-4. **Blog at megillini.dev** — first post showcases Magic Monitor.
+4. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+   has the three target queries. Deferred from 2026-05-12 to a
+   session at the bigger desktop monitor. Manual work, no session
+   commitment needed.
+5. **Update MVMCP + Jollywood dates** when Disney publishes them
+   (~10 min, manual). Lets the planner assert party-day claims
+   confidently rather than hedging.
+6. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not interview-
    blocking but adds a "writes about engineering choices" surface
    to the portfolio.
-5. **M9 (embedded chat)** — post-interview only.
-6. **M5 (trip planning)** — personal-use polish, can slip.
+7. **M9 Phases 2-6 (custom web chat UI)** — post-interview only.
+   Phase 1 above already unlocks mobile; Phases 2-6 add the
+   embedded `/chat` page on the web app.
+8. **M5 (trip planning)** — personal-use polish, can slip.
