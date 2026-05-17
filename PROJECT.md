@@ -103,6 +103,99 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-17 — M6-B Phase 1: raw wait collection in AWS
+
+Starts the data-plane migration from Pi-fed analytics snapshot to
+MM-native collection. **Only the data collection ships today** — the
+aggregator script + consumer cutover are deferred until ~3-4 weeks
+of MM-native data has accumulated (mid-June 2026).
+
+**What shipped:**
+- New `db.record_wait_observation()` helper writes a row per
+  (operating ride, poll) into `RIDE#<id>/WAIT#<iso_ts>` with
+  1-year TTL.
+- Wired into the poller's per-ride loop, defensively wrapped so a
+  write failure can never break the alert path (same pattern as the
+  Phase A2 forecast-write).
+- Mirrors the Pi's SQLite collection pattern in DDB so the
+  aggregator can eventually swap its source without changing the
+  data shape it consumes.
+- 112 WAIT# rows landed on the first poll cycle; row shape
+  verified via `aws dynamodb scan` in production.
+- 2 new tests in `tests/test_db.py` — poller suite now at 25
+  tests; CI green.
+
+**Cost:** ~$3/mo additional (~67K writes/day at $1.25/M + storage
+trending to ~5 GB after a year). Within the <$5/mo budget.
+
+**What's intentionally deferred (M6-B Phase 2+):**
+- `tools/aggregate-analytics.py` modification to read both Pi
+  SQLite + DDB WAIT# rows and merge into the snapshot
+- Pi → DDB backfill so the Pi dependency can be retired
+- Consumer-side cutover (web app keeps importing the same
+  snapshot file; only the snapshot's data source changes)
+
+**Interview narrative:** *"Data plane is hybrid right now — Pi for
+history, MM-native collecting in DDB since 2026-05-17, merging at
+the aggregator script when there's enough data. The architectural
+cutover happens at the script (single source of truth for the
+analytics snapshot shape); consumer interface stays put. The full
+Pi-retirement backfill is the eventual cleanup."*
+
+#### 2026-05-17 — Test scaffolding + CI (47 tests, GitHub Actions)
+
+Added pytest test suites for both Python codebases plus a CI workflow
+running on every push and PR to main:
+
+- `infra/lambda/poller/tests/` — 25 tests covering storm-shift
+  detection, cooldown helpers (DOWN/BACK_UP/LOW_WAIT/weather + the
+  M6-B Phase 1 wait observations), weather snapshot round-trip.
+  Uses a stub DDB table — no real AWS calls in tests.
+- `mcp/tests/` — 24 tests covering the two pre-computation
+  functions the agentic planner trusts without re-deriving:
+  `_compute_calibration_summary` (cross-session feedback loop
+  aggregation across both calibration paths + confidence-label
+  boundaries) and `_compute_load_vs_forecast` (wait-weighted
+  ratio math, exclusions, confidence labeling).
+- `.github/workflows/test.yml` — runs both suites on Ubuntu w/
+  Python 3.12. Green badge in README.
+- `TESTING.md` — strategy doc: what's tested, what's deliberately
+  not, design philosophy ("data plane does the math, LLM narrates
+  — those pre-computation functions are the most consequential
+  code and the easiest to test rigorously").
+
+**The bar:** every pre-computation function the LLM trusts without
+re-deriving needs a test that pins its math. Alert-side helpers
+that gate user-visible Pushover pings are tested for the same
+reason — false negative = missed plan-disruption alert, false
+positive = 3am phantom Pushover.
+
+Closes the "no formal testing" gap surfaced as a concern for
+interview preparation.
+
+#### 2026-05-16 — Living wisdom + preferences architecture
+
+Section 0c added to `get_planning_context` docstring: planner now
+fetches two living Google Docs from the user's Drive at plan time
+(via the Drive MCP tools already loaded in Claude Desktop):
+
+- **"Disney Wisdom"** — global operational tactics (LL strategy,
+  burner-ride trick, SLL-doesn't-unlock-tiers gotcha, scan-in
+  windows, annual-passholder workarounds). Editable by the user's
+  non-technical sister directly in Google Docs.
+- **"Disney Planner Preferences"** — per-person sections
+  (`## Megan`, `## Mark`, `## Karen`). Planner reads the section
+  matching the implied user.
+
+Also codifies a 5-tier precedence hierarchy for conflict resolution:
+park reality (wisdom facts) > current prompt > preferences > wisdom
+tactics > planner framework. Park reality is the only non-negotiable
+tier; the others are intent at different timescales.
+
+Validated working in Claude Desktop — planner now fires the Drive
+`search_files` + `read_file_content` tool calls before laying out
+plans.
+
 #### 2026-05-12 — Weather-shift alerts
 
 Completes the "system noticed something that invalidates your plan"
@@ -554,26 +647,36 @@ opportunities."
    "vs today's forecast" / "both").
 5. All thresholds env-var configurable.
 
-#### M6-B — Live AWS data plane (~1.5-2 days)
+#### M6-B Phases 2+ — Aggregator cutover + Pi retirement (~4-8 hr)
 
-The C → B upgrade in the analytics data plane: stop relying on the
-Pi-fed `analytics-snapshot.json` for fresh data; start having the MM
-poller write granular waits into DDB so the analytics page stays
-fresh after the Pi snapshot date.
+**Phase 1 shipped 2026-05-17** (see Done section above). Raw wait
+collection in DDB is now running. The remaining phases handle the
+consumer-side cutover once 3-4 weeks of MM-native data has
+accumulated (target: mid-June 2026).
 
-- Modify the poller to upsert into a new
-  `RIDE#<id>/AGG#<yyyy-mm-dd-hh>` partition on each poll: per-hour
-  bucketed wait values (min / max / avg / count). Hourly bucketing
-  cuts DDB write volume ~30x vs. raw per-poll writes, important for
-  cost (~$0.20/month additional, comfortably within budget).
-- Nightly aggregation Lambda rolls hourly buckets into the daily /
-  weekly summaries the analytics page renders.
-- One-time backfill job ingests the existing Pi SQLite into the new
-  DDB shape so we don't lose history during the cutover.
-- Analytics page consumer keeps reading
-  `web/src/data/analytics-snapshot.json` (regenerated nightly from
-  DDB instead of from the Pi). Consumer interface unchanged, data
-  source swapped.
+**Phase 2 — Augment the aggregator (~2-3 hr):**
+- Modify `tools/aggregate-analytics.py` to read both Pi SQLite AND
+  DDB WAIT# rows (via boto3). Merge into the same snapshot shape
+  the script already emits.
+- Pi data covers everything through ~2026-05-10; DDB data covers
+  everything from 2026-05-17 onward. ~1 week gap during cutover
+  is statistical noise at the heatmap aggregation grain — document
+  in TESTING.md or a script comment.
+- Web app consumer interface unchanged; same `analytics-snapshot.ts`
+  imported the same way.
+- Run the script manually; analytics page updates after each push.
+
+**Phase 3 — Automate the regen (~1-2 hr, optional):**
+- Cron on laptop, GitHub Action on a schedule, or AWS Lambda + EventBridge
+- Replaces the manual `python tools/aggregate-analytics.py` step
+
+**Phase 4 — Retire the Pi (~3-4 hr):**
+- One-time backfill: read Pi SQLite history, write equivalent
+  WAIT# rows to DDB so the Pi snapshot can be removed.
+- Modify the aggregator to read only DDB.
+- Delete `.scratch/disney-pi-snapshot.db` and the Pi-reader code
+  paths from the script.
+- The repo no longer ships any Pi-fed data; the Pi can be unplugged.
 
 **Interview narrative:** *"I shipped the analytics with a Pi-fed
 snapshot to get something demoable fast, then evolved the data plane
@@ -785,25 +888,23 @@ agentic-coding-flavored interview. Repo is public.
 (reordered 2026-05-16 after pre-interview bandwidth + OAuth reality
 surfaced):**
 
-**Path chosen: protect what's shipped + add LOW_VS_FORECAST if
-bandwidth, push everything else post-interview.** Interview is
-1.5-2 weeks out; user is balancing full-time job + family. M9 Phase
-1 was almost picked as next-session work but the auth-model question
-resolved against bearer-token (Claude mobile MCP UI only accepts
-OAuth 2.1), which would have ballooned scope to ~6-10 hr. Decision:
-defer mobile entirely rather than rush an OAuth flow. What's shipped
-is already strong; the "next milestone" story is well-captured and
-honest.
+**Path chosen: protect what's shipped + ship small bounded additions
+when bandwidth allows.** Interview is 1.5-2 weeks out; user is
+balancing full-time job + family. Big shipping items today:
+test scaffolding + CI (2026-05-17) and M6-B Phase 1 raw collection
+(2026-05-17). Data collection clock is now ticking — by ~mid-June
+the aggregator can swap source from Pi to DDB.
 
-1. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+1. **M6-B Phase 2 — Aggregator cutover** (~2-3 hr, single session).
+   **Earliest sensible target: 2026-06-07** (3 weeks of MM-native
+   data accumulated). Modifies `aggregate-analytics.py` to read
+   both Pi + DDB and merge. Analytics page then shows fresh data
+   after each script run. Design captured in the Next section above.
+2. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
-   to the poller. Designed 2026-05-12. **Ship if you have a single
-   2-3 hour window; skip cleanly if you don't.**
-2. **M6-B (live AWS data plane)** — the heaviest single piece left
-   (~1.5-2 days, 12-16 hr). Strong architecture-evolution narrative
-   for the interview. Pre-interview if you can carve out the time;
-   post-interview if not. Either way the design is captured.
+   to the poller. Designed 2026-05-12. Ship if a 2-3 hour window
+   opens before interview.
 3. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Manual work at a bigger monitor
    when convenient. No session commitment needed.
@@ -812,14 +913,17 @@ honest.
 5. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not interview-
    blocking.
-6. **M9 Phase 1 (mobile HTTPS MCP)** — **POST-INTERVIEW.** Design
+6. **M6-B Phases 3-4** (~3-5 hr) — aggregator automation +
+   Pi-retirement backfill. Lower interview-narrative leverage than
+   Phase 2; post-interview is fine.
+7. **M9 Phase 1 (mobile HTTPS MCP)** — **POST-INTERVIEW.** Design
    captured in the Next section above. OAuth 2.1 with PKCE required
    (confirmed empirically — Claude mobile UI only offers OAuth on
    "Add MCP Server"). Real estimate is ~6-10 hr with Cognito as
    OAuth provider + DCR proxy gap. Worth shipping properly when
    there's bandwidth; not worth rushing.
-7. **M9 Phases 2-6 (custom web chat UI)** — post-interview.
-8. **M5 (trip planning)** — personal-use polish, can slip.
+8. **M9 Phases 2-6 (custom web chat UI)** — post-interview.
+9. **M5 (trip planning)** — personal-use polish, can slip.
 
 **Interview framing for what's not shipped:** The mobile gap and
 the M6-B-not-yet-cut-over are real, but they're sequenced
