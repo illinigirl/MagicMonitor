@@ -39,6 +39,12 @@ LOW_WAIT_ALERT_COOLDOWN_SECS = int(os.environ.get("LOW_WAIT_ALERT_COOLDOWN_SECS"
 # 7 days lets us spot weekly recurrence in forecast-vs-actual analysis
 # without bloating the table. Tune via env if Phase C wants longer.
 FORECAST_RETENTION_DAYS = int(os.environ.get("FORECAST_RETENTION_DAYS", "7"))
+# Raw per-poll wait observations (M6-B Phase 1). Mirrors the Pi's
+# collection pattern in DDB so analytics can eventually source from
+# AWS instead of the Pi snapshot. 1-year default retention bounds
+# storage cost (~5 GB at 1 year of accumulated writes) while giving
+# the aggregator a full seasonal window. Tune via env.
+WAIT_OBSERVATION_RETENTION_DAYS = int(os.environ.get("WAIT_OBSERVATION_RETENTION_DAYS", "365"))
 # Plan-weather-shift cooldown — one alert per (user, plan) per hour
 # default. Storm forecasts persist for a few hours once they appear,
 # so 60 min prevents a single weather event from generating multiple
@@ -134,6 +140,54 @@ def record_status_change(
 # accumulate. No-op when forecast is None/empty — see upsert_ride
 # for the cheap forecast-presence signal we keep on STATE rows
 # instead of writing empty FORECAST rows for rides that never have one.
+
+# ─── Raw wait observations (M6-B Phase 1) ──────────────────────────
+# One row per (operating ride, poll). Mirrors the Pi's SQLite
+# collection pattern in DDB so the analytics aggregator script can
+# eventually source from AWS instead of (or in addition to) the
+# Pi snapshot. Append-only, TTL'd after WAIT_OBSERVATION_RETENTION_DAYS.
+#
+# Design decisions (captured here so the rationale outlives the commit):
+#  - Per-poll raw observations, not pre-aggregated hourly buckets. The
+#    Pi pattern is raw; mirroring it keeps `tools/aggregate-analytics.py`
+#    almost-unchanged when the source switch happens (same shape from
+#    DDB as from SQLite). Cost difference is ~$2.50/mo vs ~$0.10/mo —
+#    well within the project's <$5/mo budget. Raw also preserves
+#    resolution for any future per-poll analysis that bucketing loses.
+#  - Skip DOWN rides + rides with wait_mins=None. The aggregator only
+#    cares about operating-ride wait observations; storing nulls would
+#    inflate the table without analytic value.
+#  - Per-call try/except in the caller so a write failure can't break
+#    the alert path. Same defensive pattern as record_forecast.
+
+def record_wait_observation(
+    ride_id: str,
+    park_key: str,
+    wait_mins: int,
+    polled_at: str,
+) -> None:
+    """Persist one operating-ride wait observation.
+
+    Schema:
+        PK = RIDE#<id>, SK = WAIT#<polled_at iso>
+        wait_mins, park_key, polled_at, ttl
+
+    Caller is responsible for filtering: only call for operating
+    rides with a non-null wait_mins. The helper doesn't re-validate
+    to keep the hot path lean.
+    """
+    expire_ts = int(time.time()) + (WAIT_OBSERVATION_RETENTION_DAYS * 86400)
+    _table.put_item(
+        Item={
+            "PK":         f"RIDE#{ride_id}",
+            "SK":         f"WAIT#{polled_at}",
+            "wait_mins":  wait_mins,
+            "park_key":   park_key,
+            "polled_at":  polled_at,
+            "ttl":        expire_ts,
+        }
+    )
+
 
 def record_forecast(ride_id: str, polled_at: str, forecast: list[dict]) -> None:
     """Persist one poll's forecast for a ride.

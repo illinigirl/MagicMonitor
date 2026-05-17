@@ -148,6 +148,62 @@ class TestBackUpCooldown:
 
 # ── Low-wait cooldown ──
 
+# ── Raw wait observations (M6-B Phase 1) ──────────────────────────
+
+class TestWaitObservations:
+    """The M6-B Phase 1 data-collection path. Mirrors the Pi pattern
+    in DDB: one row per (operating ride, poll). Aggregator will
+    eventually source from these rows for the analytics snapshot."""
+
+    def setup_method(self):
+        self.stub = _StubTable()
+        _swap_in_stub(self.stub)
+
+    def test_writes_row_with_expected_shape(self):
+        """Verify the row shape the aggregator will eventually read."""
+        db.record_wait_observation(
+            ride_id="big-thunder",
+            park_key="magic_kingdom",
+            wait_mins=45,
+            polled_at="2026-05-17T14:30:00+00:00",
+        )
+        key = ("RIDE#big-thunder", "WAIT#2026-05-17T14:30:00+00:00")
+        assert key in self.stub.items
+        row = self.stub.items[key]
+        assert row["wait_mins"] == 45
+        assert row["park_key"] == "magic_kingdom"
+        assert row["polled_at"] == "2026-05-17T14:30:00+00:00"
+        # TTL must be set — bounds storage growth.
+        assert "ttl" in row
+        assert isinstance(row["ttl"], int)
+        assert row["ttl"] > 0
+
+    def test_multiple_polls_create_distinct_rows(self):
+        """Two polls of the same ride at different timestamps must
+        produce two distinct WAIT# rows, not overwrite each other.
+        This is the whole point of the per-poll collection pattern —
+        every observation preserved for the aggregator."""
+        db.record_wait_observation(
+            ride_id="big-thunder",
+            park_key="magic_kingdom",
+            wait_mins=45,
+            polled_at="2026-05-17T14:30:00+00:00",
+        )
+        db.record_wait_observation(
+            ride_id="big-thunder",
+            park_key="magic_kingdom",
+            wait_mins=55,
+            polled_at="2026-05-17T14:32:00+00:00",
+        )
+        # Two distinct SKs under the same PK.
+        bt_rows = [
+            row for (pk, sk), row in self.stub.items.items()
+            if pk == "RIDE#big-thunder" and sk.startswith("WAIT#")
+        ]
+        assert len(bt_rows) == 2
+        assert {r["wait_mins"] for r in bt_rows} == {45, 55}
+
+
 class TestLowWaitCooldown:
     def setup_method(self):
         self.stub = _StubTable()

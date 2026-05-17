@@ -301,6 +301,25 @@ def handler(event, context):
                 except Exception as e:
                     print(f"[poller] forecast write failed for {attr['name']}: {e}")
 
+            # M6-B Phase 1: persist raw per-poll wait observation for
+            # operating rides. Mirrors the Pi's collection pattern in
+            # DDB so the analytics aggregator can eventually source
+            # from AWS. Only operating rides with a numeric wait —
+            # DOWN rides + walk-ups + transportation don't carry
+            # comparable wait values. Wrapped defensively for the same
+            # reason as the forecast write above: a missed observation
+            # is rounding-error scale; a broken alert path is not.
+            if new_status == "OPERATING" and new_wait is not None:
+                try:
+                    db.record_wait_observation(
+                        ride_id=ride_id,
+                        park_key=park_key,
+                        wait_mins=new_wait,
+                        polled_at=attr["last_seen"],
+                    )
+                except Exception as e:
+                    print(f"[poller] wait observation write failed for {attr['name']}: {e}")
+
             # First time we've seen this ride — record state, no alert.
             if old_status is None:
                 continue
