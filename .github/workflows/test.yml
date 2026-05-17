@@ -36,7 +36,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r infra/lambda/poller/requirements.txt
-          python -m pip install pytest
+          # boto3 is provided by the Lambda runtime in production, so
+          # it's not in requirements.txt — installing it explicitly for
+          # CI's clean Ubuntu environment.
+          python -m pip install boto3 pytest
 
       - name: Run poller tests
         working-directory: infra/lambda/poller
