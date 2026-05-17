@@ -21,3 +21,9 @@ sys.path.insert(0, str(_HERE.parent))
 os.environ.setdefault("DISNEY_TABLE_NAME", "stub-test-table")
 os.environ.setdefault("PUSHOVER_APP_TOKEN_PARAM", "/stub/test/token")
 os.environ.setdefault("PARK_KEYS", "magic_kingdom,epcot,hollywood_studios,animal_kingdom")
+# boto3.resource("dynamodb") in db.py at module load time requires a
+# region to be discoverable. Lambda runtime provides it via AWS_REGION.
+# Local dev gets it from the ~/.aws/config profile. CI gets neither
+# unless we set it here — tests never make a real AWS call (table is
+# stubbed) so the value is irrelevant; it just needs to be set.
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-2")
