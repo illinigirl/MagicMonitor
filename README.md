@@ -5,6 +5,8 @@ Pushover alerter for Walt Disney World — running on AWS for under
 a dollar a month.
 
 **Live:** https://magicmonitor.megillini.dev
+[![tests](https://github.com/illinigirl/MagicMonitor/actions/workflows/test.yml/badge.svg)](https://github.com/illinigirl/MagicMonitor/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ![Magic Kingdom analytics — hour×day-of-week heatmap and ride downtime ranking](docs/screenshots/analytics-park.png)
 
