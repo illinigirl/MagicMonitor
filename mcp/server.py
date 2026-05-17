@@ -2341,6 +2341,55 @@ def get_planning_context(
           `cluster_progress_pct` as before. Near 0% = early, plan
           ~typical more min; near 100% = could come back any minute.
 
+       c) **Pre-closing rule — DOWN rides late in the park day.** If
+          a ride transitions to DOWN within the last ~30-45 minutes
+          of park close (`park_hours.minutes_until_close <= 45` at
+          the moment it went down, derivable from `down_since` +
+          park_hours), **assume it won't reopen for the day** and
+          treat it as gone in the plan. Disney's late-day operational
+          posture favors keeping a ride down over a hurried restart
+          for a few more minutes of cycles. Communicate this to the
+          user as "given how late this went down, plan as if it's
+          out for the night — if it does come back, that's a bonus."
+
+          Exception: rides on a known short-recovery pattern (Pirates,
+          Mansion, Carousel-style mechanical resets typically back
+          within 15 min — check `typical_down_cluster_mins` for the
+          specific ride; if the historical median is <20 min, the
+          pre-closing rule is weaker because the ride genuinely can
+          come back fast).
+
+          Pre-closing rule does NOT apply to weather-caused downtime
+          — that's already handled by 2a (the storm-clearing-time
+          model). Apply the pre-closing rule only to mechanical-
+          downtime cases (2b).
+
+       d) **Time-of-day calibration for return predictions.** The
+          historical `typical_down_cluster_mins` value is a single
+          all-time average across hours. Real downtime patterns
+          vary by hour-of-day: a ride going DOWN at 11 AM has a
+          very different expected recovery profile than one going
+          DOWN at 9 PM. When the predicted return time is decision-
+          load-bearing for the plan (e.g., user is deciding whether
+          to wait or sequence around it), call
+          `get_ride_dow_pattern(ride_name)` and look at the cell
+          for the current (day-of-week, hour). The per-hour
+          downtime pattern gives a tighter prediction than the
+          all-time median.
+
+          Apply the hour-adjusted estimate visibly when the
+          difference vs the all-time median is meaningful (>15 min
+          or >30% relative). Quote both numbers to the user:
+          "Historically this ride averages 45 min outages, but for
+          the 8 PM hour specifically it's averaged 75 min on
+          previous Saturdays — given that, I'd sequence around it."
+
+          When the per-hour sample is thin (`get_ride_dow_pattern`
+          reports `n` below ~5 for the cell), fall back to the
+          all-time median and don't make a confidence claim. Same
+          confidence-by-sample-size convention as the calibration
+          loop in `get_user_plan_history`.
+
        NEVER infer return time from `current_ll_offer.return_start` —
        Lightning Lane offers are unrelated to operational status.
 
