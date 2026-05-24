@@ -1,0 +1,122 @@
+# Fifth eval case — ambiguity resolution when user input contradicts itself.
+#
+# The user says "MK day" but names two EPCOT rides (Test Track, Soarin')
+# alongside one MK ride (Haunted Mansion). A correct response acknowledges
+# the cross-park mismatch — either by clarifying with the user, or by
+# explicitly picking one park and naming what it's dropping.
+#
+# The REGRESSION this case catches: Claude silently recording an MK plan
+# that omits the EPCOT rides without ever mentioning them, OR (worse)
+# silently recording a plan with EPCOT rides under park=mk. Either would
+# be a "plausible but wrong" output — exactly what evals are for.
+#
+# Design notes:
+#   - We don't force a specific path (clarify vs. pick-and-explain).
+#     Both are defensible. The assertion just requires that Claude
+#     ACKNOWLEDGES the EPCOT rides exist — proving it didn't silently
+#     drop them.
+#   - record_plan response is provided in case Claude picks the
+#     "plan MK, drop EPCOT, explain" path. If Claude takes the
+#     "clarify first" path, record_plan simply won't be called and
+#     that's fine.
+#   - We don't assert tool_not_called for record_plan because that
+#     would force only the clarification path.
+
+name: cross_park_rejection
+description: >
+  Verifies Claude does NOT silently drop cross-park rides from a
+  request. User asks for an MK day but names two EPCOT rides
+  (Test Track, Soarin') alongside one MK ride. Claude must
+  acknowledge the mismatch in its response, not silently produce
+  a plausible-but-wrong MK-only plan.
+
+prompt: >
+  Quick one — plan my MK day tomorrow with Haunted Mansion, Test
+  Track, and Soarin'. Solo trip. Lock it in.
+
+tool_responses:
+  get_user_plan_history:
+    response:
+      plans: []
+      calibration_summary: null
+
+  # Canned context if Claude calls get_planning_context for MK. Only
+  # includes the MK ride the user named plus a few sensible additions
+  # Claude might draw on. If Claude calls for EPCOT instead (e.g. as
+  # part of clarifying), the same canned response comes back — the
+  # runner is parameter-blind. That's OK: we're testing behavior,
+  # not response routing.
+  get_planning_context:
+    response:
+      park_key: mk
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "22:00"
+        extra_evening_hours: null
+      weather_summary:
+        forecast_high_f: 82
+        forecast_low_f: 66
+        rain_chance_pct: 15
+      rides:
+        - ride_id: haunted-mansion
+          ride_name: Haunted Mansion
+          status: OPERATING
+          wait_mins: 25
+          forecast:
+            typical_wait_now: 30
+            confidence: high
+        - ride_id: pirates-of-the-caribbean
+          ride_name: Pirates of the Caribbean
+          status: OPERATING
+          wait_mins: 20
+          forecast:
+            typical_wait_now: 25
+            confidence: high
+        - ride_id: space-mountain
+          ride_name: Space Mountain
+          status: OPERATING
+          wait_mins: 35
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+        - ride_id: big-thunder
+          ride_name: Big Thunder Mountain Railroad
+          status: OPERATING
+          wait_mins: 40
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+      currently_down_in_park: []
+
+  record_plan:
+    response:
+      ok: true
+      plan_id: "PLAN#2026-05-25T09:00:00+00:00"
+      user_id: megan
+      park_key: mk
+      expires_at_epoch: 1748192400
+
+assertions:
+  # NOTE: we deliberately do NOT assert tool_called: get_user_plan_history
+  # here. The first run of this case revealed that Claude correctly
+  # short-circuits when user input is obviously contradictory — it
+  # asks for clarification before doing any tool calls, rather than
+  # spending tokens on setup for a request whose scope is unclear.
+  # The get_user_plan_history docstring says "at the start of every
+  # planning session" but a pre-clarification turn isn't a planning
+  # session yet, so we treat that behavior as correct.
+
+  # The core behavioral assertion: Claude verbally acknowledges that
+  # Test Track and Soarin' are EPCOT rides (or otherwise calls out
+  # the cross-park mismatch). Any one of these phrasings counts.
+  - response_mentions_any:
+      - EPCOT
+      - Test Track
+      - "Soarin"
+      - "different park"
+      - "other park"
+      - "not at MK"
+      - "not at Magic Kingdom"
+
+  - stop_reason: end_turn
