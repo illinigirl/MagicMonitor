@@ -45,6 +45,89 @@ A false positive sends a real Pushover at 3am; a false negative
 misses a real plan-disrupting event. Testing the logic is cheaper
 than the alternative.
 
+## Failure modes we explicitly watch for
+
+Categories of bug that the codebase's shape makes likely, and how
+we defend against them. Surface these in any design or review that
+touches the relevant area — don't wait to be asked.
+
+### Silent regressions from data growth
+
+Code whose correctness depends on an implicit assumption about
+data shape or volume — table size, row distribution, average
+request payload size — can silently start producing wrong output
+when reality drifts past the assumption, WITHOUT any code change.
+Code review and most unit tests don't catch this category because
+nothing in the code changed.
+
+**Concrete case (2026-05-24):** `web/src/lib/dynamodb.ts`
+`getParkRides()` did a single-page DDB Scan with a FilterExpression.
+The original comment said "1 round-trip, well under 4KB" — true at
+the time. M6-B Phase 1 (shipped 2026-05-17) started writing WAIT#
+rows on every poll. The table grew past 1MB. The first scan page
+stopped containing any STATE rows. The function silently returned
+`[]`. The live park pages rendered "0 attractions" for roughly 7
+days before being caught accidentally.
+
+**Three-layer defense (apply for the whole category, not just this
+specific bug):**
+
+1. **Code-time** — explicit comments that name when an assumption
+   expires. Treat data-shape assumptions as expiring contracts,
+   not permanent facts. For DDB Scans specifically: always
+   paginate via `ExclusiveStartKey` / `LastEvaluatedKey`, OR
+   document a written upper bound on table size with a written
+   switch-to-GSI condition. Either is fine; the implicit "small
+   enough" without a stated cutover is not.
+2. **Test-time** — unit tests with a mocked client returning
+   paginated responses, asserting the function reads all pages
+   and accumulates. The poller test suite uses an in-memory stub
+   table; the web app currently lacks an equivalent (queued as
+   "Web behavioral tests scaffold" follow-up).
+3. **Runtime** — synthetic canary against the live URL that
+   asserts the response renders non-empty data. Catches the
+   failure mode within the canary cadence even when nobody
+   anticipated the trigger. MM's canary lives at
+   `.github/workflows/canary.yml` and runs hourly.
+
+**Generalization:** the category applies beyond DDB scans —
+cached computations, "in practice 1 page" patterns, "we don't need
+to paginate yet" comments, "the dataset is small enough to
+[expensive thing]." When in doubt, ask "what catches this when
+the implicit assumption breaks?" If the answer is "nothing,"
+that's the bug waiting.
+
+### Plausible-but-wrong AI output
+
+The MCP planner's tool-use surface produces natural-language plans
+that LOOK reasonable even when they're subtly wrong (silently
+dropped constraints, ignored calibration data, wrong park, missing
+weather consideration). Code-level tests don't catch behavioral
+drift. The eval framework in `mcp/evals/` exists for this category.
+
+**Defense:** when adding a new MCP tool, changing a docstring, or
+changing the agentic planner's instructions, add an eval case that
+exercises the new behavior. The existing 5 cases cover happy path,
+write-side guardrail, context-reading, personalization, and
+ambiguity resolution; new dimensions deserve new cases. Run
+`pytest evals/` from `mcp/` before merging.
+
+### Multi-source alert dispatch picking the wrong winner
+
+When more than one alert source (favoriter subscription, plan
+membership, future per-type opt-in) matches the same user for the
+same event, the order of dispatch silently determines which message
+they get. A naive "loop A, then loop B skipping anyone in A" pattern
+silently picks whichever source ran first — which is almost never
+the most actionable one for the user.
+
+**Defense:** `infra/lambda/poller/alert_routing.py` resolves
+candidates via explicit priority constants. When adding a new alert
+source, append candidates with the right priority — don't introduce
+coordination via `if user in other_set: continue` checks. The
+priority order lives in one place; adding a source is one line of
+candidate-construction and one priority constant.
+
 ## What's deliberately not tested
 
 Trade-offs are explicit:
