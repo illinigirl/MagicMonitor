@@ -12,6 +12,7 @@ import {
 } from "@/lib/schedule";
 import { RideRow } from "@/components/ride-row";
 import { ParkSchedule } from "@/components/park-schedule";
+import { UpdatedIndicator } from "@/components/updated-indicator";
 
 // Server-render fresh on each request — DynamoDB query is cheap and
 // the data changes every 2 min, so caching past ~30s would be stale.
@@ -62,6 +63,29 @@ export default async function ParkPage({
   const closed = visibleRides.filter(
     (r) => r.status === "CLOSED" || r.status === "REFURBISHMENT",
   );
+
+  // Freshness signal for the "Updated Xs ago" indicator. Use the
+  // newest last_seen across all rides at the park — that's the most
+  // recent successful poll. ISO strings sort lexicographically so
+  // .sort().pop() is equivalent to max() without a Date round-trip.
+  const lastSeenIso =
+    rides
+      .map((r) => r.last_seen)
+      .filter((s): s is string => Boolean(s))
+      .sort()
+      .pop() ?? null;
+
+  // Server-rendered initial value for the indicator. Absolute clock
+  // time in ET so the user sees something meaningful even with JS
+  // disabled and so the SSR/CSR hydration matches deterministically
+  // (locale + tz pinned explicitly).
+  const initialAbsolute = lastSeenIso
+    ? new Date(lastSeenIso).toLocaleTimeString("en-US", {
+        timeZone: "America/New_York",
+        hour: "numeric",
+        minute: "2-digit",
+      })
+    : null;
 
   return (
     <div
@@ -131,6 +155,15 @@ export default async function ParkPage({
           {" "}
           {down.length} down · {closed.length} closed
           {showOnlyFavorites && " (favorites only)"}
+          {lastSeenIso && initialAbsolute && (
+            <>
+              {" · "}
+              <UpdatedIndicator
+                iso={lastSeenIso}
+                initialAbsolute={initialAbsolute}
+              />
+            </>
+          )}
         </p>
       )}
 
