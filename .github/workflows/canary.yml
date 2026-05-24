@@ -1,0 +1,66 @@
+name: live-site canary
+
+# Hourly synthetic check that the live park pages render non-zero
+# ride data. Catches the failure mode where the SSR DDB read
+# silently returns an empty list (e.g. the pagination bug shipped
+# in 2026-05-24 that broke all four park pages for ~7 days before
+# being caught by accident).
+#
+# When this fails: GitHub emails the repo owner. Treat it like a
+# Pushover alert — investigate within the hour. Either the live
+# site is genuinely broken, or themeparks.wiki is having an
+# outage long enough that no rides are operating (rare; would
+# also surface on the per-park pages with "0 open · 0 down · 0
+# closed" which is the assertion).
+#
+# This is NOT a substitute for unit tests — see TESTING.md
+# "Failure modes we explicitly watch for". It's the runtime layer
+# of a three-layer defense: code-time review + test-time mocks +
+# runtime canary. Each catches different things; this one catches
+# the bugs that ship through despite the other two.
+
+on:
+  schedule:
+    # Hourly at :07 to avoid alignment with the poller's :00 / :02
+    # cadence and any common cron-storm minute.
+    - cron: "7 * * * *"
+  workflow_dispatch:
+  # Also run on PRs that touch the web app's DDB layer or the
+  # park page — quick smoke check before merge. Doesn't replace
+  # the unit-test layer (still queued) but adds a real-data
+  # cross-check for PRs that could break the read path.
+  pull_request:
+    paths:
+      - "web/src/lib/dynamodb.ts"
+      - "web/src/app/parks/**"
+
+jobs:
+  check-parks-render-rides:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Curl each park, assert non-zero ride count
+        run: |
+          set -euo pipefail
+          base="https://magicmonitor.megillini.dev"
+          failed=()
+          for park in magic_kingdom epcot hollywood_studios animal_kingdom; do
+            url="$base/parks/$park"
+            html=$(curl --silent --show-error --fail --max-time 30 "$url")
+            # The empty-data shape from a broken SSR read renders
+            # literally "0 attractions · 0 open · 0 down · 0 closed"
+            # in the meta line. Match that exact phrase so we
+            # don't false-alarm on edge cases where one count is
+            # zero but others aren't (e.g., legitimately all-down
+            # late at night).
+            if echo "$html" | grep -q "0 attractions · 0 open ·.*0 down · 0 closed"; then
+              echo "::error::Park $park rendered empty ride list: $url"
+              failed+=("$park")
+            else
+              echo "OK: $park"
+            fi
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "::error::Canary failed for: ${failed[*]}"
+            exit 1
+          fi
+          echo "All four parks rendered non-zero ride data."
