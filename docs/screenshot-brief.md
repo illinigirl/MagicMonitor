@@ -1,6 +1,6 @@
 # Claude Desktop screenshot brief
 
-Capturing fresh demo screenshots of the MCP agentic planner for the README. The web-app screenshots are already in `docs/screenshots/`; this brief covers the Claude Desktop side, which is the demo headline now.
+Capturing fresh demo screenshots of the MCP agentic planner for the README. The web-app screenshots are already in `docs/screenshots/`; this brief covers the Claude Desktop side, which is the project's headline capability.
 
 ## Setup before capturing
 
@@ -21,7 +21,7 @@ Save target: `docs/screenshots/mcp-<name>.png`. Add new entries to the README's 
 
 ### `mcp-planning-tool-use.png`
 
-**The agentic-coding interview image.** Shows Claude calling a tool, the tool returning data, and Claude reasoning over it conversationally.
+**The agentic-coding demo image.** Shows Claude calling a tool, the tool returning data, and Claude reasoning over it conversationally.
 
 **Query:**
 > I'm at Magic Kingdom right now and have Pirates, Big Thunder, TRON, Haunted Mansion, and Space Mountain on my list. We've got about 4 hours left in the park. What should I ride next?
@@ -90,7 +90,7 @@ Or just leave it — it auto-expires from the 1-year TTL.
 
 - Use the macOS native screenshotter (Cmd+Shift+4, then drag) so we get PNG with retina resolution.
 - Aspect ratio: the README's demo grid is a 2-col layout; landscape-ish (wider than tall) reads better there. Aim for ~1200-1600 px wide.
-- If the tool-use JSON expansion makes the screenshot too tall, take two screenshots and stack them (or accept the height — agentic-coding interview reviewers WANT to see the tool args and response).
+- If the tool-use JSON expansion makes the screenshot too tall, take two screenshots and stack them (or accept the height — anyone evaluating the agentic-coding work WANTS to see the tool args and response).
 - Don't redact `user_id="megan"` — that's the actual single-user default; calling it out is honest about the auth model in PROJECT.md M9.
 
 ## After capture

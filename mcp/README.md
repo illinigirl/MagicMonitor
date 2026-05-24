@@ -248,8 +248,8 @@ is a verbatim Python port of the TS implementation in
 `web/src/lib/showtimes.ts`. Two copies of the regex is the
 deliberate trade-off:
 
-- Same product judgment expressed in two languages — interview-
-  legible "here's how I'd express the same heuristic across stacks."
+- Same product judgment expressed in two languages — a clear
+  illustration of expressing the same heuristic across stacks.
 - Drift cost is low: shows turn over maybe twice a year, and a "keep
   in sync" comment at the top of both files makes the link explicit.
 - Failure mode is "MCP planner misclassifies show X for one cycle

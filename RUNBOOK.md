@@ -570,6 +570,6 @@ table; trust the route-handler code to enforce
 to enforce per-user partition isolation at the IAM layer. Two layers
 of protection. ~2 hours more CDK code.
 
-For a portfolio app at this scale, A is fine. B is the "I can talk
-about IAM least-privilege" interview answer. Personal use only? A.
-Inviting non-trusted users? B.
+For a single-family app at this scale, A is fine. B is the
+defense-in-depth posture if the threat model expands. Personal use
+only? A. Inviting non-trusted users? B.

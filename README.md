@@ -404,7 +404,7 @@ Captured in [`PROJECT.md` → Roadmap](PROJECT.md) and
 - **Per-type alert toggles on `/me`** — currently every alert
   recipient gets DOWN, BACK UP, STILL DOWN, and LOW WAIT.
   PROJECT.md M7+ has the natural opt-in shape.
-- **M9: embedded agentic chat (~2-3 days, post-interview)** —
+- **M9: embedded agentic chat (~2-3 days)** —
   bring the MCP planner into the web app for users who don't run
   Claude Desktop. Refactor tool implementations so a shared module
   powers both the stdio MCP server and a new HTTP transport the
