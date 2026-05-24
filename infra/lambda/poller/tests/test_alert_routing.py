@@ -137,6 +137,75 @@ class TestBuildCandidatesShape:
     just verifies that the candidate construction pattern produces
     a list the resolver consumes correctly."""
 
+    def test_back_up_path_candidate_construction_resolves_correctly(self):
+        """Same regression-shape check as the DOWN-path test, but
+        for the BACK_UP branch (ride was DOWN, now OPERATING).
+        Plan-aware alert kwargs include wait_mins; favoriter alert
+        kwargs include actual_downtime_mins. Resolver still picks
+        plan over favoriter for users matching both."""
+        plan_targets = [
+            ("alice", "PLAN#mk-2026-05-24T09:00:00+00:00"),
+            ("carol", "PLAN#ak-2026-05-24T09:00:00+00:00"),
+        ]
+        favoriter_ids = ["alice", "bob"]
+
+        ride_name = "TRON Lightcycle / Run"
+        park_name = "Magic Kingdom"
+        park_key = "magic_kingdom"
+        new_wait = 65
+        actual_downtime_mins = 45
+
+        candidates: list[AlertCandidate] = []
+        for user_id, plan_id in plan_targets:
+            candidates.append(AlertCandidate(
+                user_id=user_id,
+                priority=PRIORITY_PLAN,
+                notifier_fn=_fake_notifier,
+                kwargs={
+                    "ride_name": ride_name,
+                    "park_name": park_name,
+                    "park_key": park_key,
+                    "disruption_type": "back_up",
+                    "plan_id": plan_id,
+                    "wait_mins": new_wait,
+                },
+            ))
+        for user_id in favoriter_ids:
+            candidates.append(AlertCandidate(
+                user_id=user_id,
+                priority=PRIORITY_FAVORITE,
+                notifier_fn=_fake_notifier,
+                kwargs={
+                    "ride_name": ride_name,
+                    "park_name": park_name,
+                    "park_key": park_key,
+                    "wait_mins": new_wait,
+                    "actual_downtime_mins": actual_downtime_mins,
+                },
+            ))
+
+        resolved = resolve_alert_recipients(candidates)
+
+        assert set(resolved.keys()) == {"alice", "bob", "carol"}
+
+        # Alice (dual-source) gets the plan-disruption back_up alert
+        # with the plan reference, not the generic actual-downtime
+        # blurb.
+        assert resolved["alice"].kwargs["disruption_type"] == "back_up"
+        assert resolved["alice"].kwargs["plan_id"] == (
+            "PLAN#mk-2026-05-24T09:00:00+00:00"
+        )
+        assert "actual_downtime_mins" not in resolved["alice"].kwargs
+
+        # Bob (favoriter only) gets the generic UP alert with the
+        # downtime stat and current wait, no plan reference.
+        assert resolved["bob"].kwargs["actual_downtime_mins"] == 45
+        assert "plan_id" not in resolved["bob"].kwargs
+        assert "disruption_type" not in resolved["bob"].kwargs
+
+        # Carol (plan only) gets the plan alert.
+        assert resolved["carol"].kwargs["disruption_type"] == "back_up"
+
     def test_down_path_candidate_construction_resolves_correctly(self):
         # Inputs as the DOWN path would have them after calling
         # db.lookup_plan_targets and filter_to_favoriters.
