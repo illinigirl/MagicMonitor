@@ -1,0 +1,134 @@
+# Second eval case — the "propose-without-recording" path.
+#
+# The companion to basic_mk_plan. When the user asks Claude to plan
+# without signaling acceptance ("what would you suggest?" rather than
+# "lock it in"), the record_plan docstring says Claude should propose
+# a plan but NOT record it yet — wait for the user to confirm.
+#
+# This case was extracted from a real eval-driven finding: the FIRST
+# run of basic_mk_plan failed because Claude correctly refused to
+# record an unconfirmed plan. Rather than just "fixing" basic_mk_plan
+# to pass, we kept that case (modified to signal acceptance) AND added
+# this one to lock in the careful-not-to-record behavior as a regression
+# test. If a future model becomes more eager to write data without
+# explicit user consent, this case catches it.
+#
+# Canned tool responses below are the same shape as basic_mk_plan.yaml
+# (the underlying state is identical — the user's intent is what's
+# different). record_plan has no response entry because it should
+# never be called.
+
+name: propose_without_recording
+description: >
+  Verifies Claude proposes a plan but does NOT call record_plan when
+  the user phrases the request as exploratory ('what would you
+  suggest?') rather than as an acceptance. Encodes the record_plan
+  docstring guardrail: only record after user signals acceptance.
+
+prompt: >
+  Looking for ideas for tomorrow at Magic Kingdom. I'll have my
+  husband and sister with me. We're staying near Epcot. We like
+  thrill rides plus a few classics like Haunted Mansion and
+  Pirates. What would you suggest?
+
+tool_responses:
+  get_user_plan_history:
+    response:
+      plans: []
+      calibration_summary:
+        sample_size: 0
+        usage_hint: >
+          No recorded outcomes yet — proceed without calibration
+          adjustments and ask the user to report back after the trip.
+
+  get_planning_context:
+    response:
+      park_key: mk
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "22:00"
+        extra_evening_hours: null
+      weather_summary:
+        forecast_high_f: 84
+        forecast_low_f: 68
+        rain_chance_pct: 20
+      rides:
+        - ride_id: tron-lightcycle
+          ride_name: TRON Lightcycle / Run
+          status: OPERATING
+          wait_mins: 75
+          forecast:
+            typical_wait_now: 80
+            confidence: high
+        - ride_id: space-mountain
+          ride_name: Space Mountain
+          status: OPERATING
+          wait_mins: 35
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+        - ride_id: seven-dwarfs
+          ride_name: Seven Dwarfs Mine Train
+          status: OPERATING
+          wait_mins: 50
+          forecast:
+            typical_wait_now: 60
+            confidence: high
+        - ride_id: haunted-mansion
+          ride_name: Haunted Mansion
+          status: OPERATING
+          wait_mins: 25
+          forecast:
+            typical_wait_now: 30
+            confidence: high
+        - ride_id: pirates-of-the-caribbean
+          ride_name: Pirates of the Caribbean
+          status: OPERATING
+          wait_mins: 20
+          forecast:
+            typical_wait_now: 25
+            confidence: high
+        - ride_id: big-thunder
+          ride_name: Big Thunder Mountain Railroad
+          status: OPERATING
+          wait_mins: 40
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+        - ride_id: peter-pan
+          ride_name: Peter Pan's Flight
+          status: OPERATING
+          wait_mins: 65
+          forecast:
+            typical_wait_now: 60
+            confidence: high
+        - ride_id: jungle-cruise
+          ride_name: Jungle Cruise
+          status: OPERATING
+          wait_mins: 30
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+      currently_down_in_park: []
+
+  # No record_plan response defined — assertions verify it is NOT
+  # called. If Claude *does* call it, the runner returns a sentinel
+  # error payload and the tool_not_called assertion will fail loudly.
+
+assertions:
+  # Planning flow still happens — Claude should gather context
+  # before proposing, just like in the accept-and-record path.
+  - tool_called: get_user_plan_history
+  - tool_called: get_planning_context
+
+  # The key behavior under test: NO write-side tool call.
+  - tool_not_called: record_plan
+
+  # Claude should be asking the user something — a question mark in
+  # the final response is a robust signal that the conversation is
+  # awaiting input, not concluded. This is intentionally loose; the
+  # exact phrasing varies run to run.
+  - response_mentions: "?"
+
+  - stop_reason: end_turn
