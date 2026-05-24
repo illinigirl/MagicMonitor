@@ -140,11 +140,11 @@ structurally hard to recreate; adding a new source is now
 "append candidates with the right priority," not "audit every
 existing source's dedup logic."
 
-**Scope deliberately limited to DOWN path.** BACK_UP has the same
-shape and same bug; converting it is a near-mechanical follow-up
-commit once the resolver pattern is in place. Same with weather
-alerts and the queued LOW_VS_FORECAST work — both slot naturally
-into the resolver.
+**BACK_UP path converted** in `9175ebc6` (same 2026-05-24 session) —
+near-mechanical mirror of the DOWN-path work. Both alert paths now
+route through the same resolver. Weather alerts and the queued
+LOW_VS_FORECAST work slot naturally into the resolver too; they're
+not blocked, just deferred until the alert types themselves arrive.
 
 #### 2026-05-24 — MCP eval coverage at 5 cases / 5 dimensions
 
@@ -971,40 +971,39 @@ framework + 5 cases (2026-05-22 / 2026-05-24), alert routing module
 now ticking — by ~mid-June the aggregator can swap source from Pi
 to DDB.
 
-1. **Convert BACK_UP path to alert_routing** (~20 min). Near-
-   mechanical follow-up to the 2026-05-24 alert routing work.
-   `index.py`'s BACK_UP branch has the same favoriter-first +
-   skip-if-already-favoriter shape as the old DOWN path, with the
-   same bug. Once converted, plan-aware "X is back up" alerts will
-   reference the user's plan instead of the generic message.
-2. **M6-B Phase 2 — Aggregator cutover** (~2-3 hr, single session).
-   **Earliest sensible target: 2026-06-07** (3 weeks of MM-native
-   data accumulated). Modifies `aggregate-analytics.py` to read
-   both Pi + DDB and merge. Analytics page then shows fresh data
-   after each script run. Design captured in the Next section above.
-3. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+1. **M6-B Phase 4 — Pi-to-DDB backfill + aggregator cutover**
+   (~2-3 hr, single session, splittable). Backfill script tested
+   end-to-end 2026-05-24 (`3266bcc2`); ready to run the full ~5M-row
+   write (~$6.30) followed by the aggregator cutover to read DDB
+   instead of SQLite. Decision pending on HIST# / downtime handling
+   (extend retention vs. change poller to write per-poll). After this
+   ships: M6-B is closed (Phase 2 conservative-merge skipped in
+   favor of going directly to the endpoint), Pi can be unplugged,
+   analytics is 100% AWS-native.
+2. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
    to the poller. Designed 2026-05-12. Slots into `alert_routing`
    as a new priority tier. Ship if a 2-3 hour window opens.
-4. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+3. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Manual work at a bigger monitor
    when convenient. No session commitment needed.
-5. **Update MVMCP + Jollywood dates** when Disney publishes them
+4. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Gated on Disney announcing.
-6. **Blog at megillini.dev** — first post showcases Magic Monitor.
+5. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not blocking.
-7. **M6-B Phases 3-4** (~3-5 hr) — aggregator automation +
-   Pi-retirement backfill. Lower architectural leverage than
-   Phase 2; can wait.
-8. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
+6. **M6-B Phase 3 — Aggregator regen automation** (~1-2 hr).
+   After Phase 4 cuts over, the aggregator still runs manually.
+   Cron / GitHub Action / Lambda + EventBridge — pick whichever
+   fits the workflow. Lower leverage than Phase 4; do after.
+7. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
    in the Next section above. OAuth 2.1 with PKCE required (confirmed
    empirically — Claude mobile UI only offers OAuth on "Add MCP
    Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
    + DCR proxy gap. Worth shipping properly when there's bandwidth;
    not worth rushing.
-9. **M9 Phases 2-6 (custom web chat UI)** — deferred.
-10. **M5 (trip planning)** — personal-use polish, can slip.
+8. **M9 Phases 2-6 (custom web chat UI)** — deferred.
+9. **M5 (trip planning)** — personal-use polish, can slip.
 
 **Sequencing rationale for what's not shipped:** The mobile gap
 and the M6-B-not-yet-cut-over are real, but they're sequenced
