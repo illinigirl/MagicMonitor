@@ -103,6 +103,88 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-24 — Plan-aware alert priority + alert routing module
+
+Fixes a real-but-subtle dispatch bug in the poller: when a user
+both favorited a ride AND had it in today's active plan, the
+generic favoriter alert ("X is DOWN") was firing instead of the
+more actionable plan-aware alert ("Plan disruption — X DOWN. It's
+in your plan today. You may want to re-sequence the rest of the
+day.").
+
+Root cause: favoriter fanout ran first, then the plan-aware path
+skipped any user already in the favoriter set — silently picking
+whichever source ran first instead of whichever was most
+actionable. The dispatch logic had zero test coverage, so the bug
+was reachable only by reading the code.
+
+**What shipped:**
+- `infra/lambda/poller/alert_routing.py` (new) — a small pure
+  resolver: takes a list of `AlertCandidate(user_id, priority,
+  notifier_fn, kwargs)` and returns one alert per user (highest
+  priority wins). `PRIORITY_PLAN > PRIORITY_FAVORITE` makes the
+  ordering explicit in one place instead of scattered across
+  `if user in other_set: continue` checks.
+- `index.py` DOWN path converted to use the resolver. Same dedup
+  guarantee (one alert per user per event), better routing.
+- 10 new unit tests pin the regression (plan beats favorite for
+  same user, both input orderings) plus the resolver's edge cases.
+  Poller test suite: 25 → 35 tests, all green.
+
+**Design rationale:** The bug is a *category* (priority across
+overlapping alert sources), not a one-off. As more alert types
+layer in — LOW_VS_FORECAST, show alerts, per-type toggles — the
+same coordination problem would recur for every new source.
+Centralizing priority in the resolver makes the category
+structurally hard to recreate; adding a new source is now
+"append candidates with the right priority," not "audit every
+existing source's dedup logic."
+
+**Scope deliberately limited to DOWN path.** BACK_UP has the same
+shape and same bug; converting it is a near-mechanical follow-up
+commit once the resolver pattern is in place. Same with weather
+alerts and the queued LOW_VS_FORECAST work — both slot naturally
+into the resolver.
+
+#### 2026-05-24 — MCP eval coverage at 5 cases / 5 dimensions
+
+Builds on the eval framework shipped 2026-05-22
+(`08e50a15` — Anthropic Messages API tool-use loop, canned-response
+routing, 7 assertion types, YAML-driven cases in `mcp/evals/`).
+Three new cases land today, bringing the suite to 5 cases covering
+5 distinct behavioral dimensions:
+
+| Case | Dimension under test |
+|---|---|
+| `basic_mk_plan` | Happy path — history → context → record |
+| `propose_without_recording` | Write-side guardrail (no record without consent) |
+| `hot_day_indoor_preference` | Structured-context reading (weather) |
+| `calibration_aware_planning` | Personalization from history (`calibration_summary`) |
+| `cross_park_rejection` | Ambiguity resolution (MK day with EPCOT rides) |
+
+Also added a `response_mentions_any` assertion type — needed
+because behaviors like weather-aware reasoning surface in many
+phrasings ("heat" / "hot" / "indoor" / "AC" / "shade"), so pinning
+to a single word would be brittle.
+
+**Three eval-surfaced findings worth recording:**
+1. *First run of `basic_mk_plan` failed* because Claude correctly
+   refused to record an unconfirmed plan. Kept that behavior as a
+   regression test (`propose_without_recording`) instead of
+   "fixing" the case to pass.
+2. *Calibration case behavior was perfect* (Claude named the
+   +18 min Seven Dwarfs bias, cut ride count, mentioned past
+   plans) but the *test* failed — an over-strict literal "Magic
+   Kingdom" match when the user said "MK" in the prompt and
+   Claude correctly mirrored that register.
+3. *Cross-park case revealed a docstring ambiguity*: Claude
+   correctly short-circuited and asked for clarification with
+   zero tool calls, surfacing that the
+   `get_user_plan_history` docstring's "at the start of every
+   planning session" doesn't cover pre-clarification turns.
+
+Total verification cost across the session: ~$0.30.
+
 #### 2026-05-17 — M6-B Phase 1: raw wait collection in AWS
 
 Starts the data-plane migration from Pi-fed analytics snapshot to
@@ -883,38 +965,46 @@ single most distinctive piece of the project. Repo is public.
 **Path chosen: protect what's shipped + ship small bounded additions
 when bandwidth allows.** Balancing full-time job + family means
 limited weekly hours. Recent shipping items: test scaffolding + CI
-(2026-05-17) and M6-B Phase 1 raw collection (2026-05-17). Data
-collection clock is now ticking — by ~mid-June the aggregator can
-swap source from Pi to DDB.
+(2026-05-17), M6-B Phase 1 raw collection (2026-05-17), MCP eval
+framework + 5 cases (2026-05-22 / 2026-05-24), alert routing module
++ plan-aware DOWN alert fix (2026-05-24). Data collection clock is
+now ticking — by ~mid-June the aggregator can swap source from Pi
+to DDB.
 
-1. **M6-B Phase 2 — Aggregator cutover** (~2-3 hr, single session).
+1. **Convert BACK_UP path to alert_routing** (~20 min). Near-
+   mechanical follow-up to the 2026-05-24 alert routing work.
+   `index.py`'s BACK_UP branch has the same favoriter-first +
+   skip-if-already-favoriter shape as the old DOWN path, with the
+   same bug. Once converted, plan-aware "X is back up" alerts will
+   reference the user's plan instead of the generic message.
+2. **M6-B Phase 2 — Aggregator cutover** (~2-3 hr, single session).
    **Earliest sensible target: 2026-06-07** (3 weeks of MM-native
    data accumulated). Modifies `aggregate-analytics.py` to read
    both Pi + DDB and merge. Analytics page then shows fresh data
    after each script run. Design captured in the Next section above.
-2. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+3. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
-   to the poller. Designed 2026-05-12. Ship if a 2-3 hour window
-   opens.
-3. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+   to the poller. Designed 2026-05-12. Slots into `alert_routing`
+   as a new priority tier. Ship if a 2-3 hour window opens.
+4. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Manual work at a bigger monitor
    when convenient. No session commitment needed.
-4. **Update MVMCP + Jollywood dates** when Disney publishes them
+5. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Gated on Disney announcing.
-5. **Blog at megillini.dev** — first post showcases Magic Monitor.
+6. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not blocking.
-6. **M6-B Phases 3-4** (~3-5 hr) — aggregator automation +
+7. **M6-B Phases 3-4** (~3-5 hr) — aggregator automation +
    Pi-retirement backfill. Lower architectural leverage than
    Phase 2; can wait.
-7. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
+8. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
    in the Next section above. OAuth 2.1 with PKCE required (confirmed
    empirically — Claude mobile UI only offers OAuth on "Add MCP
    Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
    + DCR proxy gap. Worth shipping properly when there's bandwidth;
    not worth rushing.
-8. **M9 Phases 2-6 (custom web chat UI)** — deferred.
-9. **M5 (trip planning)** — personal-use polish, can slip.
+9. **M9 Phases 2-6 (custom web chat UI)** — deferred.
+10. **M5 (trip planning)** — personal-use polish, can slip.
 
 **Sequencing rationale for what's not shipped:** The mobile gap
 and the M6-B-not-yet-cut-over are real, but they're sequenced
