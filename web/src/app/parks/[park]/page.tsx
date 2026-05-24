@@ -3,7 +3,7 @@ import Link from "next/link";
 
 import { auth } from "@/auth";
 import { findPark } from "@/lib/parks";
-import { getParkRides } from "@/lib/dynamodb";
+import { getParkRides, type RideState } from "@/lib/dynamodb";
 import { getUserFavoriteRides } from "@/lib/dynamodb-writes";
 import {
   getParkSchedule,
@@ -13,6 +13,68 @@ import {
 import { RideRow } from "@/components/ride-row";
 import { ParkSchedule } from "@/components/park-schedule";
 import { UpdatedIndicator } from "@/components/updated-indicator";
+
+// Sort modes the user can pick from. wait_asc is the default because
+// "what's the shortest line right now" is the most actionable framing
+// when standing in a park. Favorites pin to the top regardless of
+// sort mode, so a signed-in user always sees their rides first.
+type SortMode = "wait_asc" | "wait_desc" | "alpha";
+const DEFAULT_SORT: SortMode = "wait_asc";
+
+function parseSort(raw: string | undefined): SortMode {
+  if (raw === "wait_desc" || raw === "alpha" || raw === "wait_asc") return raw;
+  return DEFAULT_SORT;
+}
+
+/**
+ * Apply favorites-first ordering + the user's chosen sort within each
+ * favorites bucket. Stable: alphabetical secondary sort already came
+ * from getParkRides, so equal-wait rides land in a predictable order.
+ *
+ * Note on wait_mins null: not-OPERATING rides (DOWN / CLOSED /
+ * REFURBISHMENT) carry null wait, and we want them at the bottom of
+ * the sort either direction — being "shortest" because wait is
+ * unknown would mislead. Using positive infinity for null pushes
+ * them to the bottom of ascending sort; for descending sort we use
+ * negative infinity so they don't crowd the top.
+ */
+function sortRides(
+  rides: RideState[],
+  mode: SortMode,
+  favorites: Set<string>,
+): RideState[] {
+  const sortFn = (a: RideState, b: RideState) => {
+    if (mode === "alpha") return a.name.localeCompare(b.name);
+    const aw =
+      a.wait_mins ?? (mode === "wait_asc" ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY);
+    const bw =
+      b.wait_mins ?? (mode === "wait_asc" ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY);
+    return mode === "wait_asc" ? aw - bw : bw - aw;
+  };
+  const favs = rides.filter((r) => favorites.has(r.ride_id));
+  const others = rides.filter((r) => !favorites.has(r.ride_id));
+  favs.sort(sortFn);
+  others.sort(sortFn);
+  return [...favs, ...others];
+}
+
+/**
+ * URL builder that preserves the current set of view params while
+ * overriding one. Lets the pill rows construct correct hrefs without
+ * forgetting to carry forward the other filter/sort.
+ */
+function parkHref(
+  parkKey: string,
+  current: { favorites: boolean; sort: SortMode },
+  override: Partial<{ favorites: boolean; sort: SortMode }>,
+): string {
+  const merged = { ...current, ...override };
+  const params = new URLSearchParams();
+  if (merged.favorites) params.set("favorites", "1");
+  if (merged.sort !== DEFAULT_SORT) params.set("sort", merged.sort);
+  const qs = params.toString();
+  return `/parks/${parkKey}${qs ? `?${qs}` : ""}`;
+}
 
 // Server-render fresh on each request — DynamoDB query is cheap and
 // the data changes every 2 min, so caching past ~30s would be stale.
@@ -26,12 +88,11 @@ export default async function ParkPage({
   searchParams,
 }: {
   params: Promise<{ park: string }>;
-  searchParams: Promise<{ favorites?: string }>;
+  searchParams: Promise<{ favorites?: string; sort?: string }>;
 }) {
-  const [{ park: parkKeyRaw }, { favorites: favParam }] = await Promise.all([
-    params,
-    searchParams,
-  ]);
+  const [{ park: parkKeyRaw }, { favorites: favParam, sort: sortParam }] =
+    await Promise.all([params, searchParams]);
+  const sortMode = parseSort(sortParam);
   const park = findPark(parkKeyRaw);
   if (!park) notFound();
 
@@ -58,10 +119,26 @@ export default async function ParkPage({
     ? rides.filter((r) => favorites.has(r.ride_id))
     : rides;
 
-  const operating = visibleRides.filter((r) => r.status === "OPERATING");
-  const down = visibleRides.filter((r) => r.status === "DOWN");
-  const closed = visibleRides.filter(
-    (r) => r.status === "CLOSED" || r.status === "REFURBISHMENT",
+  // Apply favorites-first + chosen sort per status group. Operating
+  // is where the sort matters most (wait time is meaningful); DOWN
+  // and CLOSED apply the same logic but fall back to favorites-first
+  // + alpha-secondary since wait is null for those rides.
+  const operating = sortRides(
+    visibleRides.filter((r) => r.status === "OPERATING"),
+    sortMode,
+    favorites,
+  );
+  const down = sortRides(
+    visibleRides.filter((r) => r.status === "DOWN"),
+    sortMode,
+    favorites,
+  );
+  const closed = sortRides(
+    visibleRides.filter(
+      (r) => r.status === "CLOSED" || r.status === "REFURBISHMENT",
+    ),
+    sortMode,
+    favorites,
   );
 
   // Freshness signal for the "Updated Xs ago" indicator. Use the
@@ -131,14 +208,40 @@ export default async function ParkPage({
         <div className="mt-4 flex items-center gap-3 text-sm">
           <span className="label-meta">View:</span>
           <FilterToggle
-            href={`/parks/${park.key}`}
+            href={parkHref(park.key, { favorites: showOnlyFavorites, sort: sortMode }, { favorites: false })}
             label="All rides"
             active={!showOnlyFavorites}
           />
           <FilterToggle
-            href={`/parks/${park.key}?favorites=1`}
+            href={parkHref(park.key, { favorites: showOnlyFavorites, sort: sortMode }, { favorites: true })}
             label={`★ Favorites (${favorites.size})`}
             active={showOnlyFavorites}
+          />
+        </div>
+      )}
+
+      {/* Sort toggles — always visible when the park is open so the
+          user has agency over the ride list ordering. Favorites pin
+          to the top within each sort, so the choice is "what order
+          for everything else." Default is wait_asc ("what's the
+          shortest line right now"). */}
+      {parkIsOpen && (
+        <div className="mt-3 flex items-center gap-3 text-sm">
+          <span className="label-meta">Sort:</span>
+          <FilterToggle
+            href={parkHref(park.key, { favorites: showOnlyFavorites, sort: sortMode }, { sort: "wait_asc" })}
+            label="Wait ↑"
+            active={sortMode === "wait_asc"}
+          />
+          <FilterToggle
+            href={parkHref(park.key, { favorites: showOnlyFavorites, sort: sortMode }, { sort: "wait_desc" })}
+            label="Wait ↓"
+            active={sortMode === "wait_desc"}
+          />
+          <FilterToggle
+            href={parkHref(park.key, { favorites: showOnlyFavorites, sort: sortMode }, { sort: "alpha" })}
+            label="A–Z"
+            active={sortMode === "alpha"}
           />
         </div>
       )}
