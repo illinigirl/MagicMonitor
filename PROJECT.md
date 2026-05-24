@@ -1,7 +1,8 @@
 # Magic Monitor
 
-A serverless live-status dashboard for Walt Disney World, built as the
-sibling project to Watchtower for the same FDE portfolio.
+A serverless live-status dashboard for Walt Disney World, built as a
+sibling project to Watchtower (shared visual lineage + Cognito user
+pool).
 
 Live at: `magicmonitor.megillini.dev` (after M2-B deploy)
 
@@ -21,12 +22,11 @@ which rides matter, their Pushover key for alerts.
 
 ## Audience
 
-- **Primary**: hiring managers reviewing portfolios for FDE / cloud
-  engineering roles. Architecture, deployment, and code quality matter
-  alongside the working product.
-- **Secondary**: real users — the family uses this on actual Disney
-  trips. Megan + her husband + her sister all subscribe and get
-  alerted when their planned rides go down.
+Real users — the family uses this on actual Disney trips. Megan +
+her husband + her sister all subscribe and get alerted when their
+planned rides go down. The project is also public on GitHub, so
+architecture, deployment, and code quality matter alongside the
+working product.
 
 ## Tech stack (high level)
 
@@ -34,7 +34,7 @@ which rides matter, their Pushover key for alerts.
 |---|---|---|
 | Compute | AWS Lambda (Python 3.12) | Cheap at low traffic; matches Watchtower's tier |
 | Schedule | EventBridge | Native AWS cron, no separate service needed |
-| Storage | DynamoDB single-table | Serverless, free at this scale, interview-popular |
+| Storage | DynamoDB single-table | Serverless, free at this scale, fits the project's narrow access patterns |
 | Notifications | Pushover (HTTPS API from Lambda) | Family already uses it; ~$0/mo recurring |
 | Frontend | Next.js 16 + Tailwind 4 + React 19 | Modern SSR stack; Server Components let us read DynamoDB directly without a separate API tier |
 | Type stack | Fraunces + Inter + JetBrains Mono | Mirrors Watchtower; shared visual lineage |
@@ -74,11 +74,11 @@ which rides matter, their Pushover key for alerts.
 - **Budget**: <$5/mo recurring. DynamoDB + Lambda + Amplify all in
   or near free tier at this scale.
 - **Time**: 5-10 hours/week, no fixed deadline.
-- **Quality bar**: stands on its own as a portfolio demo — TLS,
+- **Quality bar**: stands on its own as a working product — TLS,
   custom domain, Google sign-in, deploy hygiene, README with cost
   breakdown and architecture diagram. Shares visual lineage and the
   Cognito user pool with Watchtower so they reinforce each other if
-  both ship, but Magic Monitor must be demoable independently.
+  both ship, but Magic Monitor must be usable independently.
 
 ## Definition of done
 
@@ -135,12 +135,12 @@ trending to ~5 GB after a year). Within the <$5/mo budget.
 - Consumer-side cutover (web app keeps importing the same
   snapshot file; only the snapshot's data source changes)
 
-**Interview narrative:** *"Data plane is hybrid right now — Pi for
+**Design rationale:** Data plane is hybrid right now — Pi for
 history, MM-native collecting in DDB since 2026-05-17, merging at
 the aggregator script when there's enough data. The architectural
 cutover happens at the script (single source of truth for the
 analytics snapshot shape); consumer interface stays put. The full
-Pi-retirement backfill is the eventual cleanup."*
+Pi-retirement backfill is the eventual cleanup.
 
 #### 2026-05-17 — Test scaffolding + CI (47 tests, GitHub Actions)
 
@@ -170,8 +170,7 @@ that gate user-visible Pushover pings are tested for the same
 reason — false negative = missed plan-disruption alert, false
 positive = 3am phantom Pushover.
 
-Closes the "no formal testing" gap surfaced as a concern for
-interview preparation.
+Closes the "no formal testing" gap.
 
 #### 2026-05-16 — Living wisdom + preferences architecture
 
@@ -292,7 +291,7 @@ awareness for after-hours parties.
 
 Magic Monitor exposed as 17 MCP tools that any MCP client (Claude
 Desktop, agentic frameworks) can call conversationally. **This is
-the demo headline now** — agentic trip-planner answers natural-
+the project's headline capability** — agentic trip-planner answers natural-
 language route questions in Claude Desktop using one consolidated
 `get_planning_context` call, then learns from outcomes across
 sessions via a feedback loop with server-side calibration.
@@ -473,12 +472,12 @@ Single-day wave that landed the most demo-visible web features:
 
 #### M9 Phase 1 — HTTPS MCP transport for Claude mobile (~3-4 hr)
 
-Broken out from the full M9 (queued post-interview) because the
-mobile use case is product-load-bearing: the family uses MM in the
-parks, and the planner needs to be reachable from a phone. The
-Claude mobile app only supports remote MCP servers (HTTPS), not
-local stdio like the current setup — so this work unlocks
-mobile-from-the-park usage without shipping the full M9 web-chat UI.
+Broken out from the full M9 because the mobile use case is
+product-load-bearing: the family uses MM in the parks, and the
+planner needs to be reachable from a phone. The Claude mobile app
+only supports remote MCP servers (HTTPS), not local stdio like the
+current setup — so this work unlocks mobile-from-the-park usage
+without shipping the full M9 web-chat UI.
 
 **Designed 2026-05-16 with a risk-managed shape:**
 
@@ -504,7 +503,7 @@ mobile app's "Add MCP Server" screen to see what fields it asks for.
 - If bearer-token works → proceed with the 3-4 hr build below
 - If OAuth 2.1 required → scope balloons to ~6-8 hr (Cognito as
   OAuth provider, dynamic-client-registration). Present the tradeoff
-  before writing code; decide whether to ship pre-interview or punt.
+  before writing code; decide whether to ship now or defer.
 
 **The 3-4 hr build (after spike confirms bearer-token path):**
 
@@ -533,18 +532,17 @@ mobile app's "Add MCP Server" screen to see what fields it asks for.
    works on mobile (needs Drive integration enabled in mobile
    Claude account separately, same Google account).
 
-**Interview narrative this unlocks:** *"I built the dual-transport
-architecture — same tool implementations served over both stdio
-(Claude Desktop) and HTTPS (Claude mobile in the park). Shipped
-stdio first to validate the agentic-coding workflow with the demo
-before investing in HTTPS infrastructure; ported once usage proved
-the planning loop was valuable."*
+**Design rationale:** Dual-transport architecture — same tool
+implementations served over both stdio (Claude Desktop) and HTTPS
+(Claude mobile in the park). Stdio shipped first to validate the
+agentic-coding workflow before investing in HTTPS infrastructure;
+ported once usage proved the planning loop was valuable.
 
 **Auth upgrade path (post-mobile-bootstrap):** Bearer secret is
 v1 — sufficient behind a non-discoverable URL for single-family
 use. Upgrade target is Cognito JWT validation on each request,
 reusing the user pool the web app already uses. Slot in alongside
-full M9 (Phases 2-6) post-interview.
+full M9 (Phases 2-6) later.
 
 **Cost impact:** ~$1-2/mo additional (API Gateway @ $1/mo +
 Lambda free tier covers usage). Within budget.
@@ -629,13 +627,13 @@ against the latest FORECAST# row per ride, returns the per-park
 ratio. ~30 lines. Same logic, second copy — same trade-off as the
 showtimes classifier dual-impl.
 
-**Interview narrative.** "I started with a historical baseline and
-realized it blinded the alert path on heavy-crowd days. So I added a
+**Design rationale.** Started with a historical baseline and
+realized it blinded the alert path on heavy-crowd days. Added a
 second baseline using the live forecast the planner already
 consumed, normalized against park-wide load so the signal stays
 clean on quiet days too. Same data plane, two complementary alerts —
 one catches all-time anomalies, the other catches today-specific
-opportunities."
+opportunities.
 
 **Acceptance criteria:**
 1. Active rides where current_wait is ≥25% ahead of park-wide
@@ -678,11 +676,11 @@ accumulated (target: mid-June 2026).
   paths from the script.
 - The repo no longer ships any Pi-fed data; the Pi can be unplugged.
 
-**Interview narrative:** *"I shipped the analytics with a Pi-fed
-snapshot to get something demoable fast, then evolved the data plane
-to MM-native collection without changing the consumer interface.
+**Design rationale:** Shipped the analytics with a Pi-fed snapshot
+to get something demoable fast, then evolved the data plane to
+MM-native collection without changing the consumer interface.
 Backfilled the historical data so the analytics page never noticed
-the cutover."*
+the cutover.
 
 Unblocks M8 — once M6-B has been collecting MM-native data alongside
 the Pi history for ~3 months, the union covers the seasonal mix M8
@@ -707,11 +705,11 @@ needs.
 - Per-type alert toggles on `/me` — currently every alert recipient
   gets DOWN, BACK UP, STILL DOWN, and LOW WAIT. Needs `down_up` /
   `short_wait` per-user toggles. Lightning-lane alerts remain out of
-  scope pre-demo (no public LL purchase API).
+  scope (no public LL purchase API).
 - Show alerts: opt-in per show, fires N min before start time. Needs
   a daily showtime poll (stable through the day, no per-2-min churn)
   plus a per-user `SHOW_ALERT#<show_id>` row mirroring the FAV_RIDE
-  shape. Past-demo scope.
+  shape. Deferred scope.
 - Per-ride alerts (not just per-park)
 - Email digest summary at end of trip
 - Public read-only stats page (no sign-in needed)
@@ -752,7 +750,7 @@ Aggregator extension: per-(ride, dow, hour, calendar-cohort) cells
 *when sample size justifies*, falling back to coarser cells when
 not. The data-engineering judgment call here — over-segmenting
 thin data produces confident-looking but unreliable answers — is
-worth surfacing in interviews.
+worth being deliberate about.
 
 MCP tool: `get_ride_pattern(ride_name, cohort_filter)` accepting
 cohort predicates like `{"month": "july"}` or
@@ -768,7 +766,7 @@ across the right mix of seasons / holidays / events. M6-B (live
 data plane) is what gets MM-native data accumulating; M8 follows
 naturally a few months later.
 
-#### M9 — Embedded agentic chat (~2-3 days, post-interview)
+#### M9 — Embedded agentic chat (~2-3 days)
 
 Bring the MCP planner experience into the web app itself so users
 who don't run Claude Desktop (e.g., Megan's sister, husband, anyone
@@ -781,7 +779,7 @@ moves into a shared module (`mcp/_tool_impls.py`); both
 `mcp/server.py` (stdio MCP for Claude Desktop) and a new HTTP
 transport (`mcp/server_http.py`, deployed as a Lambda) wrap the
 same impl functions. Single source of truth for tool logic AND
-docstrings; both demo paths work; cleanest portfolio narrative
+docstrings; both delivery paths work; cleanest architecture story
 ("the same tool layer powers both stdio MCP and the in-app chat").
 
 Alternatives ruled out: (A) HTTP-MCP-only adds cold-start latency
@@ -824,19 +822,16 @@ conversation is ~$0.05-0.10. Three active users × 5 conversations/
 week = ~$3-5/month additional, well under the project's <$5/mo
 budget after MM's other costs.
 
-**Why post-interview, not before:**
+**Why deferred:**
 - Streaming + tool-use + auth interactions are notoriously fiddly.
-  Half-finished UI 4 days before an interview makes the demo worse,
-  not better.
-- Today's Claude Desktop MCP demo IS the agentic-coding headline.
-  Risk-averse to disrupt it pre-interview.
-- That said, M9 IS interview-relevant if shipped well: it
-  showcases production agentic-coding skill (allowlist auth,
-  prompt caching, per-user cost controls, graceful tool-use
-  failure handling) that Oracle is probably more interested in
-  than a Claude Desktop screenshot. Both narratives can coexist —
-  ship M9 after the interview if pressure permits, before the
-  interview ONLY if the calendar opens up unexpectedly.
+  Half-finished UI is worse than no UI when the existing Claude
+  Desktop path already works.
+- Today's Claude Desktop MCP setup is the agentic-coding headline.
+  Risk-averse to disrupt it before the in-app chat path is fully
+  validated.
+- M9 will showcase production agentic-coding patterns when shipped:
+  allowlist auth, prompt caching, per-user cost controls, graceful
+  tool-use failure handling.
 
 **Dependencies (all met):**
 - Cognito auth (M2-B ✓)
@@ -862,38 +857,35 @@ triggers proves they don't capture enough feedback on their own.
   surfaces *what's happening on each day of your trip*, and showtimes
   are a big part of that. Building showtimes first means trip planning
   has more to render.
-- **M6 (analytics) is interview-essential:** It's the most distinctive
+- **M6 (analytics) is the differentiator:** It's the most distinctive
   part of the whole project — months of polling history → heatmaps and
   downtime stats no one else has. The "why this and not Touring Plans"
   answer.
 
-## Demo-prep priority order
+## Priority order
 
 Original ordering (as of project start):
 
-1. **M2-B** — gets a live URL on a portfolio. Single most
-   demo-valuable milestone.
-2. **M3** — multi-user signup, lets interviewer touch the demo.
-3. **M6** — impressive analytics that other tools don't have.
+1. **M2-B** — gets a live URL at a real domain. Single most
+   user-visible milestone.
+2. **M3** — multi-user signup, lets anyone try the app.
+3. **M6** — distinctive analytics not available elsewhere.
 4. **M4 + M5** — personal-use polish (real trip value, smaller
-   demo lift).
+   visibility lift).
 
 Status as of 2026-05-11: 1, 2, 3, and the M4 half of 4 all shipped.
 The MCP suite (added mid-roadmap, not in original order) became the
-new demo headline — agentic trip-planner using real WDW data is the
-single most distinctive piece of the project for an
-agentic-coding-flavored interview. Repo is public.
+new headline — agentic trip-planner using real WDW data is the
+single most distinctive piece of the project. Repo is public.
 
-**Refreshed priority for the next interview window
-(reordered 2026-05-16 after pre-interview bandwidth + OAuth reality
-surfaced):**
+**Refreshed priority (reordered 2026-05-16):**
 
 **Path chosen: protect what's shipped + ship small bounded additions
-when bandwidth allows.** Interview is 1.5-2 weeks out; user is
-balancing full-time job + family. Big shipping items today:
-test scaffolding + CI (2026-05-17) and M6-B Phase 1 raw collection
-(2026-05-17). Data collection clock is now ticking — by ~mid-June
-the aggregator can swap source from Pi to DDB.
+when bandwidth allows.** Balancing full-time job + family means
+limited weekly hours. Recent shipping items: test scaffolding + CI
+(2026-05-17) and M6-B Phase 1 raw collection (2026-05-17). Data
+collection clock is now ticking — by ~mid-June the aggregator can
+swap source from Pi to DDB.
 
 1. **M6-B Phase 2 — Aggregator cutover** (~2-3 hr, single session).
    **Earliest sensible target: 2026-06-07** (3 weeks of MM-native
@@ -904,31 +896,29 @@ the aggregator can swap source from Pi to DDB.
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
    to the poller. Designed 2026-05-12. Ship if a 2-3 hour window
-   opens before interview.
+   opens.
 3. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Manual work at a bigger monitor
    when convenient. No session commitment needed.
 4. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Gated on Disney announcing.
 5. **Blog at megillini.dev** — first post showcases Magic Monitor.
-   Separate project queued at `.planning/blog/`. Not interview-
-   blocking.
+   Separate project queued at `.planning/blog/`. Not blocking.
 6. **M6-B Phases 3-4** (~3-5 hr) — aggregator automation +
-   Pi-retirement backfill. Lower interview-narrative leverage than
-   Phase 2; post-interview is fine.
-7. **M9 Phase 1 (mobile HTTPS MCP)** — **POST-INTERVIEW.** Design
-   captured in the Next section above. OAuth 2.1 with PKCE required
-   (confirmed empirically — Claude mobile UI only offers OAuth on
-   "Add MCP Server"). Real estimate is ~6-10 hr with Cognito as
-   OAuth provider + DCR proxy gap. Worth shipping properly when
-   there's bandwidth; not worth rushing.
-8. **M9 Phases 2-6 (custom web chat UI)** — post-interview.
+   Pi-retirement backfill. Lower architectural leverage than
+   Phase 2; can wait.
+7. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
+   in the Next section above. OAuth 2.1 with PKCE required (confirmed
+   empirically — Claude mobile UI only offers OAuth on "Add MCP
+   Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
+   + DCR proxy gap. Worth shipping properly when there's bandwidth;
+   not worth rushing.
+8. **M9 Phases 2-6 (custom web chat UI)** — deferred.
 9. **M5 (trip planning)** — personal-use polish, can slip.
 
-**Interview framing for what's not shipped:** The mobile gap and
-the M6-B-not-yet-cut-over are real, but they're sequenced
-deliberately. Stdio-first MCP demo validated the agentic-coding
-workflow before investing in HTTPS infrastructure; the Pi-fed
-analytics snapshot is intentional ("shipped what was demoable
-fast, evolved toward MM-native later, consumer interface stays
-put"). Both are mature engineering judgment, not gaps to defend.
+**Sequencing rationale for what's not shipped:** The mobile gap
+and the M6-B-not-yet-cut-over are real, but they're sequenced
+deliberately. Stdio-first MCP setup validated the agentic-coding
+workflow before investing in HTTPS infrastructure. The Pi-fed
+analytics snapshot was intentional: shipped what was usable fast,
+evolved toward MM-native later, consumer interface stays put.
