@@ -1,0 +1,128 @@
+# First eval case — the simplest happy path.
+#
+# Verifies that when asked to plan a basic MK day, Claude:
+#   1. Calls get_user_plan_history (per docstring: "at start of every
+#      planning session")
+#   2. Calls get_planning_context (to gather live state)
+#   3. Records the resulting plan via record_plan with >= 5 rides
+#   4. Mentions Magic Kingdom in the final response
+#
+# Canned tool responses below mirror what the real MCP would return
+# for a happy-path scenario. Numbers are illustrative, not from a
+# real park snapshot.
+
+name: basic_mk_plan
+description: >
+  Standard happy-path Magic Kingdom plan request. Verifies the
+  core planning flow: check history → gather context → record plan.
+
+prompt: >
+  Plan a day at Magic Kingdom for me tomorrow and lock it in — I
+  trust your judgment, so go ahead and record the final order
+  without checking back. I'll have my husband and sister with me.
+  We're staying near Epcot but want to spend the full day at MK.
+  We like thrill rides but also want a few classics like Haunted
+  Mansion and Pirates.
+
+tool_responses:
+  get_user_plan_history:
+    response:
+      plans: []
+      calibration_summary:
+        sample_size: 0
+        usage_hint: >
+          No recorded outcomes yet — proceed without calibration
+          adjustments and ask the user to report back after the trip.
+
+  get_planning_context:
+    response:
+      park_key: mk
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "22:00"
+        extra_evening_hours: null
+      weather_summary:
+        forecast_high_f: 84
+        forecast_low_f: 68
+        rain_chance_pct: 20
+      rides:
+        - ride_id: tron-lightcycle
+          ride_name: TRON Lightcycle / Run
+          status: OPERATING
+          wait_mins: 75
+          forecast:
+            typical_wait_now: 80
+            confidence: high
+        - ride_id: space-mountain
+          ride_name: Space Mountain
+          status: OPERATING
+          wait_mins: 35
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+        - ride_id: seven-dwarfs
+          ride_name: Seven Dwarfs Mine Train
+          status: OPERATING
+          wait_mins: 50
+          forecast:
+            typical_wait_now: 60
+            confidence: high
+        - ride_id: haunted-mansion
+          ride_name: Haunted Mansion
+          status: OPERATING
+          wait_mins: 25
+          forecast:
+            typical_wait_now: 30
+            confidence: high
+        - ride_id: pirates-of-the-caribbean
+          ride_name: Pirates of the Caribbean
+          status: OPERATING
+          wait_mins: 20
+          forecast:
+            typical_wait_now: 25
+            confidence: high
+        - ride_id: big-thunder
+          ride_name: Big Thunder Mountain Railroad
+          status: OPERATING
+          wait_mins: 40
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+        - ride_id: peter-pan
+          ride_name: Peter Pan's Flight
+          status: OPERATING
+          wait_mins: 65
+          forecast:
+            typical_wait_now: 60
+            confidence: high
+        - ride_id: jungle-cruise
+          ride_name: Jungle Cruise
+          status: OPERATING
+          wait_mins: 30
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+      currently_down_in_park: []
+
+  record_plan:
+    response:
+      ok: true
+      plan_id: "PLAN#2026-05-25T09:00:00+00:00"
+      user_id: megan
+      park_key: mk
+      expires_at_epoch: 1748192400
+
+assertions:
+  - tool_called: get_user_plan_history
+  - tool_called: get_planning_context
+  - tool_called: record_plan
+  - tool_called_in_order:
+      - get_planning_context
+      - record_plan
+  - tool_called_with:
+      tool: record_plan
+      args_min_length:
+        ride_sequence: 5
+  - response_mentions: "Magic Kingdom"
+  - stop_reason: end_turn

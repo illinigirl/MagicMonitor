@@ -1,0 +1,19 @@
+# Dependencies for the eval framework only — not needed at MCP server
+# runtime. Install separately:
+#
+#   pip install -r mcp/evals/requirements.txt
+#
+# Or use the same venv as the MCP server tests and layer these on top.
+
+# Anthropic SDK — the eval runner calls Claude directly via the Messages
+# API (not via the MCP protocol). Pinned for reproducibility.
+anthropic==0.45.0
+
+# Load mcp/.env so the eval doesn't need ANTHROPIC_API_KEY in the shell.
+python-dotenv==1.0.1
+
+# Case files are YAML. PyYAML's safe_load is fine; we don't need anything
+# more sophisticated at this scale.
+PyYAML==6.0.2
+
+# pytest itself is already installed for the regular MCP test suite.
