@@ -123,6 +123,22 @@ def _assert_response_mentions(spec: Any, trace: Trace) -> None:
         )
 
 
+def _assert_response_mentions_any(spec: Any, trace: Trace) -> None:
+    """spec = list of strings. AT LEAST ONE must appear in final_text.
+
+    Use when the behavior under test could surface in multiple phrasings
+    and pinning to a single word would be brittle (e.g. weather-aware
+    reasoning could mention 'heat', 'hot', 'indoor', 'AC', or 'shade').
+    """
+    needles = [spec] if isinstance(spec, str) else list(spec)
+    text = trace.final_text.lower()
+    if not any(n.lower() in text for n in needles):
+        raise AssertionError(
+            f"Expected response to mention at least one of {needles!r}. "
+            f"Response text: {trace.final_text[:300]}..."
+        )
+
+
 def _assert_response_does_not_mention(spec: Any, trace: Trace) -> None:
     """spec = string or list. NONE may appear in final_text."""
     needles = [spec] if isinstance(spec, str) else list(spec)
@@ -173,6 +189,7 @@ ASSERTION_REGISTRY: dict[str, Callable[[Any, Trace], None]] = {
     "tool_called_with": _assert_tool_called_with,
     "tool_called_in_order": _assert_tool_called_in_order,
     "response_mentions": _assert_response_mentions,
+    "response_mentions_any": _assert_response_mentions_any,
     "response_does_not_mention": _assert_response_does_not_mention,
     "stop_reason": _assert_stop_reason,
 }
