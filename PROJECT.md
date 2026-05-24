@@ -103,6 +103,50 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-24 — Production pagination regression caught + three-layer defense documented
+
+Caught a real production regression in `getParkRides` while
+testing an unrelated feature against the live site. The single-page
+DDB Scan with FilterExpression had silently been returning empty
+arrays for ~7 days — the table had grown past one Scan page
+(~1MB / ~1000 items) once M6-B Phase 1 (shipped 2026-05-17) started
+accumulating WAIT# rows on every poll. The first scan page no
+longer contained any STATE rows, so all four park pages rendered
+"0 attractions" instead of live ride data.
+
+**What shipped:**
+- `web/src/lib/dynamodb.ts` `getParkRides()` — paginates via
+  `ExclusiveStartKey` / `LastEvaluatedKey` until exhausted.
+  Immediate fix that unblocked production (`b535a6c2`).
+- New `CLAUDE.md` at repo root — project-level guidance for Claude.
+  The repo had no CLAUDE.md before; future sessions now start
+  with project orientation and the failure-mode rules loaded.
+- `TESTING.md` new top section "Failure modes we explicitly watch
+  for" — three categories: silent regressions from data growth
+  (this case), plausible-but-wrong AI output (defended by
+  mcp/evals/), multi-source alert dispatch picking wrong winner
+  (defended by alert_routing.py).
+- `.github/workflows/canary.yml` — hourly cron + on-PR-touching-
+  web-DDB-paths. Curls each park, asserts non-zero ride count.
+  Would have caught this within an hour instead of ~7 days.
+
+**Design rationale.** The bug was triggered by data growth, not
+a code change — review and unit tests don't catch this category
+because nothing in the code changed. The defense is three layers
+that catch different things: code-time review patterns (treat
+data-shape assumptions as expiring contracts), test-time mocks
+(simulate paginated responses), runtime canary (catches the
+failure mode within the canary cadence even when nobody
+anticipated the trigger). Each layer alone is insufficient;
+together they cover the category.
+
+**Follow-up queued (priority list):** GSI on `park_key` to
+replace the paginated Scan with a Query (drops per-page-load
+cost from ~$0.03 to ~$0.0001 and removes the implicit
+"small table" assumption entirely). Web unit test scaffold
+(first Vitest in `web/`) to add the test-time layer for this
+read path.
+
 #### 2026-05-24 — Plan-aware alert priority + alert routing module
 
 Fixes a real-but-subtle dispatch bug in the poller: when a user
@@ -980,30 +1024,45 @@ to DDB.
    ships: M6-B is closed (Phase 2 conservative-merge skipped in
    favor of going directly to the endpoint), Pi can be unplugged,
    analytics is 100% AWS-native.
-2. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+2. **GSI on `park_key`** (~1 hr + small CDK deploy). Replaces the
+   current paginated Scan in `getParkRides` with a Query against a
+   sparse index. Drops per-page-load cost from ~$0.03 to ~$0.0001
+   and removes the implicit "table fits in one Scan page" assumption
+   that caused the 2026-05-24 silent regression. CDK change adds the
+   GSI; minor schema migration (existing items get indexed
+   automatically via the partition key); web reader switches from
+   ScanCommand to QueryCommand. Pair with the Web unit test
+   scaffold below.
+3. **Web unit test scaffold** (~1-2 hr). First Vitest setup in
+   `web/`. Add a unit test for `getParkRides` with a mocked DDB
+   client returning paginated responses (asserts the function
+   accumulates across pages). Test-time layer of the three-layer
+   defense documented in TESTING.md. Unblocks future web-side
+   regression tests for any new SSR data path.
+4. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
    to the poller. Designed 2026-05-12. Slots into `alert_routing`
    as a new priority tier. Ship if a 2-3 hour window opens.
-3. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+5. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Manual work at a bigger monitor
    when convenient. No session commitment needed.
-4. **Update MVMCP + Jollywood dates** when Disney publishes them
+6. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Gated on Disney announcing.
-5. **Blog at megillini.dev** — first post showcases Magic Monitor.
+7. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not blocking.
-6. **M6-B Phase 3 — Aggregator regen automation** (~1-2 hr).
+8. **M6-B Phase 3 — Aggregator regen automation** (~1-2 hr).
    After Phase 4 cuts over, the aggregator still runs manually.
    Cron / GitHub Action / Lambda + EventBridge — pick whichever
    fits the workflow. Lower leverage than Phase 4; do after.
-7. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
+9. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
    in the Next section above. OAuth 2.1 with PKCE required (confirmed
    empirically — Claude mobile UI only offers OAuth on "Add MCP
    Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
    + DCR proxy gap. Worth shipping properly when there's bandwidth;
    not worth rushing.
-8. **M9 Phases 2-6 (custom web chat UI)** — deferred.
-9. **M5 (trip planning)** — personal-use polish, can slip.
+10. **M9 Phases 2-6 (custom web chat UI)** — deferred.
+11. **M5 (trip planning)** — personal-use polish, can slip.
 
 **Sequencing rationale for what's not shipped:** The mobile gap
 and the M6-B-not-yet-cut-over are real, but they're sequenced
