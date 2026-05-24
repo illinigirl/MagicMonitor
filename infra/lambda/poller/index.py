@@ -35,6 +35,7 @@ import wait_times
 import db
 import notifier
 import weather
+import alert_routing
 
 PARK_KEYS = os.environ["PARK_KEYS"].split(",")
 
@@ -421,54 +422,59 @@ def handler(event, context):
                 # adds the favorite mid-window. They'll catch the
                 # next event.
                 db.mark_down_alert_sent(ride_id)
-                favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
-                print(
-                    f"[poller] {attr['name']} DOWN: {len(subscribers)} park subs, "
-                    f"{len(favoriters)} favoriters → alerting"
-                )
-                total_alerts += _fanout(
-                    favoriters, get_user_key,
-                    notifier.alert_ride_down,
-                    ride_name=attr["name"],
-                    park_name=attr["park_name"],
-                    park_key=park_key,
-                )
 
-                # Plan-aware fanout: users who don't favorite this
-                # ride but have it in TODAY's active plan still want
-                # to know — it's an actionable replan trigger.
-                # Piggybacks on the per-ride DOWN cooldown above so we
-                # don't re-alert on flap.
+                # Two alert sources can match the same user for one
+                # DOWN event: favoriting the ride generally, OR having
+                # it in TODAY's plan. The plan-aware alert is more
+                # actionable (names the plan, prompts a re-sequence),
+                # so it must win when both apply. Build candidates
+                # from each source and let alert_routing pick.
+                favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
                 plan_targets = db.lookup_plan_targets(
                     plan_ride_index, ride_id, attr["name"]
                 )
-                if plan_targets:
-                    favoriter_set = set(favoriters)
-                    plan_alert_count = 0
-                    for target_user, target_plan in plan_targets:
-                        # If this user is already getting the
-                        # favoriter alert, skip the plan alert —
-                        # one notification per event is enough.
-                        if target_user in favoriter_set:
-                            continue
-                        user_key = get_user_key(target_user)
-                        if not user_key:
-                            continue
-                        if notifier.alert_plan_disruption(
-                            user_key,
-                            ride_name=attr["name"],
-                            park_name=attr["park_name"],
-                            park_key=park_key,
-                            disruption_type="went_down",
-                            plan_id=target_plan,
-                        ):
-                            plan_alert_count += 1
-                    if plan_alert_count:
+
+                candidates: list[alert_routing.AlertCandidate] = []
+                for target_user, target_plan in plan_targets:
+                    candidates.append(alert_routing.AlertCandidate(
+                        user_id=target_user,
+                        priority=alert_routing.PRIORITY_PLAN,
+                        notifier_fn=notifier.alert_plan_disruption,
+                        kwargs={
+                            "ride_name": attr["name"],
+                            "park_name": attr["park_name"],
+                            "park_key": park_key,
+                            "disruption_type": "went_down",
+                            "plan_id": target_plan,
+                        },
+                    ))
+                for fav_user in favoriters:
+                    candidates.append(alert_routing.AlertCandidate(
+                        user_id=fav_user,
+                        priority=alert_routing.PRIORITY_FAVORITE,
+                        notifier_fn=notifier.alert_ride_down,
+                        kwargs={
+                            "ride_name": attr["name"],
+                            "park_name": attr["park_name"],
+                            "park_key": park_key,
+                        },
+                    ))
+
+                resolved = alert_routing.resolve_alert_recipients(candidates)
+                print(
+                    f"[poller] {attr['name']} DOWN: {len(subscribers)} park subs, "
+                    f"{len(favoriters)} favoriters, {len(plan_targets)} plan "
+                    f"targets → {len(resolved)} unique recipients"
+                )
+                for target_user, candidate in resolved.items():
+                    user_key = get_user_key(target_user)
+                    if not user_key:
                         print(
-                            f"[poller] {attr['name']} DOWN: "
-                            f"{plan_alert_count} plan-aware alerts (non-favoriter)"
+                            f"[poller] No pushover_user_key for user {target_user} — skipping"
                         )
-                        total_alerts += plan_alert_count
+                        continue
+                    if candidate.notifier_fn(user_key, **candidate.kwargs):
+                        total_alerts += 1
 
             # ── BACK UP: was DOWN, now OPERATING ───────────────────
             elif new_status == "OPERATING" and old_status == "DOWN":
