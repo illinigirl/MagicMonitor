@@ -1,0 +1,311 @@
+# Fourth eval case — personalization from recorded history.
+#
+# Unlike the prior cases (which feed empty plan history), this one
+# returns a populated calibration_summary in the shape the real
+# get_user_plan_history endpoint produces (see server.py
+# _compute_calibration_summary for the canonical schema).
+#
+# The signal: the user has historically run TOO AGGRESSIVE (avg_score
+# -0.5) and ran over time on their last MK day. Per-ride bias shows
+# Seven Dwarfs Mine Train waiting +18 min longer than predicted with
+# medium confidence. The get_user_plan_history docstring instructs
+# Claude to READ calibration_summary, apply aggression + timing as
+# upfront calibration notes, and apply medium-confidence per-ride
+# biases silently to predictions.
+#
+# Why this case matters for the interview narrative: it tests the
+# "data-plane pre-computes; LLM paraphrases interpretation strings"
+# design pattern. The server has done the math; Claude's job is to
+# surface the right phrasing. If Claude *ignored* the calibration
+# summary and just planned from scratch, this assertion fails.
+#
+# What we assert (carefully, not over-fit):
+#   1. Standard tool flow (history → context → record).
+#   2. record_plan happens (acceptance language in prompt).
+#   3. Final response verbally acknowledges past data — at least one
+#      of: calibration / past / previous / last time / history / tend.
+#      Loose enough to survive phrasing variation, strict enough to
+#      catch silent ignoring of the calibration_summary.
+#
+# What we deliberately do NOT assert:
+#   - Specific ride count. "Be more conservative" could manifest as
+#     fewer rides OR longer buffers OR both — over-constraining
+#     would make the test brittle to Claude's reasoning style.
+#   - Specific Seven Dwarfs treatment. Medium confidence per-ride
+#     bias is supposed to be applied *silently* per the usage_hint,
+#     so we shouldn't expect Claude to call it out by name.
+
+name: calibration_aware_planning
+description: >
+  Verifies Claude reads the populated calibration_summary in
+  get_user_plan_history and surfaces history-aware reasoning in its
+  response (rather than planning as if it were a first-time user).
+
+prompt: >
+  Planning another MK day tomorrow with my husband and sister. Lock
+  it in once you've got an order you like — I trust your judgment.
+  Same crew as last time, similar appetite for thrill rides plus
+  Haunted Mansion and Pirates.
+
+tool_responses:
+  get_user_plan_history:
+    response:
+      user_id: megan
+      count: 2
+      plans:
+        - plan_id: "2026-05-10T13:00:00+00:00"
+          planned_at: "2026-05-10T13:00:00+00:00"
+          planned_for_date: "2026-05-11"
+          park_key: mk
+          ride_sequence:
+            - ride_name: TRON Lightcycle / Run
+              ride_id: tron-lightcycle
+              predicted_wait_min: 70
+              position: 1
+            - ride_name: Space Mountain
+              ride_id: space-mountain
+              predicted_wait_min: 40
+              position: 2
+            - ride_name: Seven Dwarfs Mine Train
+              ride_id: seven-dwarfs
+              predicted_wait_min: 55
+              position: 3
+            - ride_name: Haunted Mansion
+              ride_id: haunted-mansion
+              predicted_wait_min: 25
+              position: 4
+            - ride_name: Pirates of the Caribbean
+              ride_id: pirates-of-the-caribbean
+              predicted_wait_min: 20
+              position: 5
+            - ride_name: Big Thunder Mountain Railroad
+              ride_id: big-thunder
+              predicted_wait_min: 35
+              position: 6
+            - ride_name: Peter Pan's Flight
+              ride_id: peter-pan
+              predicted_wait_min: 60
+              position: 7
+            - ride_name: Jungle Cruise
+              ride_id: jungle-cruise
+              predicted_wait_min: 30
+              position: 8
+          completed_rides: []
+          dropped_rides: []
+          show_selections: []
+          context: {}
+          notes: null
+          outcome_recorded: true
+          outcome_recorded_at: "2026-05-11T22:30:00+00:00"
+          aggression_rating: too_aggressive
+          timing_rating: ran_over
+          extra_time_minutes: null
+          per_item_feedback:
+            Seven Dwarfs Mine Train:
+              actual_wait_min: 73
+            Peter Pan's Flight:
+              actual_wait_min: 78
+          free_text: "Got tired by 6pm, skipped the last two."
+          days_since_plan: 14
+          stale_for_recall: false
+
+        - plan_id: "2026-04-22T12:00:00+00:00"
+          planned_at: "2026-04-22T12:00:00+00:00"
+          planned_for_date: "2026-04-23"
+          park_key: mk
+          ride_sequence:
+            - ride_name: Space Mountain
+              ride_id: space-mountain
+              predicted_wait_min: 30
+              position: 1
+            - ride_name: Seven Dwarfs Mine Train
+              ride_id: seven-dwarfs
+              predicted_wait_min: 50
+              position: 2
+            - ride_name: Big Thunder Mountain Railroad
+              ride_id: big-thunder
+              predicted_wait_min: 40
+              position: 3
+            - ride_name: Haunted Mansion
+              ride_id: haunted-mansion
+              predicted_wait_min: 20
+              position: 4
+            - ride_name: Pirates of the Caribbean
+              ride_id: pirates-of-the-caribbean
+              predicted_wait_min: 15
+              position: 5
+          completed_rides: []
+          dropped_rides: []
+          show_selections: []
+          context: {}
+          notes: null
+          outcome_recorded: true
+          outcome_recorded_at: "2026-04-23T23:00:00+00:00"
+          aggression_rating: balanced
+          timing_rating: ran_over
+          extra_time_minutes: null
+          per_item_feedback:
+            Seven Dwarfs Mine Train:
+              actual_wait_min: 68
+          free_text: null
+          days_since_plan: 32
+          stale_for_recall: true
+
+      calibration_summary:
+        n_recorded_plans: 2
+        aggression:
+          avg_score: -0.5
+          interpretation: >
+            User's recent plans tend to run too aggressive — they
+            didn't fit. Be more conservative today: longer buffers,
+            fewer rides, or both.
+          n_samples: 2
+        timing:
+          distribution:
+            ran_over: 2
+            on_time: 0
+            extra_time: 0
+          avg_extra_time_minutes: null
+          interpretation: >
+            User runs over time on 2/2 recent plans — be more
+            conservative today, cut a ride or extend buffers.
+          n_samples: 2
+        per_ride_prediction_bias:
+          - ride_name: Seven Dwarfs Mine Train
+            n_samples: 2
+            avg_delta_min: 18
+            confidence: medium
+            interpretation: >
+              Seven Dwarfs Mine Train tends to wait LONGER than
+              predicted (+18 min avg, medium confidence on n=2).
+              Scale this ride's prediction up by ~18 min for this user.
+          - ride_name: Peter Pan's Flight
+            n_samples: 1
+            avg_delta_min: 18
+            confidence: low
+            interpretation: >
+              Peter Pan's Flight tends to wait LONGER than predicted
+              (+18 min avg, low confidence on n=1). Scale this ride's
+              prediction up by ~18 min for this user.
+        per_show_arrival_bias: []
+        usage_hint: >
+          Apply aggression + timing interpretations as ONE upfront
+          calibration note in your response (same convention as
+          today_vs_forecast in section 1.5). Apply per-ride / per-show
+          bias entries selectively: high-confidence biases (n>=5) can
+          be quoted directly to the user; medium (n=3-4) should be
+          applied silently to predictions; low (n<3) should be
+          ignored — the signal is too noisy to be useful.
+
+  get_planning_context:
+    response:
+      park_key: mk
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "22:00"
+        extra_evening_hours: null
+      weather_summary:
+        forecast_high_f: 84
+        forecast_low_f: 68
+        rain_chance_pct: 20
+      rides:
+        - ride_id: tron-lightcycle
+          ride_name: TRON Lightcycle / Run
+          status: OPERATING
+          wait_mins: 75
+          forecast:
+            typical_wait_now: 80
+            confidence: high
+        - ride_id: space-mountain
+          ride_name: Space Mountain
+          status: OPERATING
+          wait_mins: 35
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+        - ride_id: seven-dwarfs
+          ride_name: Seven Dwarfs Mine Train
+          status: OPERATING
+          wait_mins: 50
+          forecast:
+            typical_wait_now: 60
+            confidence: high
+        - ride_id: haunted-mansion
+          ride_name: Haunted Mansion
+          status: OPERATING
+          wait_mins: 25
+          forecast:
+            typical_wait_now: 30
+            confidence: high
+        - ride_id: pirates-of-the-caribbean
+          ride_name: Pirates of the Caribbean
+          status: OPERATING
+          wait_mins: 20
+          forecast:
+            typical_wait_now: 25
+            confidence: high
+        - ride_id: big-thunder
+          ride_name: Big Thunder Mountain Railroad
+          status: OPERATING
+          wait_mins: 40
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+        - ride_id: peter-pan
+          ride_name: Peter Pan's Flight
+          status: OPERATING
+          wait_mins: 65
+          forecast:
+            typical_wait_now: 60
+            confidence: high
+        - ride_id: jungle-cruise
+          ride_name: Jungle Cruise
+          status: OPERATING
+          wait_mins: 30
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+      currently_down_in_park: []
+
+  record_plan:
+    response:
+      ok: true
+      plan_id: "PLAN#2026-05-25T09:00:00+00:00"
+      user_id: megan
+      park_key: mk
+      expires_at_epoch: 1748192400
+
+assertions:
+  - tool_called: get_user_plan_history
+  - tool_called: get_planning_context
+  - tool_called: record_plan
+  - tool_called_in_order:
+      - get_user_plan_history
+      - get_planning_context
+      - record_plan
+  - tool_called_with:
+      tool: record_plan
+      args_min_length:
+        ride_sequence: 4
+
+  # The key behavior under test: Claude verbally acknowledges that it
+  # is drawing on past data — surfacing the calibration_summary as
+  # the usage_hint instructs. Any one of these phrasings counts.
+  - response_mentions_any:
+      - calibration
+      - past
+      - previous
+      - last time
+      - history
+      - "ran over"
+      - "tend"
+      - "trip"
+      - earlier
+
+  # Accept either form — the user's prompt used "MK" so Claude
+  # mirroring that shorthand is correct, not a failure.
+  - response_mentions_any:
+      - Magic Kingdom
+      - MK
+  - stop_reason: end_turn
