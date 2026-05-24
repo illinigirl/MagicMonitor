@@ -60,14 +60,29 @@ Trade-offs are explicit:
 
 ## CI
 
-GitHub Actions runs `pytest` on both suites on every push to main
-and on PRs. The workflow is at `.github/workflows/test.yml`. A
-green badge in the README signals current test state.
+GitHub Actions runs three parallel jobs on every push to main and
+on PRs. The workflow is at `.github/workflows/test.yml`. A green
+badge in the README signals current test state.
 
-Workflow shape: checkout → set up Python 3.12 (matches Lambda
-runtime) → install poller deps → run poller tests → install MCP
-deps → run MCP tests. Two separate install/run steps so a failure
-in one suite produces a clear log without conflating with the other.
+| Job | What it does | Why |
+|---|---|---|
+| `python-tests` | pytest both Python suites (poller + MCP) | Pure-function logic that the LLM trusts without re-deriving. The bar from the original test strategy. |
+| `web-typecheck` | `tsc --noEmit` against the Next.js app | Catches type drift before it ships. Cheap to run, catches a real class of regressions. |
+| `cdk-synth` | builds the CDK TS + `cdk synth` | Verifies the infrastructure stacks still compile to valid CloudFormation. Catches CDK regressions before deploy. |
+
+The three jobs run in parallel (independent failures, faster
+overall feedback). Each does its own setup so one job's failure
+doesn't block the others' logs from being readable.
+
+### Known follow-ups in CI
+
+- **ESLint is NOT in CI.** The current `eslint.config.mjs` (default
+  scaffolded by Next.js 16) fails at config load with a circular
+  structure error when run under ESLint 9 via the `@eslint/eslintrc`
+  FlatCompat shim. Fixing requires either pinning ESLint to 8.x,
+  updating `eslint-config-next`, or moving to a hand-rolled flat
+  config. Deferred until lint becomes load-bearing for a workflow.
+- **No web behavioral tests yet.** See "Future work" below.
 
 ## Local development
 

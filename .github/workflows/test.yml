@@ -1,11 +1,17 @@
 name: tests
 
-# Runs pytest against the poller Lambda + MCP server suites on every
-# push and PR to main. Covers pure-function logic — storm-shift
-# detection, DB cooldown helpers (against a stub DDB table), the
-# server-side calibration aggregation, and the today_vs_forecast
-# ratio computation. Integration tests against real AWS resources
-# are out of scope for CI; see TESTING.md.
+# Verification gates that run on every push and PR to main. Three
+# parallel jobs:
+#
+#   python-tests  → pytest against the poller Lambda + MCP server
+#                   pure-function suites (see TESTING.md).
+#   web-typecheck → `tsc --noEmit` against the Next.js app. Catches
+#                   type drift before it ships.
+#   cdk-synth     → builds the CDK TypeScript and runs `cdk synth`
+#                   to verify the infrastructure stacks still compile
+#                   to valid CloudFormation.
+#
+# ESLint is NOT in CI yet — see TESTING.md "Known follow-ups."
 
 on:
   push:
@@ -14,7 +20,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  python-tests:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -54,3 +60,56 @@ jobs:
       - name: Run MCP tests
         working-directory: mcp
         run: pytest
+
+  web-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck web
+        working-directory: web
+        run: pnpm typecheck
+
+  cdk-synth:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - name: Install infra dependencies
+        working-directory: infra
+        run: npm ci
+
+      - name: Build infra TypeScript
+        working-directory: infra
+        run: npm run build
+
+      # --quiet suppresses the full CloudFormation template output
+      # (keeps the CI log readable) while still failing on errors.
+      - name: CDK synth
+        working-directory: infra
+        run: npx cdk synth --quiet
