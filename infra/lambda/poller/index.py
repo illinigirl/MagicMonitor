@@ -36,6 +36,7 @@ import db
 import notifier
 import weather
 import alert_routing
+import forecast_signal
 
 PARK_KEYS = os.environ["PARK_KEYS"].split(",")
 
@@ -279,6 +280,23 @@ def handler(event, context):
         now_dt = datetime.now(timezone.utc)
         now_iso = now_dt.isoformat()
 
+        # Park-wide today_vs_forecast ratio, computed once per park
+        # from the in-memory attractions list. Same shape as the MCP
+        # planner's `_compute_load_vs_forecast` but operating on the
+        # fresh upstream payload instead of DDB FORECAST# rows —
+        # avoids a per-poll DDB read. Returns (None, 0) when the
+        # park lacks enough qualifying forecasts to compute a
+        # meaningful ratio; downstream LOW_VS_FORECAST check
+        # short-circuits cleanly in that case.
+        park_load_ratio, park_n_sampled = forecast_signal.compute_park_load_ratio(
+            attractions, datetime.now(_EASTERN)
+        )
+        if park_load_ratio is not None:
+            print(
+                f"[poller] {park_key}: park_load_ratio={park_load_ratio} "
+                f"(n={park_n_sampled} rides sampled)"
+            )
+
         for attr in attractions:
             ride_id = attr["id"]
             new_status = attr["status"]
@@ -331,43 +349,73 @@ def handler(event, context):
             if new_status == "DOWN":
                 currently_down.append((ride_id, attr))
 
-            # ── LOW WAIT: current wait below per-(ride, hour) baseline ─
-            # Fires on any operating poll where current wait drops
-            # below what's typical for this attraction at this hour.
-            # Independent of status-change detection — this is the
-            # only alert type that fires on stable-state polls. Park-
-            # hours and cooldown still gate the actual fanout.
+            # ── LOW WAIT (two baselines, shared cooldown) ──────────
+            # Two independent signals share the COOLDOWN#LOW_WAIT row
+            # so a ride gets at most one low-wait-class push per
+            # window regardless of which baseline triggered:
+            #
+            #   • LOW_WAIT (historical) — current wait below the per-
+            #     (ride, hour) half-typical threshold from
+            #     baselines.json. Catches all-time anomalies.
+            #   • LOW_VS_FORECAST (today-aware) — current wait beats
+            #     today's forecast by a margin meaningful relative to
+            #     park-wide load. Catches heavy-crowd-day opportunities
+            #     LOW_WAIT misses because absolute waits stay above
+            #     the half-typical floor. Designed 2026-05-12.
+            #
+            # Each gate is independent; the alert body adapts to
+            # whichever signal(s) fired. Independent of status-change
+            # detection — this is the only alert type that fires on
+            # stable-state polls. Park-hours + cooldown still gate
+            # the actual fanout.
             if (
                 new_status == "OPERATING"
                 and new_wait is not None
                 and alerts_allowed(park_key)
+                and not db.is_low_wait_alert_on_cooldown(ride_id)
             ):
-                threshold = _low_wait_threshold(
-                    ride_id, datetime.now(_EASTERN).hour
+                now_et = datetime.now(_EASTERN)
+
+                # Historical baseline check
+                threshold = _low_wait_threshold(ride_id, now_et.hour)
+                historical_fire = (
+                    threshold is not None and new_wait <= threshold
                 )
-                if (
-                    threshold is not None
-                    and new_wait <= threshold
-                    and not db.is_low_wait_alert_on_cooldown(ride_id)
-                ):
-                    favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
+                typical_for_msg = threshold * 2 if threshold else None
+
+                # Forecast-aware baseline check
+                forecast_wait = forecast_signal.find_forecast_for_hour(
+                    attr.get("forecast"), now_et
+                )
+                forecast_fire = forecast_signal.should_fire_low_vs_forecast(
+                    current_wait=new_wait,
+                    forecast_wait=forecast_wait,
+                    park_ratio=park_load_ratio,
+                    rides_sampled=park_n_sampled,
+                )
+
+                if historical_fire or forecast_fire:
+                    favoriters = filter_to_favoriters(
+                        subscribers, park_key, ride_id
+                    )
                     if favoriters:
                         # Cooldown is set per-ride (not per-recipient)
-                        # — same pattern as DOWN. Even with zero
-                        # current favoriters we'd still set it to
-                        # avoid flap-induced spam if a user adds
-                        # the favorite mid-window. But here we only
-                        # set it WHEN we actually fan out so a low-
-                        # wait window with no favoriters can still
-                        # alert the next user who favorites the ride.
+                        # — same pattern as DOWN. Set it only when we
+                        # actually fan out so a window with no
+                        # favoriters can still alert the next user
+                        # who favorites the ride.
                         db.mark_low_wait_alert_sent(ride_id)
-                        # Use the threshold as a stand-in for "typical"
-                        # — it's actually the half-of-typical floor,
-                        # but it's close enough for the user-facing
-                        # phrasing and gives them a single number.
-                        typical_for_msg = threshold * 2
+                        # Log which baseline(s) tripped so post-hoc
+                        # log analysis can audit false-positive rate
+                        # per signal.
+                        triggers = []
+                        if historical_fire:
+                            triggers.append(f"typical~{typical_for_msg}m")
+                        if forecast_fire:
+                            triggers.append(f"forecast={forecast_wait}m")
                         print(
-                            f"[poller] {attr['name']} LOW WAIT ({new_wait}m vs ~{typical_for_msg}m typical): "
+                            f"[poller] {attr['name']} LOW WAIT "
+                            f"({new_wait}m, {', '.join(triggers)}): "
                             f"alerting {len(favoriters)} favoriters"
                         )
                         total_alerts += _fanout(
@@ -377,7 +425,12 @@ def handler(event, context):
                             park_name=attr["park_name"],
                             park_key=park_key,
                             wait_mins=new_wait,
-                            typical_wait_mins=typical_for_msg,
+                            typical_wait_mins=(
+                                typical_for_msg if historical_fire else None
+                            ),
+                            forecast_wait_mins=(
+                                forecast_wait if forecast_fire else None
+                            ),
                         )
 
             # No status change → nothing more to do for this ride.

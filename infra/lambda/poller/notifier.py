@@ -123,18 +123,35 @@ def alert_low_wait(
     park_name: str,
     park_key: str,
     wait_mins: int,
-    typical_wait_mins: int,
+    typical_wait_mins: int | None = None,
+    forecast_wait_mins: int | None = None,
 ) -> bool:
-    """Fire when a ride's current wait dropped below its hour-of-day
-    typical. Lower priority than DOWN — it's an opportunity, not a
-    breakdown — but worth opening Pushover for."""
+    """Fire when a ride's current wait beats one of two baselines:
+    historical (typical for this hour) or today's forecast.
+
+    Body text adapts to which baseline(s) triggered — the LOW_WAIT
+    and LOW_VS_FORECAST signals share this notifier + a single
+    cooldown row, so a ride gets one low-wait-class push per window
+    regardless of which condition tripped. At least one of
+    `typical_wait_mins` / `forecast_wait_mins` must be provided.
+
+    Lower priority than DOWN — it's an opportunity, not a breakdown
+    — but worth opening Pushover for.
+    """
     emoji = PARK_EMOJI.get(park_key, "🎢")
     title = f"{emoji} {ride_name} — low wait now"
-    body = (
-        f"{park_name}\n"
-        f"{ride_name} is at {wait_mins} min. "
-        f"Typical for this hour: ~{typical_wait_mins} min."
-    )
+    # Order the comparisons: typical first (the all-time anchor),
+    # forecast second (the today-specific add-on). Both null is a
+    # caller bug — render the minimal sentence and let logs surface it.
+    parts: list[str] = [
+        f"{park_name}",
+        f"{ride_name} is at {wait_mins} min.",
+    ]
+    if typical_wait_mins is not None:
+        parts.append(f"Typical for this hour: ~{typical_wait_mins} min.")
+    if forecast_wait_mins is not None:
+        parts.append(f"Today's forecast: {forecast_wait_mins} min.")
+    body = "\n".join(parts[:1]) + "\n" + " ".join(parts[1:])
     return _send(user_key, title, body, priority=0)
 
 

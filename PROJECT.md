@@ -103,6 +103,84 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-25 — LOW_VS_FORECAST alert: today-aware low-wait baseline
+
+Adds a second baseline on the low-wait alert path. LOW_WAIT
+(historical) catches all-time anomalies; LOW_VS_FORECAST
+(today-aware) catches heavy-crowd-day opportunities the
+historical baseline blinds you to — e.g., Big Thunder at 40 min
+when today's forecast said 65. Both signals share a single
+cooldown row so a ride gets one low-wait-class push per window
+regardless of which baseline triggered, with body text that
+adapts to whichever fired.
+
+**What shipped:**
+
+- `infra/lambda/poller/forecast_signal.py` (new) — three pure
+  functions: `find_forecast_for_hour` extracts today's predicted
+  wait for the current ET hour from a ride's in-band forecast
+  array; `compute_park_load_ratio` aggregates a wait-weighted
+  `sum(actual)/sum(predicted)` across qualifying operating
+  rides (same shape as MCP's `_compute_load_vs_forecast`);
+  `should_fire_low_vs_forecast` applies the four-gate threshold
+  test (sample size, park-quiet, absolute-gap, ride-vs-park
+  ratio). All thresholds env-var configurable.
+- `infra/lambda/poller/index.py` — computes `park_load_ratio`
+  once per park from the in-memory upstream payload (no extra
+  DDB read — simpler than the PROJECT.md design assumed since
+  the same payload `record_forecast` writes is already
+  available). Restructures the LOW_WAIT branch into a shared
+  evaluation that runs both baselines under one
+  `COOLDOWN#LOW_WAIT` gate.
+- `infra/lambda/poller/notifier.py` — `alert_low_wait` signature
+  extended with optional `typical_wait_mins` /
+  `forecast_wait_mins`. Body text composes adaptively:
+  - both → "Typical for this hour: ~70 min. Today's forecast: 65 min."
+  - typical only → existing wording (no behavioral change)
+  - forecast only → "Today's forecast: 70 min." (no historical
+    comparison)
+- `infra/lambda/poller/tests/test_forecast_signal.py` (new) —
+  18 tests pin the threshold math and aggregation. Five gates
+  tested independently + the killer case (heavy day + ride
+  beating park-wide load by ≥25% with ≥15 min gap). Plus 5
+  aggregation tests covering operating-only filtering, noise
+  floor, missing forecast, empty park.
+
+**Tunable thresholds (env-var defaults):**
+- `LOW_VS_FORECAST_MIN_PARK_RATIO` = 0.9 (quiet-day suppression)
+- `LOW_VS_FORECAST_RIDE_RATIO_MULT` = 0.75 (ride beats park by
+  ≥25%)
+- `LOW_VS_FORECAST_MIN_ABS_GAP` = 15 min (meaningful gap)
+- `LOW_VS_FORECAST_MIN_RIDES_SAMPLED` = 5 (sample-size floor —
+  added during design, not in original spec, to prevent early-
+  morning noise when only 3-4 rides are operating)
+- `LOW_VS_FORECAST_MIN_PREDICTED_WAIT` = 10 min (per-ride noise
+  floor matching MCP's `_compute_load_vs_forecast`)
+
+**Design refinements during build:**
+- *In-memory data plane, no DDB read.* PROJECT.md design
+  assumed the poller would Query DDB for the latest FORECAST#
+  row per ride. But the poller already has each ride's
+  forecast in memory — it's literally the same payload it
+  passes to `record_forecast`. Operating directly on
+  `attractions[i]["forecast"]` cuts a per-poll DDB read and
+  removes a failure mode.
+- *Added sample-size floor.* The original spec didn't include
+  a minimum n; with only 3-4 rides sampled (early morning), the
+  park_ratio is too noisy to drive an alert. Mirrors the MCP
+  planner's same noise-floor guard. Default 5.
+- *Cooldown SK kept as `LOW_WAIT`.* Could have renamed to
+  `LOW` for accuracy — the row now gates two signals. Kept
+  the existing key because the alternative would mean live
+  rows existing under both keys during the 90-min TTL window
+  for no functional benefit.
+
+**Known limit (worth tuning later):** ~13 days of FORECAST#
+data as of 2026-05-25 (Phase A2 shipped 2026-05-10). Threshold
+defaults are first-pass values, not bench-derived. Plan to
+revisit after ~30 days of accumulated observation; env vars
+above let tuning be a config change, not a redeploy.
+
 #### 2026-05-25 — M6-B Phase 3: nightly aggregator regen via GitHub Actions
 
 Closes M6-B fully. Replaces the manual run + commit + push loop
@@ -831,104 +909,6 @@ full M9 (Phases 2-6) later.
 **Cost impact:** ~$1-2/mo additional (API Gateway @ $1/mo +
 Lambda free tier covers usage). Within budget.
 
-#### LOW_VS_FORECAST alert — crowd-adjusted opportunity detection (~2-3 hr)
-
-Second baseline for the low-wait opportunity alert path. Where the
-existing LOW_WAIT compares current wait to a STATIC historical
-baseline from `baselines.json` (Pi-fed, regenerated when
-`aggregate-analytics.py` runs), this new alert compares against
-themeparks.wiki's DYNAMIC per-hour forecast for the same ride today.
-
-**Why two baselines instead of one.** The signals catch different
-classes of opportunity:
-- LOW_WAIT (historical): "*This ride is anomalously low for this
-  hour, all-time.*" Catches end-of-day Pirates, fireworks-time
-  Carousel of Progress — moments rare across history.
-- LOW_VS_FORECAST (today-aware): "*This ride is beating today's
-  specific expectation.*" Catches the heavy-crowd day where Big
-  Thunder hits 40 min when today's forecast said 65 — an opportunity
-  LOW_WAIT misses because absolute wait is still above its all-time
-  half-typical threshold.
-
-**Killer case.** On a heavy-crowd day (today_vs_forecast > 1.15),
-the park is running hotter than the historical baselines expect.
-LOW_WAIT will essentially never fire. LOW_VS_FORECAST is what catches
-genuinely-better-than-today's-load moments on those days.
-
-**Park-wide normalization (the design wrinkle).** A naive
-`current_wait < forecast` rule over-fires on "crowds light today"
-days when *everything* is below forecast. The alert needs to fire
-only when this specific ride is doing *meaningfully better* than the
-park-wide load this hour, not just "below its own forecast":
-
-```python
-ride_ratio = current_wait / forecast_for_this_hour
-park_ratio = today_vs_forecast.ratio   # already computed server-side
-# Fire when this ride is ≥25% ahead of park average AND the gap is
-# meaningful in absolute minutes.
-fire = ride_ratio <= 0.75 * park_ratio  AND  current_wait <= forecast - 15
-```
-
-This mirrors the `today_vs_forecast` pattern already used by the
-MCP planner — same data plane signal, applied to alerting.
-
-**Threshold tuning caveat.** As of 2026-05-12 we have ~2 days of
-FORECAST# data. The feature will *function* on minimal data, but the
-threshold values above are first-pass guesswork. Plan to re-tune from
-observation after ~30 days of data. All thresholds env-var
-configurable (mirror the LOW_WAIT pattern) so tuning is a config
-change, not a redeploy.
-
-**Dedup with existing LOW_WAIT.** A single ride could in principle
-satisfy both conditions at the same moment. Options:
-- *Single combined alert* — "Big Thunder: 35 min, way under both
-  typical and today's forecast." Strongest signal, single push.
-- *Separate cooldowns, separate alerts* — two pushes for the same
-  ride at the same moment is noisy; reject this.
-- *Shared cooldown row* (`COOLDOWN#LOW`) covering both alert types
-  — at most one low-wait push per ride per cooldown window, body
-  text picks the strongest applicable signal.
-
-Recommendation: shared cooldown, body text adapts. Cleanest UX.
-
-**Files affected:**
-- `infra/lambda/poller/db.py` — helper to fetch latest FORECAST# row
-  per ride for the current hour; potentially share LOW_WAIT cooldown
-  row.
-- `infra/lambda/poller/forecast_signal.py` (new) — per-ride
-  ratio-vs-park computation, threshold check.
-- `infra/lambda/poller/index.py` — after the existing LOW_WAIT check,
-  evaluate LOW_VS_FORECAST; pick body text based on which signal is
-  strongest.
-- `infra/lambda/poller/notifier.py` — extend `alert_low_wait` (or
-  add `alert_low_vs_forecast`) — decide based on the dedup design.
-
-**Today_vs_forecast aggregation in the poller.** The MCP server
-computes this on demand inside `get_planning_context`. The poller
-would need its own implementation (Lambda runtime, no MCP deps) — a
-small function that scans current STATE rows for the park, joins
-against the latest FORECAST# row per ride, returns the per-park
-ratio. ~30 lines. Same logic, second copy — same trade-off as the
-showtimes classifier dual-impl.
-
-**Design rationale.** Started with a historical baseline and
-realized it blinded the alert path on heavy-crowd days. Added a
-second baseline using the live forecast the planner already
-consumed, normalized against park-wide load so the signal stays
-clean on quiet days too. Same data plane, two complementary alerts —
-one catches all-time anomalies, the other catches today-specific
-opportunities.
-
-**Acceptance criteria:**
-1. Active rides where current_wait is ≥25% ahead of park-wide
-   today_vs_forecast AND ≥15 min under forecast trigger an alert.
-2. Quiet days (park_ratio < 0.9) don't generate per-ride spam.
-3. Cooldown shared with LOW_WAIT — one low-wait-class push per ride
-   per cooldown window.
-4. Body text indicates which baseline triggered ("vs typical" /
-   "vs today's forecast" / "both").
-5. All thresholds env-var configurable.
-
 #### M5 — Trip planning (~1 week)
 - Trip CRUD: dates + parks per day + party size
 - Auto-toggle subscriptions based on current trip dates
@@ -1132,12 +1112,7 @@ framework + 5 cases (2026-05-22 / 2026-05-24), alert routing module
 now ticking — by ~mid-June the aggregator can swap source from Pi
 to DDB.
 
-1. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
-   low-wait alert path. Catches heavy-crowd-day opportunities the
-   historical baseline blinds you to. Single-session work, additive
-   to the poller. Designed 2026-05-12. Slots into `alert_routing`
-   as a new priority tier. Ship if a 2-3 hour window opens.
-2. **Consolidate Pi poller processes** (~15-30 min, SSH-only).
+1. **Consolidate Pi poller processes** (~15-30 min, SSH-only).
    Discovered 2026-05-25: the Pi has multiple concurrent processes
    writing to `wait_history` (two distinct cadences offset by ~21s
    plus irregular extras). Likely a systemd service + cron + maybe
@@ -1145,13 +1120,17 @@ to DDB.
    (data is no longer authoritative — DDB is) but the multi-stream
    waste burns Pi cycles + SD card writes. Find via `systemctl`
    and `crontab -l` on the Pi; kill the duplicates.
-3. **Bump `aws-actions/configure-aws-credentials` to `@v5`** when
+2. **Bump `aws-actions/configure-aws-credentials` to `@v5`** when
    it ships — `@v4` runs on Node.js 20, which GitHub force-
    deprecates June 2026. One-line workflow change. Non-blocking
    until then.
-4. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+3. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Manual work at a bigger monitor
    when convenient. No session commitment needed.
+4. **Tune LOW_VS_FORECAST thresholds** after ~30 days of accumulated
+   FORECAST# data (target: late June 2026). Defaults are first-pass
+   guesses. Env vars in `forecast_signal.py` let tuning be a
+   config change, not a redeploy.
 5. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Gated on Disney announcing.
 6. **Blog at megillini.dev** — first post showcases Magic Monitor.
