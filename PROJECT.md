@@ -1132,27 +1132,12 @@ framework + 5 cases (2026-05-22 / 2026-05-24), alert routing module
 now ticking — by ~mid-June the aggregator can swap source from Pi
 to DDB.
 
-1. **GSI on `park_key`** (~1 hr + small CDK deploy). Replaces the
-   current paginated Scan in `getParkRides` with a Query against a
-   sparse index. Drops per-page-load cost from ~$0.03 to ~$0.0001
-   and removes the implicit "table fits in one Scan page" assumption
-   that caused the 2026-05-24 silent regression. CDK change adds the
-   GSI; minor schema migration (existing items get indexed
-   automatically via the partition key); web reader switches from
-   ScanCommand to QueryCommand. Pair with the Web unit test
-   scaffold below.
-2. **Web unit test scaffold** (~1-2 hr). First Vitest setup in
-   `web/`. Add a unit test for `getParkRides` with a mocked DDB
-   client returning paginated responses (asserts the function
-   accumulates across pages). Test-time layer of the three-layer
-   defense documented in TESTING.md. Unblocks future web-side
-   regression tests for any new SSR data path.
-3. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+1. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
    to the poller. Designed 2026-05-12. Slots into `alert_routing`
    as a new priority tier. Ship if a 2-3 hour window opens.
-4. **Consolidate Pi poller processes** (~15-30 min, SSH-only).
+2. **Consolidate Pi poller processes** (~15-30 min, SSH-only).
    Discovered 2026-05-25: the Pi has multiple concurrent processes
    writing to `wait_history` (two distinct cadences offset by ~21s
    plus irregular extras). Likely a systemd service + cron + maybe
@@ -1160,25 +1145,25 @@ to DDB.
    (data is no longer authoritative — DDB is) but the multi-stream
    waste burns Pi cycles + SD card writes. Find via `systemctl`
    and `crontab -l` on the Pi; kill the duplicates.
-5. **Bump `aws-actions/configure-aws-credentials` to `@v5`** when
+3. **Bump `aws-actions/configure-aws-credentials` to `@v5`** when
    it ships — `@v4` runs on Node.js 20, which GitHub force-
    deprecates June 2026. One-line workflow change. Non-blocking
    until then.
-6. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+4. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Manual work at a bigger monitor
    when convenient. No session commitment needed.
-7. **Update MVMCP + Jollywood dates** when Disney publishes them
+5. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Gated on Disney announcing.
-8. **Blog at megillini.dev** — first post showcases Magic Monitor.
+6. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not blocking.
-9. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
+7. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
    in the Next section above. OAuth 2.1 with PKCE required (confirmed
    empirically — Claude mobile UI only offers OAuth on "Add MCP
    Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
    + DCR proxy gap. Worth shipping properly when there's bandwidth;
    not worth rushing.
-10. **M9 Phases 2-6 (custom web chat UI)** — deferred.
-11. **M5 (trip planning)** — personal-use polish, can slip.
+8. **M9 Phases 2-6 (custom web chat UI)** — deferred.
+9. **M5 (trip planning)** — personal-use polish, can slip.
 
 **Sequencing rationale for what's not shipped:** M6-B is now
 fully closed (Phase 3 shipped 2026-05-25 — nightly automation
