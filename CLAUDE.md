@@ -101,6 +101,38 @@ Don't change tool docstrings in `mcp/server.py` casually — they
 are the contract Claude reads at runtime. Run the eval suite after
 any docstring change.
 
+## Debugging discipline
+
+When something is broken — test failure, prod bug, unexpected
+behavior, "this should work and it doesn't" — apply these two
+rules before proposing fixes:
+
+**1. No fixes without root cause.** Don't propose changes until
+you can state, in one sentence, *why* the bug happens. "Add a
+null check" / "wrap it in try/except" / "retry on failure" are
+symptom patches, not fixes — they're allowed only after the root
+cause is identified and only if they're the right response to it.
+For bugs that cross component boundaries (poller → DDB → web,
+or MCP → boto3 → table), add diagnostic logging at each boundary
+*first* to surface where the chain breaks, then investigate that
+specific layer. Don't guess which component is at fault.
+
+**2. After 3 failed fixes, stop and question the architecture.**
+If you've tried three changes and each one either didn't work or
+revealed a new problem somewhere else, that's the signal that the
+underlying pattern is wrong — not that fix #4 will be the one.
+Surface this to Megan with "I've tried X, Y, Z and each one
+exposed a new issue; I think the architecture is the problem, not
+this specific bug." Don't silently attempt fix #4.
+
+**Signals from Megan that you're doing it wrong (treat as a
+hard stop, return to root-cause investigation):**
+
+- "Is that not happening?" — you assumed without verifying
+- "Stop guessing" — you're proposing fixes without understanding
+- "We're stuck?" / frustration — your approach isn't working
+- "Are you sure?" — you claimed something you didn't verify
+
 ## Project conventions
 
 ### DDB access
@@ -121,10 +153,16 @@ any docstring change.
   Anthropic API in `mcp/evals/`. Run evals from `mcp/`:
   `.venv/bin/pytest evals/`. Evals cost real API tokens (~$0.05 per
   case, ~$0.30 for full suite).
-- **Web:** `tsc --noEmit` typecheck in CI; no unit/component tests
-  yet (queued). When this changes, add the testing pattern here.
+- **Web:** `tsc --noEmit` typecheck + Vitest unit tests in CI.
+  Scaffold added 2026-05-25 with the GSI cutover; first coverage is
+  `web/src/lib/dynamodb.test.ts` (the `getParkRides` read path).
+  Run locally: `cd web && pnpm test`. Mock the DDB client at the
+  module level via `vi.mock("@aws-sdk/lib-dynamodb", ...)` —
+  pattern in the existing test. No JSX/component tests yet; when
+  the first one lands, set up jsdom in `vitest.config.ts`.
 - **CI** runs three parallel jobs (python-tests, web-typecheck,
-  cdk-synth) in `.github/workflows/test.yml`. Plus a separate
+  cdk-synth) in `.github/workflows/test.yml`. The web-typecheck
+  job also runs `pnpm test` after typecheck. Plus a separate
   canary workflow that runs hourly against the live site.
 
 ### Alert routing (added 2026-05-24)

@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "commands": [
+    {
+      "name": "Web — Next.js dev",
+      "keywords": ["web", "next", "dashboard"],
+      "workspace": {
+        "name": "web",
+        "cwd": "web",
+        "layout": {
+          "direction": "horizontal",
+          "split": 0.65,
+          "children": [
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "terminal", "name": "claude", "command": "claude" }
+                ]
+              }
+            },
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "terminal", "name": "dev", "command": "pnpm dev" },
+                  { "type": "terminal", "name": "typecheck", "command": "pnpm tsc --noEmit --watch" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Poller — Python + tests",
+      "keywords": ["poller", "lambda", "python"],
+      "workspace": {
+        "name": "poller",
+        "cwd": "infra/lambda/poller",
+        "layout": {
+          "direction": "horizontal",
+          "split": 0.65,
+          "children": [
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "terminal", "name": "claude", "command": "claude" }
+                ]
+              }
+            },
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "terminal", "name": "pytest", "command": "python -m pytest infra/lambda/poller -q --tb=short" },
+                  { "type": "terminal", "name": "shell" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "MCP — server + evals",
+      "keywords": ["mcp", "evals", "agent"],
+      "workspace": {
+        "name": "mcp",
+        "cwd": "mcp",
+        "layout": {
+          "direction": "horizontal",
+          "split": 0.65,
+          "children": [
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "terminal", "name": "claude", "command": "claude" }
+                ]
+              }
+            },
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "terminal", "name": "shell" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Infra — CDK",
+      "keywords": ["infra", "cdk", "aws"],
+      "workspace": {
+        "name": "infra",
+        "cwd": "infra",
+        "layout": {
+          "direction": "horizontal",
+          "split": 0.65,
+          "children": [
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "terminal", "name": "claude", "command": "claude" }
+                ]
+              }
+            },
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "terminal", "name": "synth", "command": "pnpm cdk synth" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Verify — canary + live site",
+      "keywords": ["verify", "canary", "prod"],
+      "workspace": {
+        "name": "verify",
+        "cwd": ".",
+        "layout": {
+          "direction": "vertical",
+          "split": 0.5,
+          "children": [
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "terminal", "name": "curl-prod", "command": "watch -n 60 'curl -s -o /dev/null -w \"%{http_code} %{size_download}b\\n\" https://magicmonitor.megillini.dev/parks/magic-kingdom'" }
+                ]
+              }
+            },
+            {
+              "pane": {
+                "surfaces": [
+                  { "type": "browser", "name": "live", "url": "https://magicmonitor.megillini.dev" }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
