@@ -40,9 +40,8 @@ export default function AnalyticsPage() {
       </section>
 
       <p className="label-meta mt-12 max-w-2xl leading-relaxed">
-        Snapshot from {data.date_range.end.slice(0, 10)}. The architecture
-        supports nightly refresh via DDB-backed aggregates; deferred for
-        scope. See PROJECT.md M6.
+        Snapshot from {data.date_range.end.slice(0, 10)}. Sourced from
+        DynamoDB.
       </p>
     </div>
   );
