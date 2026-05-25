@@ -27,6 +27,7 @@ in ~60s.
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -1195,14 +1196,24 @@ def _write_short_wait_baselines(rides_list: list, generated_at: str) -> None:
 
 
 def _ddb_table():
-    """Return a boto3 Table resource for the DDB single table."""
+    """Return a boto3 Table resource for the DDB single table.
+
+    Credential source:
+      • CI (GitHub Actions w/ OIDC): AWS_ACCESS_KEY_ID is set by
+        aws-actions/configure-aws-credentials — use the default
+        credential chain so env creds are picked up.
+      • Local dev: fall back to the watchtower SSO profile.
+    """
     if boto3 is None:
         print(
             "boto3 not importable — install with: pip install boto3",
             file=sys.stderr,
         )
         sys.exit(1)
-    session = boto3.Session(profile_name=DDB_PROFILE, region_name=DDB_REGION)
+    if os.environ.get("AWS_ACCESS_KEY_ID"):
+        session = boto3.Session(region_name=DDB_REGION)
+    else:
+        session = boto3.Session(profile_name=DDB_PROFILE, region_name=DDB_REGION)
     return session.resource("dynamodb").Table(DDB_TABLE_NAME)
 
 

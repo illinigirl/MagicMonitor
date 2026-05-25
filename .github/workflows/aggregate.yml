@@ -1,0 +1,103 @@
+name: nightly analytics regen
+
+# Closes M6-B Phase 3: nightly aggregator run against the live DDB
+# table. Replaces the manual `python3 tools/aggregate-analytics.py
+# + git commit + push` loop that ran during M6-B verification.
+#
+# What it does:
+#   1. Assumes the MagicMonitorGithubDeploy role via OIDC.
+#   2. Runs `python3 tools/aggregate-analytics.py` (default source
+#      is ddb post-M6-B Phase 4).
+#   3. If the regenerated snapshot/baselines differ from main,
+#      commits the diff back to main as github-actions[bot].
+#      Amplify auto-deploys the new snapshot ~3-5 min later.
+#
+# Cadence: 08:00 UTC = 04:00 EDT / 03:00 EST. Pre-dawn ET keeps
+# the freshly-regenerated snapshot in front of every morning's
+# users without competing with the poller's :00/:02 cadence.
+#
+# No-op runs (no data drift since last regen) commit nothing.
+# A no-op shows up as a successful run with the
+# "snapshot unchanged" log line — useful as a passive heartbeat
+# that the OIDC role + DDB perms + aggregator script are all
+# still working.
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+# Repo-level write needed so the bot commit can push back to main.
+# id-token write is required for the OIDC -> IAM role exchange.
+permissions:
+  contents: write
+  id-token: write
+
+# Prevent overlapping runs if a manual dispatch fires while the
+# scheduled one is still going. Subsequent run waits for the
+# in-flight one to finish.
+concurrency:
+  group: aggregate-snapshot
+  cancel-in-progress: false
+
+jobs:
+  regen-snapshot:
+    runs-on: ubuntu-latest
+    # Local bare run takes ~85s. 5min budget covers DDB latency
+    # variance and the (rare) cold-DDB-scan case without burning
+    # the runner on a hung connection.
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        # Default GITHUB_TOKEN is sufficient for push-back to main
+        # because permissions.contents is set to write above.
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install boto3
+        # Aggregator pulls only stdlib + boto3 when --source=ddb.
+        # No requirements file lives at repo root; the inline
+        # install is simpler than spinning up a venv.
+        run: python -m pip install --upgrade pip boto3
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Role ARN is deterministic (account + role name) and the
+          # account id is already public in infra/lib/disney-stack.ts.
+          # Hardcoding here avoids the friction of a per-repo secret
+          # for a value that isn't sensitive.
+          role-to-assume: arn:aws:iam::601669029997:role/MagicMonitorGithubDeploy
+          aws-region: us-east-2
+
+      - name: Run aggregator (DDB source)
+        run: python3 tools/aggregate-analytics.py
+
+      - name: Commit snapshot if changed
+        run: |
+          set -euo pipefail
+          # Limit the diff check to the files the aggregator writes —
+          # avoids false positives if something else in the tree
+          # changes between checkout and now (shouldn't, but cheap
+          # to scope correctly).
+          targets=(
+            web/src/data/analytics-snapshot.json
+            web/src/data/analytics-snapshot.ts
+            infra/lambda/poller/baselines.json
+          )
+          if git diff --quiet -- "${targets[@]}"; then
+            echo "snapshot unchanged — nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${targets[@]}"
+          # Single-line commit message keeps the YAML block scalar
+          # simple. Workflow file itself documents the "why".
+          git commit -m "chore(analytics): nightly snapshot regen from DDB"
+          git push origin main
