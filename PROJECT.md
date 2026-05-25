@@ -103,6 +103,70 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-25 — M6-B Phase 3: nightly aggregator regen via GitHub Actions
+
+Closes M6-B fully. Replaces the manual run + commit + push loop
+with a scheduled workflow that runs the aggregator against the
+live DDB table every night and commits the snapshot diff back
+to main if it changed. Amplify auto-deploys the new snapshot
+~3-5 min later. The M6-B milestone (analytics now AWS-native,
+end-to-end, including its own regeneration) is closed.
+
+**What shipped:**
+- `tools/aggregate-analytics.py` — default `--source` flipped
+  `sqlite` → `ddb`. Bare runs now use the live table; the
+  sqlite path remains for historical diffing while the Pi
+  runs in parallel as a backup data source. Snapshot regenerated
+  from DDB as part of the flip (`d7c63f62`).
+- `tools/aggregate-analytics.py` — `_ddb_table()` now picks
+  the credential source from the env: default credential chain
+  in CI (where `AWS_ACCESS_KEY_ID` is populated by
+  aws-actions/configure-aws-credentials), `watchtower` SSO
+  profile locally. Same script works in both contexts without
+  flags (`1531995c`).
+- `.github/workflows/aggregate.yml` (new) — cron at 08:00 UTC
+  (04:00 EDT / 03:00 EST) + `workflow_dispatch`. Assumes the
+  existing `MagicMonitorGithubDeploy` OIDC role (no CDK change
+  needed — `AdministratorAccess` already covers DDB Scan +
+  Query), runs the aggregator, commits the diff as
+  `github-actions[bot]` if anything changed, pushes back to
+  main with `git pull --rebase` to close the human-push race
+  window (`1531995c`).
+- Workflow guardrails (`7712477f`):
+  - `dry_run` `workflow_dispatch` input — manual runs can
+    exercise the full path (OIDC + DDB + aggregator + diff
+    detection) without committing a noise snapshot. Used to
+    smoke-test the workflow before relying on the cron.
+  - `$GITHUB_STEP_SUMMARY` step — surfaces outcome
+    (`unchanged` / `dry-run-diff` / `committed` / `failed`)
+    plus the last 25 lines of aggregator output on the run
+    page, so a passing nightly is also a visible heartbeat.
+  - Concurrency group prevents overlapping manual + cron runs.
+
+**Verification:** dry-run smoke test passed end-to-end in 1m17s
+(GitHub Actions run `26412418734`). OIDC assume → DDB read →
+aggregator (65.3s, faster than local same-region) → diff
+detection → step summary populated → no commit, no push.
+
+**Design rationale:** Manual regen was acceptable during M6-B
+Phase 4 cutover verification. Persistent staleness post-cutover
+isn't — the live `analytics-snapshot.json` should track the
+data the poller is collecting, not freeze on whatever day
+someone last remembered to regen by hand. Nightly is overkill
+for the data's actual rate of change (week/month patterns) but
+is the lowest-friction automation pattern: no CDK change, no
+new AWS resource, uses the OIDC role that already exists, and
+the workflow file itself is the documentation of "how the
+analytics snapshot gets fresh." Lambda + EventBridge was the
+AWS-native alternative; passed on it because the GitHub Action
+gets the commit on-tree (Amplify auto-deploys from main) with
+zero additional infrastructure.
+
+**Follow-up surfaced during the work:** GitHub flagged that
+`aws-actions/configure-aws-credentials@v4` runs on Node.js 20,
+which gets force-deprecated June 2026. Non-blocking; bump to
+`@v5` when it ships.
+
 #### 2026-05-25 — M6-B Phase 4: Pi-to-DDB data plane cutover + duration-based analytics
 
 Closed the M6-B milestone (analytics now AWS-native end-to-end).
@@ -865,35 +929,6 @@ opportunities.
    "vs today's forecast" / "both").
 5. All thresholds env-var configurable.
 
-#### M6-B Phase 3 — Aggregator regen automation (~1-2 hr)
-
-**Phases 1, 2, and 4 shipped** (see Done section above). The
-remaining automation step closes the M6-B milestone fully.
-
-Currently the analytics snapshot regenerates only when someone
-manually runs `python3 tools/aggregate-analytics.py --source ddb`
-+ commit + push. Phase 3 automates that loop:
-
-- **GitHub Action cron** (cheapest, simplest): nightly at 3am ET,
-  runs the aggregator with `--source ddb`, commits the snapshot
-  if changed, Amplify auto-deploys. ~30 LOC of YAML + AWS creds
-  on the runner.
-- **Lambda + EventBridge** (AWS-native alternative): same logic
-  in a scheduled Lambda. Requires CDK changes; more pieces but
-  keeps the regen workflow inside AWS.
-- **DDB-at-request-time** (rejected for now): query DDB at SSR
-  time instead of static snapshot. More "live" but ~$0.10/page-
-  view in DDB reads at scale; also defeats the cheap-static-site
-  property that makes the page free to serve.
-
-Nightly is the right cadence — analytics page shows patterns
-over weeks/months, hour-by-hour freshness adds no value.
-
-**Design rationale:** Manual regen was acceptable during cutover
-verification; persistent staleness isn't acceptable post-cutover.
-Nightly is overkill for the data's actual rate of change but is
-the lowest-friction automation pattern.
-
 #### M5 — Trip planning (~1 week)
 - Trip CRUD: dates + parks per day + party size
 - Auto-toggle subscriptions based on current trip dates
@@ -1112,19 +1147,12 @@ to DDB.
    accumulates across pages). Test-time layer of the three-layer
    defense documented in TESTING.md. Unblocks future web-side
    regression tests for any new SSR data path.
-3. **Flip aggregator default `sqlite` → `ddb`** (~5 min). M6-B
-   Phase 4 shipped with `default="sqlite"` to preserve prior
-   behavior. Now that DDB-mode is verified, flip the default so
-   a bare `python3 tools/aggregate-analytics.py` uses live data.
-4. **M6-B Phase 3 — Aggregator regen automation** (~1-2 hr).
-   Last open piece of M6-B. Nightly GitHub Action cron is the
-   simplest path; full design in the Next section above.
-5. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+3. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
    to the poller. Designed 2026-05-12. Slots into `alert_routing`
    as a new priority tier. Ship if a 2-3 hour window opens.
-6. **Consolidate Pi poller processes** (~15-30 min, SSH-only).
+4. **Consolidate Pi poller processes** (~15-30 min, SSH-only).
    Discovered 2026-05-25: the Pi has multiple concurrent processes
    writing to `wait_history` (two distinct cadences offset by ~21s
    plus irregular extras). Likely a systemd service + cron + maybe
@@ -1132,26 +1160,31 @@ to DDB.
    (data is no longer authoritative — DDB is) but the multi-stream
    waste burns Pi cycles + SD card writes. Find via `systemctl`
    and `crontab -l` on the Pi; kill the duplicates.
-7. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+5. **Bump `aws-actions/configure-aws-credentials` to `@v5`** when
+   it ships — `@v4` runs on Node.js 20, which GitHub force-
+   deprecates June 2026. One-line workflow change. Non-blocking
+   until then.
+6. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Manual work at a bigger monitor
    when convenient. No session commitment needed.
-8. **Update MVMCP + Jollywood dates** when Disney publishes them
+7. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Gated on Disney announcing.
-9. **Blog at megillini.dev** — first post showcases Magic Monitor.
+8. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not blocking.
-10. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
-    in the Next section above. OAuth 2.1 with PKCE required (confirmed
-    empirically — Claude mobile UI only offers OAuth on "Add MCP
-    Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
-    + DCR proxy gap. Worth shipping properly when there's bandwidth;
-    not worth rushing.
-11. **M9 Phases 2-6 (custom web chat UI)** — deferred.
-12. **M5 (trip planning)** — personal-use polish, can slip.
+9. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
+   in the Next section above. OAuth 2.1 with PKCE required (confirmed
+   empirically — Claude mobile UI only offers OAuth on "Add MCP
+   Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
+   + DCR proxy gap. Worth shipping properly when there's bandwidth;
+   not worth rushing.
+10. **M9 Phases 2-6 (custom web chat UI)** — deferred.
+11. **M5 (trip planning)** — personal-use polish, can slip.
 
-**Sequencing rationale for what's not shipped:** M6-B Phase 4
-shipped 2026-05-25 — analytics is now AWS-native. Remaining
-queued items are scoped follow-ups (Phase 3 automation, default
-flip) and parallel work. The mobile gap is the next major piece
-but is sequenced deliberately behind the lighter-weight items;
-OAuth + DCR proxy is multi-session work. The Pi runs in parallel
-as a free backup data source until the user decides to retire it.
+**Sequencing rationale for what's not shipped:** M6-B is now
+fully closed (Phase 3 shipped 2026-05-25 — nightly automation
+in place). Analytics is AWS-native end-to-end, regenerated
+nightly without manual intervention. The mobile gap (M9 Phase 1)
+is the next major piece but is sequenced deliberately behind
+the lighter-weight items; OAuth + DCR proxy is multi-session
+work. The Pi runs in parallel as a free backup data source
+until the user decides to retire it.
