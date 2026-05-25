@@ -128,6 +128,84 @@ coordination via `if user in other_set: continue` checks. The
 priority order lives in one place; adding a source is one line of
 candidate-construction and one priority constant.
 
+### Cadence-dependent ratio metrics
+
+When a metric is defined as a ratio of counts over two populations,
+both populations need to be sampled at the same rate — or the ratio
+will be silently biased by sampling differences. Surfaced 2026-05-25
+during the M6-B Phase 4 aggregator cutover: `downtime_pct =
+ride_down_polls / ride_active_polls` had been quietly wrong the whole
+time, in two compounding ways.
+
+**The bug shape:**
+
+1. Pi snapshot data turned out to have **multiple concurrent poller
+   processes** writing to `wait_history` (two distinct 2-min cadences
+   offset by ~21 seconds, plus irregular extras — almost certainly a
+   leftover from earlier iteration where a systemd service AND a cron
+   job both ended up running). Pi data was 2-4× denser than the
+   single-stream cadence everyone assumed.
+
+2. The DDB live poller's WAIT# write rule filters to
+   `status='OPERATING' AND wait_mins IS NOT NULL`. Walkthrough
+   attractions and any OPERATING poll without a wait estimate are
+   silently absent from WAIT#.
+
+For the SQLite path: both numerator and denominator carried the
+multi-stream inflation symmetrically, so the ratio was approximately
+right *by accident*.
+
+For the DDB path during cutover: WAIT# inherited the Pi-multi-stream
+inflation on the OPERATING side (one row per upstream poll, even the
+duplicates), but synthesized DOWN polls at single-stream 2-min
+cadence from HIST# transitions. Asymmetric inflation produced
+downtime_pct of ~50% of truth for most rides and ~14× truth for
+walkthrough-adjacent rides where the denominator collapsed.
+
+**Always do when designing or reviewing:**
+
+1. When defining a percentage from two count-based accumulators,
+   ask: are both accumulators sampled at the same rate, and will
+   they stay that way under all future data inputs (multiple
+   processes, schema changes, write-rule changes, sampling rules)?
+2. Prefer wall-clock duration over sample counts when the underlying
+   thing being measured is a duration (downtime %, uptime %,
+   utilization, latency above threshold %). Durations don't depend
+   on the observer's sampling rate.
+3. When migrating between data sources, verify the metric's
+   numerator and denominator pick up the new source's sampling
+   rules consistently — a write-filter rule on one side and not
+   the other is exactly this bug.
+
+**Three-layer defense for this category:**
+
+- **Code-time:** when reviewing an `X / Y * 100` computation, name
+  what X and Y count and check the units. If both are "poll counts"
+  or "row counts," ask about underlying observation cadence and
+  whether it can vary across the populations.
+- **Test-time:** diff-test the new metric against a known-correct
+  ground-truth computed a different way (e.g., wall-clock duration
+  derived from poll timestamps independently). This is exactly how
+  the cutover bug was caught.
+- **Runtime:** cross-check ratio metrics against a different
+  derivation when feasible — during the dual-source window, DDB
+  downtime % was checked against Pi-snapshot wall-clock-minutes
+  downtime %. Significant divergence forced the investigation.
+
+**Defense in code:** `tools/aggregate-analytics.py` accumulates
+in wall-clock minutes via `_bucket_minutes()`. The SQLite path
+uses gap-to-next-poll (which auto-corrects for cadence variance);
+the DDB path uses HIST# transition pairs (which encode duration
+directly). Both produce cadence-independent totals.
+
+This pattern generalizes beyond polling — any ratio of derived
+counts is vulnerable when underlying observation cadence varies.
+Examples: error rate / request rate, sessions / unique visitors,
+anything aggregated from sampled instrumentation. The general fix
+is "measure what you're trying to count" — if the answer is a
+duration, use duration; if it's an event count over a stable rate,
+keep counts.
+
 ## What's deliberately not tested
 
 Trade-offs are explicit:

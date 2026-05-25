@@ -103,6 +103,100 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-25 — M6-B Phase 4: Pi-to-DDB data plane cutover + duration-based analytics
+
+Closed the M6-B milestone (analytics now AWS-native end-to-end).
+Two coupled data-plane changes and a structural shift in how the
+analytics aggregator measures downtime.
+
+**What shipped:**
+- `tools/backfill-pi-to-ddb.py` — added `--mode {wait,hist,both}`.
+  HIST# mode walks the Pi snapshot per-ride and emits a DDB
+  HIST# row for every status transition, matching the live
+  poller's `record_status_change()` shape. Stamped 5-year TTL so
+  backfilled rows survive past the live poller's old 90-day
+  default (`6f3e96c7`). Production backfill: 2.4M WAIT# rows
+  (~$3) + 13K HIST# transitions (~$0.02).
+- `infra/lib/disney-stack.ts` — bumped `HISTORY_RETENTION_DAYS`
+  90 → 1825 days, so live HIST# rows written post-cutover match
+  the backfill TTL. Deployed CDK before running HIST# backfill
+  to avoid a ~3-month gap window (`6f3e96c7`).
+- `tools/aggregate-analytics.py` — dual-source rewrite with
+  `--source {sqlite,ddb}` flag. DDB mode prefetches WAIT# + HIST#
+  via an 8-way thread pool (~25s for 2.5M items), then runs the
+  same four passes the SQLite path runs. Default stays `sqlite`
+  for now; flip to `ddb` once verified in the running site
+  (`b9c1b870`).
+- `tools/aggregate-analytics.py` — same commit also switched all
+  ride_active / ride_down / rh_* / rdh_* / pdh_* accumulators
+  from poll counts to wall-clock minutes. Surfaced + fixed a
+  long-standing measurement bug (see TESTING.md "Cadence-
+  dependent ratio metrics"). Both paths now produce cadence-
+  independent downtime metrics.
+- Regenerated `web/src/data/analytics-snapshot.json` from DDB
+  source covering 2026-03-10 → 2026-05-25. 20 walkthrough/
+  gallery rides (Tree of Life, Wilderness Explorers, Main
+  Street Vehicles, etc.) dropped from output — they have no
+  HIST# transitions and no WAIT# rows in DDB, since their
+  status never changes and they have no wait_mins. Web UI
+  rendered no useful values for these rides; clean drop.
+- `web/src/app/analytics/page.tsx` — refreshed footer copy. No
+  longer claims DDB-backed aggregates are "deferred for scope"
+  (they shipped). Minimal honest version: date + source
+  (`e361c921`).
+
+**The cadence-dependent ratio bug (worth its own story):**
+
+Before the cutover, the SQLite-from-Pi aggregator computed
+`downtime_pct = ride_down_polls / ride_active_polls`. This had
+been silently wrong for the whole life of the metric — but
+approximately right by accident.
+
+Pi `wait_history` turned out to have multiple concurrent poller
+processes writing to it (two distinct 2-min cadences offset by
+~21 seconds, plus irregular extras — most likely a leftover from
+earlier iteration where a systemd service AND a cron job both
+ended up running on the Pi). Pi data was 2-4× denser than the
+single-stream cadence everyone assumed.
+
+In SQLite mode, both numerator and denominator carried this
+inflation symmetrically, so the ratio came out approximately
+right. In DDB mode during cutover (WAIT# inheriting Pi-multi-
+stream inflation but synthesized DOWN polls at single-stream
+2-min cadence from HIST#), the asymmetry produced ~50% of truth
+for most rides and ~14× truth for walkthrough-adjacent rides
+where the denominator collapsed (Journey of Water reported
+25.4% downtime against a true 1.8%).
+
+Fix: switched accumulators from poll counts to wall-clock
+minutes. SQLite path uses gap-to-next-poll (which auto-corrects
+for cadence variance); DDB path uses HIST# transition pairs
+(which encode duration directly). Both produce cadence-
+independent totals. Apples-to-apples diff on the same data
+window: avg_wait matches exactly (0.00 mean delta), max_wait
+matches exactly, downtime_pct within 0.5pp mean delta.
+
+**Design rationale:** Saw the metric was wrong before the
+cutover went live. Two paths: ship the cutover with a known-
+inaccurate metric and fix in follow-up, or pause and redesign
+the metric first. Chose to redesign because (a) the wrong
+numbers would have been visible on production analytics page
+immediately, (b) the fix was contained to one file, and (c)
+the test artifact (diff against Pi-derived ground truth) only
+exists during the dual-source window — once Pi data is gone,
+re-verifying the metric is much harder.
+
+**What this enables:** Pi can run in parallel as a backup data
+source (zero ongoing cost, free belt-and-suspenders) or be
+retired at user discretion. Analytics page is now sourced from
+the live DDB table. Manual regen is still required per cycle;
+nightly automation queued (M6-B Phase 3).
+
+**Follow-up queued:** flip aggregator default `sqlite` → `ddb`
+in a follow-up commit; consolidate the Pi's parallel poller
+processes (fix the multi-stream root cause); build the nightly
+regen automation (M6-B Phase 3).
+
 #### 2026-05-24 — Production pagination regression caught + three-layer defense documented
 
 Caught a real production regression in `getParkRides` while
@@ -771,46 +865,34 @@ opportunities.
    "vs today's forecast" / "both").
 5. All thresholds env-var configurable.
 
-#### M6-B Phases 2+ — Aggregator cutover + Pi retirement (~4-8 hr)
+#### M6-B Phase 3 — Aggregator regen automation (~1-2 hr)
 
-**Phase 1 shipped 2026-05-17** (see Done section above). Raw wait
-collection in DDB is now running. The remaining phases handle the
-consumer-side cutover once 3-4 weeks of MM-native data has
-accumulated (target: mid-June 2026).
+**Phases 1, 2, and 4 shipped** (see Done section above). The
+remaining automation step closes the M6-B milestone fully.
 
-**Phase 2 — Augment the aggregator (~2-3 hr):**
-- Modify `tools/aggregate-analytics.py` to read both Pi SQLite AND
-  DDB WAIT# rows (via boto3). Merge into the same snapshot shape
-  the script already emits.
-- Pi data covers everything through ~2026-05-10; DDB data covers
-  everything from 2026-05-17 onward. ~1 week gap during cutover
-  is statistical noise at the heatmap aggregation grain — document
-  in TESTING.md or a script comment.
-- Web app consumer interface unchanged; same `analytics-snapshot.ts`
-  imported the same way.
-- Run the script manually; analytics page updates after each push.
+Currently the analytics snapshot regenerates only when someone
+manually runs `python3 tools/aggregate-analytics.py --source ddb`
++ commit + push. Phase 3 automates that loop:
 
-**Phase 3 — Automate the regen (~1-2 hr, optional):**
-- Cron on laptop, GitHub Action on a schedule, or AWS Lambda + EventBridge
-- Replaces the manual `python tools/aggregate-analytics.py` step
+- **GitHub Action cron** (cheapest, simplest): nightly at 3am ET,
+  runs the aggregator with `--source ddb`, commits the snapshot
+  if changed, Amplify auto-deploys. ~30 LOC of YAML + AWS creds
+  on the runner.
+- **Lambda + EventBridge** (AWS-native alternative): same logic
+  in a scheduled Lambda. Requires CDK changes; more pieces but
+  keeps the regen workflow inside AWS.
+- **DDB-at-request-time** (rejected for now): query DDB at SSR
+  time instead of static snapshot. More "live" but ~$0.10/page-
+  view in DDB reads at scale; also defeats the cheap-static-site
+  property that makes the page free to serve.
 
-**Phase 4 — Retire the Pi (~3-4 hr):**
-- One-time backfill: read Pi SQLite history, write equivalent
-  WAIT# rows to DDB so the Pi snapshot can be removed.
-- Modify the aggregator to read only DDB.
-- Delete `.scratch/disney-pi-snapshot.db` and the Pi-reader code
-  paths from the script.
-- The repo no longer ships any Pi-fed data; the Pi can be unplugged.
+Nightly is the right cadence — analytics page shows patterns
+over weeks/months, hour-by-hour freshness adds no value.
 
-**Design rationale:** Shipped the analytics with a Pi-fed snapshot
-to get something demoable fast, then evolved the data plane to
-MM-native collection without changing the consumer interface.
-Backfilled the historical data so the analytics page never noticed
-the cutover.
-
-Unblocks M8 — once M6-B has been collecting MM-native data alongside
-the Pi history for ~3 months, the union covers the seasonal mix M8
-needs.
+**Design rationale:** Manual regen was acceptable during cutover
+verification; persistent staleness isn't acceptable post-cutover.
+Nightly is overkill for the data's actual rate of change but is
+the lowest-friction automation pattern.
 
 #### M5 — Trip planning (~1 week)
 - Trip CRUD: dates + parks per day + party size
@@ -1015,16 +1097,7 @@ framework + 5 cases (2026-05-22 / 2026-05-24), alert routing module
 now ticking — by ~mid-June the aggregator can swap source from Pi
 to DDB.
 
-1. **M6-B Phase 4 — Pi-to-DDB backfill + aggregator cutover**
-   (~2-3 hr, single session, splittable). Backfill script tested
-   end-to-end 2026-05-24 (`3266bcc2`); ready to run the full ~5M-row
-   write (~$6.30) followed by the aggregator cutover to read DDB
-   instead of SQLite. Decision pending on HIST# / downtime handling
-   (extend retention vs. change poller to write per-poll). After this
-   ships: M6-B is closed (Phase 2 conservative-merge skipped in
-   favor of going directly to the endpoint), Pi can be unplugged,
-   analytics is 100% AWS-native.
-2. **GSI on `park_key`** (~1 hr + small CDK deploy). Replaces the
+1. **GSI on `park_key`** (~1 hr + small CDK deploy). Replaces the
    current paginated Scan in `getParkRides` with a Query against a
    sparse index. Drops per-page-load cost from ~$0.03 to ~$0.0001
    and removes the implicit "table fits in one Scan page" assumption
@@ -1033,40 +1106,52 @@ to DDB.
    automatically via the partition key); web reader switches from
    ScanCommand to QueryCommand. Pair with the Web unit test
    scaffold below.
-3. **Web unit test scaffold** (~1-2 hr). First Vitest setup in
+2. **Web unit test scaffold** (~1-2 hr). First Vitest setup in
    `web/`. Add a unit test for `getParkRides` with a mocked DDB
    client returning paginated responses (asserts the function
    accumulates across pages). Test-time layer of the three-layer
    defense documented in TESTING.md. Unblocks future web-side
    regression tests for any new SSR data path.
-4. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
+3. **Flip aggregator default `sqlite` → `ddb`** (~5 min). M6-B
+   Phase 4 shipped with `default="sqlite"` to preserve prior
+   behavior. Now that DDB-mode is verified, flip the default so
+   a bare `python3 tools/aggregate-analytics.py` uses live data.
+4. **M6-B Phase 3 — Aggregator regen automation** (~1-2 hr).
+   Last open piece of M6-B. Nightly GitHub Action cron is the
+   simplest path; full design in the Next section above.
+5. **LOW_VS_FORECAST alert** (~2-3 hr) — second baseline on the
    low-wait alert path. Catches heavy-crowd-day opportunities the
    historical baseline blinds you to. Single-session work, additive
    to the poller. Designed 2026-05-12. Slots into `alert_routing`
    as a new priority tier. Ship if a 2-3 hour window opens.
-5. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
+6. **Consolidate Pi poller processes** (~15-30 min, SSH-only).
+   Discovered 2026-05-25: the Pi has multiple concurrent processes
+   writing to `wait_history` (two distinct cadences offset by ~21s
+   plus irregular extras). Likely a systemd service + cron + maybe
+   `@reboot` all running simultaneously. Cleanup is low-impact
+   (data is no longer authoritative — DDB is) but the multi-stream
+   waste burns Pi cycles + SD card writes. Find via `systemctl`
+   and `crontab -l` on the Pi; kill the duplicates.
+7. **Capture Claude Desktop screenshots** — `docs/screenshot-brief.md`
    has the three target queries. Manual work at a bigger monitor
    when convenient. No session commitment needed.
-6. **Update MVMCP + Jollywood dates** when Disney publishes them
+8. **Update MVMCP + Jollywood dates** when Disney publishes them
    (~10 min, manual). Gated on Disney announcing.
-7. **Blog at megillini.dev** — first post showcases Magic Monitor.
+9. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not blocking.
-8. **M6-B Phase 3 — Aggregator regen automation** (~1-2 hr).
-   After Phase 4 cuts over, the aggregator still runs manually.
-   Cron / GitHub Action / Lambda + EventBridge — pick whichever
-   fits the workflow. Lower leverage than Phase 4; do after.
-9. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
-   in the Next section above. OAuth 2.1 with PKCE required (confirmed
-   empirically — Claude mobile UI only offers OAuth on "Add MCP
-   Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
-   + DCR proxy gap. Worth shipping properly when there's bandwidth;
-   not worth rushing.
-10. **M9 Phases 2-6 (custom web chat UI)** — deferred.
-11. **M5 (trip planning)** — personal-use polish, can slip.
+10. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
+    in the Next section above. OAuth 2.1 with PKCE required (confirmed
+    empirically — Claude mobile UI only offers OAuth on "Add MCP
+    Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
+    + DCR proxy gap. Worth shipping properly when there's bandwidth;
+    not worth rushing.
+11. **M9 Phases 2-6 (custom web chat UI)** — deferred.
+12. **M5 (trip planning)** — personal-use polish, can slip.
 
-**Sequencing rationale for what's not shipped:** The mobile gap
-and the M6-B-not-yet-cut-over are real, but they're sequenced
-deliberately. Stdio-first MCP setup validated the agentic-coding
-workflow before investing in HTTPS infrastructure. The Pi-fed
-analytics snapshot was intentional: shipped what was usable fast,
-evolved toward MM-native later, consumer interface stays put.
+**Sequencing rationale for what's not shipped:** M6-B Phase 4
+shipped 2026-05-25 — analytics is now AWS-native. Remaining
+queued items are scoped follow-ups (Phase 3 automation, default
+flip) and parallel work. The mobile gap is the next major piece
+but is sequenced deliberately behind the lighter-weight items;
+OAuth + DCR proxy is multi-session work. The Pi runs in parallel
+as a free backup data source until the user decides to retire it.
