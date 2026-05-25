@@ -26,6 +26,11 @@ on:
   schedule:
     - cron: "0 8 * * *"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run aggregator but skip the commit + push (smoke test)"
+        type: boolean
+        default: false
 
 # Repo-level write needed so the bot commit can push back to main.
 # id-token write is required for the OIDC -> IAM role exchange.
@@ -76,9 +81,15 @@ jobs:
           aws-region: us-east-2
 
       - name: Run aggregator (DDB source)
-        run: python3 tools/aggregate-analytics.py
+        # Tee stdout so the summary step can extract the stats line
+        # the aggregator prints (span, totals, rides) without
+        # re-running the script.
+        run: python3 tools/aggregate-analytics.py 2>&1 | tee /tmp/aggregator.log
 
       - name: Commit snapshot if changed
+        id: commit
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
           set -euo pipefail
           # Limit the diff check to the files the aggregator writes —
@@ -92,6 +103,13 @@ jobs:
           )
           if git diff --quiet -- "${targets[@]}"; then
             echo "snapshot unchanged — nothing to commit"
+            echo "outcome=unchanged" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "dry_run=true — aggregator produced a diff but skipping commit + push"
+            git diff --stat -- "${targets[@]}"
+            echo "outcome=dry-run-diff" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -100,4 +118,29 @@ jobs:
           # Single-line commit message keeps the YAML block scalar
           # simple. Workflow file itself documents the "why".
           git commit -m "chore(analytics): nightly snapshot regen from DDB"
+          # Rebase before push to handle the small race window where
+          # a human pushed to main between checkout and now. If the
+          # rebase fails (real conflict on snapshot/baselines), the
+          # run fails loudly — the next nightly catches up.
+          git pull --rebase origin main
           git push origin main
+          echo "outcome=committed" >> "$GITHUB_OUTPUT"
+
+      - name: Write run summary
+        # Always runs (even on failure) so a failed nightly still
+        # surfaces the aggregator log on the run page.
+        if: always()
+        run: |
+          {
+            echo "## Aggregator run"
+            echo ""
+            outcome="${{ steps.commit.outputs.outcome || 'failed' }}"
+            echo "- **Outcome:** \`$outcome\`"
+            echo ""
+            echo "### Aggregator output"
+            echo '```'
+            # Last 25 lines covers the "wrote …" block + totals
+            # without dumping the per-cluster spam.
+            tail -n 25 /tmp/aggregator.log 2>/dev/null || echo "(no log captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
