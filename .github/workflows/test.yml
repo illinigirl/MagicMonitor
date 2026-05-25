@@ -87,6 +87,14 @@ jobs:
         working-directory: web
         run: pnpm typecheck
 
+      # Unit tests added 2026-05-25 with the GSI cutover. Initial
+      # coverage is the getParkRides() read path — the test-time
+      # layer of the three-layer defense documented in TESTING.md
+      # for the silent-data-growth regression category.
+      - name: Run web unit tests
+        working-directory: web
+        run: pnpm test
+
   cdk-synth:
     runs-on: ubuntu-latest
     steps:

@@ -201,6 +201,37 @@ export class DisneyStack extends cdk.Stack {
       },
     });
 
+    // GSI: park_key + SK.
+    //
+    // Replaces the paginated Scan + FilterExpression that powers
+    // `getParkRides()` in the web reader. STATE rows carry park_key
+    // already; Query against this index returns only the matching
+    // park's rows in one round-trip (~25 items vs walking the whole
+    // table). Drops per-park-page-load cost from ~$0.03 to ~$0.0001
+    // and removes the implicit "table fits in one Scan page"
+    // assumption that caused the 2026-05-24 silent regression — the
+    // category-level fix, not just the immediate pagination patch.
+    //
+    // WAIT# and HIST# rows also carry park_key and get indexed too.
+    // That adds ~$1.25/mo of GSI storage (the index is roughly the
+    // same size as the table) and ~doubles write costs across all
+    // writes (still under $1/mo at current pace), but it also opens
+    // up future park-scoped Queries on WAIT#/HIST# if useful (e.g.,
+    // "average wait by hour for Magic Kingdom" without walking
+    // every ride individually).
+    //
+    // Sort key is `SK` so callers can use `SK = "STATE"` for the
+    // STATE-rows-only case, or `SK begins_with "WAIT#"` for the
+    // observations case, etc. AWS backfills existing rows
+    // automatically when the GSI is created — no schema migration
+    // code needed.
+    dataTable.addGlobalSecondaryIndex({
+      indexName: "park_key-SK-index",
+      partitionKey: { name: "park_key", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "SK", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     this.tableName = dataTable.tableName;
 
     // ─── Compute: poller Lambda ─────────────────────────────────────

@@ -16,7 +16,7 @@
  */
 import "server-only";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, ScanCommand, type ScanCommandOutput } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, QueryCommand, type QueryCommandOutput } from "@aws-sdk/lib-dynamodb";
 
 import type { ParkKey } from "./parks";
 
@@ -56,35 +56,40 @@ export interface RideState {
 }
 
 /**
- * Scan all current STATE rows for one park.
+ * Query all current STATE rows for one park via the
+ * `park_key-SK-index` GSI.
  *
- * The original comment claimed "1 round-trip, well under 4KB" — that
- * was true at M3-era table size (~100 STATE rows total) but stopped
- * being true after M6-B Phase 1 (2026-05-17) started accumulating
- * WAIT# observations. The table grew past one Scan-page (~1MB / ~1000
- * items) and the previous single-page Scan started returning 0 matches
- * for the ~35 STATE rows per park, because the first page contained
- * only WAIT# rows. The live park pages silently rendered "0 attractions"
- * for ~7 days before the bug was caught 2026-05-24.
+ * This used to be a paginated Scan + FilterExpression that walked
+ * the entire ~5 GB table to find ~25 STATE rows per park (~$0.03
+ * per page load). The 2026-05-24 silent regression — single-page
+ * Scan started returning 0 matches once WAIT# rows pushed STATE
+ * rows past page 1 — forced the immediate pagination fix. This is
+ * the category-level fix: a Query against an index that knows
+ * about park_key. ~25 items returned in one round-trip,
+ * ~$0.0001 per page load, structurally independent of total
+ * table size.
  *
- * Fix: paginate the Scan, accumulate across all pages. The cost is
- * real (~$0.025-0.04 per page load against the current 425K-item
- * table — within the project's <$5/mo budget at family-scale traffic
- * but unsustainable at any real volume).
+ * The GSI was added in the M6-B-Phase-4 follow-up CDK deploy
+ * 2026-05-25. partitionKey=park_key, sortKey=SK, full projection.
+ * STATE rows match SK="STATE" exactly; the same GSI also enables
+ * SK begins_with "WAIT#" / "HIST#" Queries for future analytics
+ * read paths that need to walk a park's observations.
  *
- * Right long-term fix: add a GSI on park_key so this becomes a Query
- * (1 round-trip, ~25 items, near-zero cost). Tracked as a deferred
- * follow-up because it requires a CDK change + DDB schema migration
- * and the immediate-pagination fix is enough to unblock production.
+ * Pagination is still required as defense — STATE rows total ~25
+ * per park and the GSI partition stays well under 1MB at current
+ * scale, but the LastEvaluatedKey loop guards against future
+ * growth (per the same data-shape-assumption rule that motivated
+ * this fix in the first place).
  */
 export async function getParkRides(parkKey: ParkKey): Promise<RideState[]> {
   const items: RideState[] = [];
   let exclusiveStartKey: Record<string, unknown> | undefined = undefined;
   do {
-    const resp: ScanCommandOutput = await client.send(
-      new ScanCommand({
+    const resp: QueryCommandOutput = await client.send(
+      new QueryCommand({
         TableName: tableName,
-        FilterExpression: "SK = :sk AND park_key = :p",
+        IndexName: "park_key-SK-index",
+        KeyConditionExpression: "park_key = :p AND SK = :sk",
         ExpressionAttributeValues: { ":sk": "STATE", ":p": parkKey },
         ExclusiveStartKey: exclusiveStartKey,
       }),
