@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-05-25T13:48:13.964389+00:00",
+  "generated_at": "2026-05-25T17:04:47.532785+00:00",
   "date_range": {
     "start": "2026-03-10T14:40:09.861336+00:00",
-    "end": "2026-05-25T13:46:14.550641+00:00"
+    "end": "2026-05-25T17:04:15.027713+00:00"
   },
-  "total_polls": 2577641,
+  "total_polls": 2583548,
   "polls_filtered_by_park_hours": 0,
   "rides": [
     {
@@ -242,7 +242,7 @@
           "hour": 13,
           "downtime_pct": 1.2,
           "n_active": 540,
-          "wait": 90,
+          "wait": 89,
           "recurring_down_fraction": 1.0
         },
         {
@@ -1072,7 +1072,7 @@
         },
         {
           "hour": 12,
-          "wait": 56
+          "wait": 55
         },
         {
           "hour": 13,
@@ -1763,6 +1763,14 @@
           "poll_count": 192,
           "start_hour": 11,
           "start_dow": 6
+        },
+        {
+          "start_ts": "2026-05-25T14:08:11.851475+00:00",
+          "end_ts": "2026-05-25T15:02:11.812699+00:00",
+          "duration_minutes": 54,
+          "poll_count": 27,
+          "start_hour": 10,
+          "start_dow": 1
         }
       ],
       "ll_drops_total": null,
@@ -1795,7 +1803,7 @@
         },
         {
           "hour": 9,
-          "wait": 47
+          "wait": 46
         },
         {
           "hour": 10,
@@ -2877,6 +2885,22 @@
           "poll_count": 15,
           "start_hour": 8,
           "start_dow": 1
+        },
+        {
+          "start_ts": "2026-05-25T15:00:13.163928+00:00",
+          "end_ts": "2026-05-25T15:56:13.137489+00:00",
+          "duration_minutes": 56,
+          "poll_count": 28,
+          "start_hour": 11,
+          "start_dow": 1
+        },
+        {
+          "start_ts": "2026-05-25T16:04:13.116200+00:00",
+          "end_ts": "2026-05-25T16:56:13.041529+00:00",
+          "duration_minutes": 52,
+          "poll_count": 26,
+          "start_hour": 12,
+          "start_dow": 1
         }
       ],
       "ll_drops_total": null,
@@ -3818,6 +3842,14 @@
           "poll_count": 48,
           "start_hour": 18,
           "start_dow": 6
+        },
+        {
+          "start_ts": "2026-05-25T12:34:13.084869+00:00",
+          "end_ts": "2026-05-25T16:50:12.960647+00:00",
+          "duration_minutes": 256,
+          "poll_count": 128,
+          "start_hour": 8,
+          "start_dow": 1
         }
       ],
       "ll_drops_total": null,
@@ -3858,7 +3890,7 @@
         },
         {
           "hour": 10,
-          "wait": 45
+          "wait": 44
         },
         {
           "hour": 11,
@@ -5065,7 +5097,7 @@
           "hour": 12,
           "downtime_pct": 11.1,
           "n_active": 540,
-          "wait": 47,
+          "wait": 48,
           "recurring_down_fraction": 1.0
         },
         {
@@ -5717,7 +5749,7 @@
         },
         {
           "hour": 12,
-          "wait": 52
+          "wait": 53
         },
         {
           "hour": 13,
@@ -5847,7 +5879,7 @@
           "hour": 12,
           "downtime_pct": 19.9,
           "n_active": 540,
-          "wait": 58,
+          "wait": 59,
           "recurring_down_fraction": 1.0
         },
         {
@@ -6380,11 +6412,11 @@
         },
         {
           "hour": 10,
-          "wait": 25
+          "wait": 24
         },
         {
           "hour": 11,
-          "wait": 34
+          "wait": 33
         },
         {
           "hour": 12,
@@ -6582,7 +6614,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 34
+          "wait": 33
         },
         {
           "dow": 1,
@@ -7520,7 +7552,7 @@
           "hour": 12,
           "downtime_pct": 5.6,
           "n_active": 77,
-          "wait": 50,
+          "wait": 49,
           "recurring_down_fraction": 0.0
         },
         {
@@ -8284,6 +8316,14 @@
           "poll_count": 46,
           "start_hour": 18,
           "start_dow": 5
+        },
+        {
+          "start_ts": "2026-05-25T13:02:11.827221+00:00",
+          "end_ts": "2026-05-25T13:50:11.882989+00:00",
+          "duration_minutes": 48,
+          "poll_count": 24,
+          "start_hour": 9,
+          "start_dow": 1
         }
       ],
       "ll_drops_total": null,
@@ -8520,7 +8560,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 11
+          "wait": 10
         },
         {
           "dow": 1,
@@ -10745,6 +10785,14 @@
           "poll_count": 28,
           "start_hour": 17,
           "start_dow": 0
+        },
+        {
+          "start_ts": "2026-05-25T12:34:11.843040+00:00",
+          "end_ts": "2026-05-25T13:48:11.907289+00:00",
+          "duration_minutes": 74,
+          "poll_count": 37,
+          "start_hour": 8,
+          "start_dow": 1
         }
       ],
       "ll_drops_total": null,
@@ -12914,7 +12962,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 27
+          "wait": 26
         },
         {
           "dow": 1,
@@ -15795,6 +15843,14 @@
           "poll_count": 24,
           "start_hour": 11,
           "start_dow": 0
+        },
+        {
+          "start_ts": "2026-05-25T13:36:14.126957+00:00",
+          "end_ts": "2026-05-25T14:22:14.074554+00:00",
+          "duration_minutes": 46,
+          "poll_count": 23,
+          "start_hour": 9,
+          "start_dow": 1
         }
       ],
       "ll_drops_total": null,
@@ -17846,7 +17902,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 65
+          "wait": 63
         },
         {
           "dow": 1,
@@ -20162,7 +20218,7 @@
         },
         {
           "hour": 12,
-          "wait": 40
+          "wait": 41
         },
         {
           "hour": 13,
@@ -20350,7 +20406,7 @@
           "hour": 13,
           "downtime_pct": 0.0,
           "n_active": 360,
-          "wait": 43
+          "wait": 44
         },
         {
           "dow": 1,
@@ -20951,6 +21007,14 @@
           "poll_count": 94,
           "start_hour": 8,
           "start_dow": 0
+        },
+        {
+          "start_ts": "2026-05-25T13:40:11.918312+00:00",
+          "end_ts": "2026-05-25T14:32:11.781783+00:00",
+          "duration_minutes": 52,
+          "poll_count": 26,
+          "start_hour": 9,
+          "start_dow": 1
         }
       ],
       "ll_drops_total": null,
@@ -20971,7 +21035,7 @@
       "hourly_wait": [
         {
           "hour": 9,
-          "wait": 18
+          "wait": 17
         },
         {
           "hour": 10,
@@ -21873,7 +21937,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 51
+          "wait": 50
         },
         {
           "dow": 1,
@@ -23585,7 +23649,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 33
+          "wait": 32
         },
         {
           "dow": 1,
@@ -24281,7 +24345,7 @@
         },
         {
           "hour": 12,
-          "wait": 24
+          "wait": 23
         },
         {
           "hour": 13,
@@ -24466,7 +24530,7 @@
           "hour": 12,
           "downtime_pct": 10.5,
           "n_active": 77,
-          "wait": 27,
+          "wait": 26,
           "recurring_down_fraction": 0.0
         },
         {
@@ -26726,7 +26790,7 @@
           "hour": 12,
           "downtime_pct": 0.9,
           "n_active": 60,
-          "wait": 28,
+          "wait": 26,
           "recurring_down_fraction": 0.0
         },
         {
@@ -30237,7 +30301,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 73
+          "wait": 72
         },
         {
           "dow": 1,
@@ -30902,11 +30966,11 @@
         },
         {
           "hour": 10,
-          "wait": 46
+          "wait": 45
         },
         {
           "hour": 11,
-          "wait": 49
+          "wait": 48
         },
         {
           "hour": 12,
@@ -31097,7 +31161,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 48
+          "wait": 47
         },
         {
           "dow": 1,
@@ -31907,7 +31971,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 26
+          "wait": 25
         },
         {
           "dow": 1,
@@ -34023,7 +34087,7 @@
       "total_polls": 40079,
       "downtime_pct": 1.8,
       "max_wait": 50,
-      "avg_wait": 17,
+      "avg_wait": 16,
       "hourly_wait": [
         {
           "hour": 0,
@@ -34240,7 +34304,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 25
+          "wait": 24
         },
         {
           "dow": 1,
@@ -35609,7 +35673,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 27
+          "wait": 26
         },
         {
           "dow": 1,
@@ -36427,7 +36491,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 1
+          "wait": 2
         },
         {
           "dow": 1,
@@ -37853,7 +37917,7 @@
         },
         {
           "hour": 11,
-          "wait": 18
+          "wait": 17
         },
         {
           "hour": 12,
@@ -38780,7 +38844,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 540,
-          "wait": 25
+          "wait": 24
         },
         {
           "dow": 1,
@@ -39220,7 +39284,7 @@
         },
         {
           "hour": 10,
-          "wait": 51
+          "wait": 50
         },
         {
           "hour": 11,
@@ -39228,7 +39292,7 @@
         },
         {
           "hour": 12,
-          "wait": 55
+          "wait": 54
         },
         {
           "hour": 13,
@@ -39918,7 +39982,7 @@
       "hourly_wait": [
         {
           "hour": 10,
-          "wait": 23
+          "wait": 22
         },
         {
           "hour": 11,
@@ -40048,7 +40112,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 60,
-          "wait": 21
+          "wait": 20
         },
         {
           "dow": 1,
@@ -40587,7 +40651,7 @@
           "hour": 12,
           "downtime_pct": 1.1,
           "n_active": 540,
-          "wait": 65,
+          "wait": 64,
           "recurring_down_fraction": 0.0
         },
         {
@@ -41010,7 +41074,7 @@
         },
         {
           "hour": 12,
-          "wait": 67
+          "wait": 66
         },
         {
           "hour": 13,
@@ -41694,7 +41758,7 @@
       "total_polls": 27108,
       "downtime_pct": 0.6,
       "max_wait": 185,
-      "avg_wait": 71,
+      "avg_wait": 72,
       "hourly_wait": [
         {
           "hour": 7,
@@ -41710,7 +41774,7 @@
         },
         {
           "hour": 10,
-          "wait": 91
+          "wait": 92
         },
         {
           "hour": 11,
@@ -41857,7 +41921,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 540,
-          "wait": 91
+          "wait": 93
         },
         {
           "dow": 1,
@@ -46088,7 +46152,7 @@
         },
         {
           "hour": 11,
-          "wait": 20
+          "wait": 19
         },
         {
           "hour": 12,
@@ -47138,7 +47202,7 @@
       "total_polls": 33442,
       "downtime_pct": 0.3,
       "max_wait": 95,
-      "avg_wait": 28,
+      "avg_wait": 29,
       "hourly_wait": [
         {
           "hour": 0,
@@ -48858,7 +48922,7 @@
         },
         {
           "hour": 11,
-          "wait": 59
+          "wait": 58
         },
         {
           "hour": 12,
@@ -48982,7 +49046,7 @@
           "hour": 12,
           "downtime_pct": 0.0,
           "n_active": 540,
-          "wait": 61
+          "wait": 60
         },
         {
           "dow": 1,
@@ -50555,7 +50619,7 @@
           "hour": 13,
           "downtime_pct": 0.0,
           "n_active": 480,
-          "wait": 56
+          "wait": 55
         },
         {
           "dow": 1,

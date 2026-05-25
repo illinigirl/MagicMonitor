@@ -143,12 +143,13 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "--source", choices=("sqlite", "ddb"), default="sqlite",
+        "--source", choices=("sqlite", "ddb"), default="ddb",
         help=(
-            "Where to read poll history from. sqlite (default) "
-            "reads the Pi snapshot at .scratch/disney-pi-snapshot.db. "
-            "ddb reads the live DynamoDB table — required once the "
-            "Pi is retired (M6-B Phase 4)."
+            "Where to read poll history from. ddb (default) reads "
+            "the live DynamoDB table — the authoritative source "
+            "post-M6-B Phase 4. sqlite reads the Pi snapshot at "
+            ".scratch/disney-pi-snapshot.db (kept for historical "
+            "diffing while the Pi runs in parallel as a backup)."
         ),
     )
     parser.add_argument(
