@@ -227,7 +227,12 @@ export class DisneyStack extends cdk.Stack {
         // Cooldown between repeat DOWN alerts for the same ride.
         DOWN_ALERT_COOLDOWN_SECS: "900",
         // Days of status history to retain (TTL on HIST# items).
-        HISTORY_RETENTION_DAYS: "90",
+        // Bumped 90 → 1825 (5 yr) for M6-B Phase 4: the aggregator
+        // reconstructs ride downtime by walking HIST# transitions,
+        // so it needs years of history, not weeks. Backfill script
+        // (tools/backfill-pi-to-ddb.py --mode hist) stamps the same
+        // TTL on imported rows.
+        HISTORY_RETENTION_DAYS: "1825",
       },
       // No reserved concurrency — account-wide cap is 10 and
       // Watchtower already uses ~3-4 concurrent slots. The poller
