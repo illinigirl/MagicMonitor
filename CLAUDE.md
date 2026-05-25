@@ -101,37 +101,29 @@ Don't change tool docstrings in `mcp/server.py` casually — they
 are the contract Claude reads at runtime. Run the eval suite after
 any docstring change.
 
-## Debugging discipline
+## Debugging this project specifically
 
-When something is broken — test failure, prod bug, unexpected
-behavior, "this should work and it doesn't" — apply these two
-rules before proposing fixes:
+The general debugging methodology (root-cause-first, 3-fix-stop,
+Megan's push-back signals) lives in `~/.claude/CLAUDE.md` and
+applies everywhere. The project-specific addition:
 
-**1. No fixes without root cause.** Don't propose changes until
-you can state, in one sentence, *why* the bug happens. "Add a
-null check" / "wrap it in try/except" / "retry on failure" are
-symptom patches, not fixes — they're allowed only after the root
-cause is identified and only if they're the right response to it.
-For bugs that cross component boundaries (poller → DDB → web,
-or MCP → boto3 → table), add diagnostic logging at each boundary
-*first* to surface where the chain breaks, then investigate that
-specific layer. Don't guess which component is at fault.
+**Magic Monitor is a multi-component system** — bugs commonly
+cross boundaries (poller → DDB → web, MCP → boto3 → table,
+canary → live URL → SSR). When a bug doesn't reproduce locally
+or symptoms appear in one component but originate in another,
+**add diagnostic logging at each boundary FIRST** to surface
+where the chain actually breaks, then investigate that specific
+layer. Don't guess which component is at fault — there are too
+many layers for guesses to land.
 
-**2. After 3 failed fixes, stop and question the architecture.**
-If you've tried three changes and each one either didn't work or
-revealed a new problem somewhere else, that's the signal that the
-underlying pattern is wrong — not that fix #4 will be the one.
-Surface this to Megan with "I've tried X, Y, Z and each one
-exposed a new issue; I think the architecture is the problem, not
-this specific bug." Don't silently attempt fix #4.
+Concrete pattern when a web page renders wrong data:
 
-**Signals from Megan that you're doing it wrong (treat as a
-hard stop, return to root-cause investigation):**
+1. Log what the SSR query received from DDB (in `web/src/lib/dynamodb.ts`)
+2. Check what the poller most recently wrote (CloudWatch logs for the poller Lambda)
+3. Confirm the DDB table state directly (`aws dynamodb query --profile watchtower ...`)
 
-- "Is that not happening?" — you assumed without verifying
-- "Stop guessing" — you're proposing fixes without understanding
-- "We're stuck?" / frustration — your approach isn't working
-- "Are you sure?" — you claimed something you didn't verify
+This is how you'd catch a repeat of the silent `getParkRides`
+regression in minutes instead of days.
 
 ## Project conventions
 
