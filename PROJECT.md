@@ -103,6 +103,119 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-26 — M9 Phase 1 session 1: HTTPS MCP transport on AWS (v1, bearer-token)
+
+First half of the mobile-MCP arc. Ships an end-to-end HTTPS MCP
+transport on AWS so Claude mobile (and any remote MCP client) can
+eventually hit the same data plane that Claude Desktop hits via
+stdio. Session 1 lands the transport + IAM + read tools; OAuth +
+mobile config is session 2.
+
+**Duplicate-first.** The stdio MCP server (`mcp/server.py`)
+shipped 2026-05-10 + 22 tools + production traffic — is left
+bit-for-bit untouched (apart from one perf-follow-up comment).
+`mcp/server_http.py` is a verbatim copy of the v1 tool subset
+with three additions: FastMCP `stateless_http=True`, disabled
+DNS rebinding protection (API Gateway hostnames don't match the
+default allowlist), and a bearer-token starlette middleware.
+The refactor to a shared `_tool_impls.py` is later cleanup once
+the HTTPS path is validated on mobile.
+
+**v1 tool subset (read-only):**
+- `hello_magic_monitor` — sanity ping
+- `get_live_ride_status` — single-ride lookup with substring match
+- `get_park_live_status` — paginated DDB Scan + filter, sorted DOWN-first
+
+The full plan-feedback loop and analytics-snapshot-bundled tools
+are deferred to session 3+ (after OAuth lands and write-side IAM
+is added).
+
+**What shipped:**
+- `mcp/server_http.py` (new) — duplicated v1 tools + bearer-token
+  middleware. ~280 LOC.
+- `mcp/lambda_handler.py` (new) — Lambda entry, fetches bearer
+  secret from SSM at cold-start, wraps each ASGI invocation in
+  `session_manager.run()` with a `_has_started=False` reset (see
+  "Architectural notes" below).
+- `mcp/requirements.txt` — adds `mangum==0.18.0` for ASGI→Lambda
+  adapter.
+- `infra/lib/disney-mcp-stack.ts` (new) — net-new CDK stack:
+  Lambda + API Gateway HTTP API + IAM (DDB read-only on
+  `DisneyData`, SSM read on the bearer-secret param). Completely
+  separable from DisneyStack — `cdk destroy DisneyMcpStack`
+  removes everything net-new without touching the Amplify app,
+  poller, or web Cognito client.
+- `infra/bin/disney.ts` — registers the new stack alongside
+  DisneyStack.
+- `mcp/server.py` — one-liner perf-follow-up comment noting that
+  the paginated Scan in `get_park_live_status` could later move
+  to the GSI that web/ already uses (commit `4fd17bc3`,
+  2026-05-25).
+
+**Bootstrap (one-time):** SSM SecureString param
+`/disney/mcp/bearer_secret` created manually with
+`openssl rand -base64 32`. Never lands in CDK / CloudFormation /
+git — the Lambda role grants `ssm:GetParameter` on that exact
+name and the handler fetches at cold start.
+
+**Verified live (curl smoke):**
+- Auth gate: no token → 401, wrong token → 401, right token → 200
+- MCP `initialize`: returns Magic Monitor (HTTP) v1.27.1
+- `tools/list`: returns all 3 tools with full schemas
+- `tools/call hello_magic_monitor`: returns greeting
+- `tools/call get_live_ride_status ride_name=big thunder`: returns
+  live STATE row (50 min wait, last_seen ~2 min ago)
+- `tools/call get_park_live_status park=MK`: returns 35 rides
+  sorted DOWN-first
+- Four consecutive warm-invocation calls — proved the per-request
+  session-manager reset works across the same Lambda container
+
+**Zero regression on stdio path:** all 5 eval cases in
+`mcp/evals/` pass (~$0.30, ~8.6 min). Claude Desktop demo is
+unaffected.
+
+**Architectural notes (the gnarly bit, documented for future-me):**
+
+The MCP SDK's `StreamableHTTPSessionManager.run()` is designed
+for long-running servers (uvicorn-style): one lifespan startup
+opens an anyio task group that lives forever. The SDK enforces
+this with a `_has_started` flag and refuses second entry.
+
+Lambda + Mangum doesn't fit that model — Mangum invokes the
+lifespan cycle per-invocation (not once-per-cold-start). So:
+- `lifespan="off"` → task group never created → every request
+  500s on `"Task group is not initialized"`
+- `lifespan="on"` → second invocation 500s on
+  `"can only be called once per instance"`
+- Wrap-per-request with manual `session_manager.run()` → first
+  request works, second fails (same single-use guard)
+
+Fix landed in `lambda_handler.py`: Mangum `lifespan="off"` +
+wrap each request in `session_manager.run()` + reset
+`_has_started=False` after exit. Small intrusion into SDK
+internals; cleaner alternatives (moving to AWS Lambda Web
+Adapter, re-constructing FastMCP per request) were more rework
+than session 1 warranted.
+
+The full debug arc is documented in the `lambda_handler.py`
+module docstring so the next person seeing the same errors
+doesn't repeat it.
+
+**Open follow-up: Cognito vs Clerk vs Auth0 for session 2 OAuth.**
+The original session 2 estimate (6-10 hr) assumed Cognito as the
+OAuth provider + a DCR proxy in front (Cognito doesn't support
+Dynamic Client Registration natively). After looking at how
+`schuettc/mixcraft-app` handled the same problem — they use
+Clerk, which supports DCR out of the box and made their OAuth
+flow significantly simpler. Worth a 15-min decision spike before
+session 2 starts: stick with Cognito + write the DCR proxy, or
+adopt Clerk (paid, adds a 2nd auth system unless web app migrates
+too) or Auth0 (similar). Recommendation TBD — defer to a fresh
+decision moment.
+
+**Cost impact:** ~$1-2/mo (API Gateway HTTP API @ $1/M requests
++ Lambda free tier covers usage at the family scale).
+
 #### 2026-05-25 — LOW_VS_FORECAST alert: today-aware low-wait baseline
 
 Adds a second baseline on the low-wait alert path. LOW_WAIT

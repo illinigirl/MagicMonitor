@@ -879,6 +879,12 @@ def get_park_live_status(
         # on park_key + SK works and at our scale fits in one page.
         # Pagination defensively: if MM ever grows past 1MB of STATE
         # rows we'll see truncation rather than silently dropping rides.
+        #
+        # Perf follow-up: web/ switched to a GSI Query on park_key+SK
+        # on 2026-05-25 (commit 4fd17bc3) — drops per-call cost ~300×.
+        # MCP could follow the same path; not done yet because the
+        # paginated Scan is correct (the 2026-05-24 web bug was the
+        # un-paginated single-page version, not this shape).
         items: list[dict] = []
         scan_kwargs = {
             "FilterExpression": "SK = :sk AND park_key = :pk",

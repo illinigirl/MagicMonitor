@@ -11,3 +11,8 @@ boto3==1.43.6
 # where urlopen fails with CERTIFICATE_VERIFY_FAILED on a fresh
 # Python.org install. boto3 doesn't pull this in transitively.
 requests==2.32.5
+# ASGI-to-Lambda adapter for the HTTPS transport (mcp/server_http.py).
+# FastMCP's streamable_http_app() returns a Starlette ASGI app; Mangum
+# wraps it for AWS Lambda + API Gateway. Only used by the HTTPS path —
+# the stdio server (server.py) doesn't import it.
+mangum==0.18.0
