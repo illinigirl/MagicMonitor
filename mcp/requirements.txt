@@ -16,3 +16,9 @@ requests==2.32.5
 # wraps it for AWS Lambda + API Gateway. Only used by the HTTPS path —
 # the stdio server (server.py) doesn't import it.
 mangum==0.18.0
+# Cognito JWT verification for the HTTPS MCP OAuth path (jwt_verifier.py).
+# The [crypto] extra pulls in `cryptography` for RS256 signature verify.
+# Unwired in session 2A — the bearer middleware in server_http.py is
+# unchanged; this is here so unit tests can run and so session 2B can
+# import without a separate requirements bump.
+PyJWT[crypto]==2.10.1
