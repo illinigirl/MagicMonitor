@@ -2,6 +2,7 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as apigwv2_integ from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as path from "path";
@@ -35,6 +36,22 @@ const COGNITO_USER_POOL_ID = "us-east-2_ORhu761AY";
  * authorization-server metadata.
  */
 const COGNITO_DOMAIN_URL = "https://auth.megillini.dev";
+
+/**
+ * S3 bucket holding the analytics snapshot + short-wait baselines for
+ * the read-side analytics tools (session 2.5). Deterministic name
+ * (account-suffixed for global uniqueness) so the nightly aggregator
+ * GitHub Action can `aws s3 cp` to it without a CloudFormation lookup.
+ *
+ * Why S3 vs bundling into the Lambda asset: the snapshot regenerates
+ * nightly but the Lambda only redeploys on code change (and is meant
+ * to stop changing once stable). Bundling would freeze the data at the
+ * last deploy; S3 lets a Lambda cold start pick up the latest nightly
+ * regen with no redeploy. See server_http.py's `_snapshot()` docstring.
+ */
+const MCP_DATA_BUCKET_NAME = `magic-monitor-mcp-data-${DEPLOY_ENV.account}`;
+const MCP_SNAPSHOT_KEY = "analytics-snapshot.json";
+const MCP_BASELINES_KEY = "baselines.json";
 
 /**
  * Local Python bundling for the MCP Lambda. Same approach as the
@@ -156,6 +173,22 @@ export class DisneyMcpStack extends cdk.Stack {
     const allowedSubs: string =
       typeof allowedSubsRaw === "string" ? allowedSubsRaw : "";
 
+    // ─── S3: analytics data bucket ─────────────────────────────────
+    // Holds the snapshot + baselines uploaded nightly by the aggregator
+    // action. Private, SSL-enforced; the Lambda reads, the GitHub
+    // deploy role writes (it already has AdministratorAccess, so no
+    // bucket policy / grant is needed on the write side). RETAIN on
+    // stack delete so a `cdk destroy` doesn't drop the data — the
+    // nightly action repopulates it anyway, but retaining avoids a
+    // cold-start gap if the stack is ever recreated.
+    const dataBucket = new s3.Bucket(this, "McpDataBucket", {
+      bucketName: MCP_DATA_BUCKET_NAME,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
     // ─── Lambda function ────────────────────────────────────────────
     const mcpFn = new lambda.Function(this, "McpHttpFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
@@ -183,6 +216,11 @@ export class DisneyMcpStack extends cdk.Stack {
         COGNITO_REGION: this.region,
         COGNITO_DOMAIN_URL,
         MCP_ALLOWED_SUBS: allowedSubs,
+        // Analytics snapshot delivery (session 2.5). The Lambda fetches
+        // these from S3 lazily on first analytics tool call.
+        MCP_SNAPSHOT_BUCKET: MCP_DATA_BUCKET_NAME,
+        MCP_SNAPSHOT_KEY,
+        MCP_BASELINES_KEY,
         // MCP_PUBLIC_BASE_URL is added below via addEnvironment once
         // the HTTP API is constructed (chicken-and-egg: the Lambda
         // needs to know its own public URL for OAuth metadata, but
@@ -210,6 +248,11 @@ export class DisneyMcpStack extends cdk.Stack {
         ],
       }),
     );
+
+    // ─── IAM: S3 read on the analytics data bucket ─────────────────
+    // GetObject only, scoped to this one bucket. grantRead wires the
+    // bucket policy + the role permission in one call.
+    dataBucket.grantRead(mcpFn);
 
     // ─── IAM: Cognito CreateUserPoolClient (DCR proxy) ─────────────
     // Scoped to the one shared pool. Each /register call creates a
@@ -276,6 +319,11 @@ export class DisneyMcpStack extends cdk.Stack {
     new cdk.CfnOutput(this, "McpFunctionName", {
       value: mcpFn.functionName,
       description: "Lambda function name (CloudWatch Logs / aws logs tail)",
+    });
+    new cdk.CfnOutput(this, "McpDataBucketName", {
+      value: dataBucket.bucketName,
+      description:
+        "S3 bucket the nightly aggregator uploads the snapshot + baselines to",
     });
     new cdk.CfnOutput(this, "McpLogGroup", {
       value: `/aws/lambda/${mcpFn.functionName}`,

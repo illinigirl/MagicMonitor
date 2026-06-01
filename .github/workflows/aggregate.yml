@@ -86,6 +86,30 @@ jobs:
         # re-running the script.
         run: python3 tools/aggregate-analytics.py 2>&1 | tee /tmp/aggregator.log
 
+      - name: Upload snapshot + baselines to S3 (MCP analytics)
+        # The HTTPS MCP Lambda (DisneyMcpStack) reads these from S3 on
+        # cold start so the read-side analytics tools see the nightly
+        # regen without a redeploy. Always upload after a successful
+        # aggregator run (not gated on the git diff) so S3 stays
+        # authoritative even if a prior run's upload failed. The deploy
+        # role has AdministratorAccess, so PutObject needs no extra IAM.
+        # Bucket name is deterministic (account-suffixed) — see
+        # MCP_DATA_BUCKET_NAME in infra/lib/disney-mcp-stack.ts.
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          BUCKET: magic-monitor-mcp-data-601669029997
+        run: |
+          set -euo pipefail
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "dry_run=true — skipping S3 upload"
+            exit 0
+          fi
+          aws s3 cp web/src/data/analytics-snapshot.json \
+            "s3://${BUCKET}/analytics-snapshot.json"
+          aws s3 cp infra/lambda/poller/baselines.json \
+            "s3://${BUCKET}/baselines.json"
+          echo "uploaded snapshot + baselines to s3://${BUCKET}/"
+
       - name: Commit snapshot if changed
         id: commit
         env:
