@@ -4,11 +4,14 @@ Wires API Gateway HTTP API → Lambda → Mangum (ASGI adapter) → the
 Starlette ASGI app produced by FastMCP.streamable_http_app() (defined
 in server_http.py).
 
-**Init order matters.** server_http.py reads MCP_BEARER_SECRET from
-the env at module-load time. We fetch it from SSM before importing
-server_http so the auth middleware sees the live value. If we
-imported first and fetched after, every request would 503 on a
-"missing bearer secret" check until the next cold start.
+**Auth config from env vars (no secrets).** Post-2B, server_http
+reads `COGNITO_USER_POOL_ID`, `COGNITO_REGION`, `COGNITO_DOMAIN_URL`,
+`MCP_PUBLIC_BASE_URL`, and `MCP_ALLOWED_SUBS` from the Lambda env
+(set by CDK). None are secrets — pool IDs, region names, and a list
+of Cognito UUIDs are public identifiers — so there's no SSM
+bootstrap step. The earlier `_bootstrap_bearer_secret` was deleted
+when the bearer middleware was replaced with the Cognito JWT
+verifier.
 
 **Lambda-vs-MCP-SDK lifespan mismatch.** This is the gnarliest part
 of the integration; documenting in detail so the next person hitting
@@ -42,31 +45,8 @@ request (heavy) or moving off Mangum to AWS Lambda Web Adapter
 (more rework than session 1 warrants).
 """
 
-import os
-
-
-def _bootstrap_bearer_secret() -> None:
-    """Hydrate MCP_BEARER_SECRET from SSM if not already in env."""
-    if os.environ.get("MCP_BEARER_SECRET"):
-        return
-    param_name = os.environ.get("MCP_BEARER_SECRET_PARAM")
-    if not param_name:
-        # Local-dev case: no SSM param, no secret. server_http's
-        # middleware will 503 every request — that's the right
-        # behavior, prevents accidentally serving unauthenticated.
-        return
-    import boto3
-    ssm = boto3.client("ssm")
-    resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
-    os.environ["MCP_BEARER_SECRET"] = resp["Parameter"]["Value"]
-
-
-_bootstrap_bearer_secret()
-
-# Imports MUST come after the bootstrap above — server_http reads
-# the env var at module load.
-from mangum import Mangum  # noqa: E402
-from server_http import app, mcp  # noqa: E402
+from mangum import Mangum
+from server_http import app, mcp
 
 
 async def _asgi_with_per_request_session(scope, receive, send):

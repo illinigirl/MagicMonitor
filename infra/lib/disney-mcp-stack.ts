@@ -9,21 +9,6 @@ import { execSync } from "child_process";
 import * as fs from "fs";
 
 /**
- * SSM SecureString param holding the v1 bearer secret. Bootstrapped
- * manually (one-time `aws ssm put-parameter`) so the secret never
- * lives in CDK, CloudFormation, or git. To create:
- *
- *   aws ssm put-parameter --profile watchtower --region us-east-2 \
- *     --name /disney/mcp/bearer_secret \
- *     --type SecureString \
- *     --value "$(openssl rand -base64 32)"
- *
- * The Lambda's IAM role grants ssm:GetParameter on exactly this name
- * (no wildcards) and the Lambda fetches the value at cold-start init.
- */
-const MCP_BEARER_SECRET_PARAM = "/disney/mcp/bearer_secret";
-
-/**
  * DDB table name. Owned by DisneyStack — referenced here by name
  * rather than imported by ARN so this stack stays loosely coupled.
  * If DisneyStack ever renames the table, update here too.
@@ -35,6 +20,21 @@ const DDB_TABLE_NAME = "DisneyData";
  * profiles, and DNS workflows all match.
  */
 const DEPLOY_ENV = { account: "601669029997", region: "us-east-2" };
+
+/**
+ * Cognito user pool that owns Magic Monitor's auth. Owned by Watchtower
+ * stack — referenced here by ID so this stack doesn't take a cross-
+ * stack reference. The MCP Lambda's role is granted scoped
+ * CreateUserPoolClient on this exact pool ARN for the DCR proxy.
+ */
+const COGNITO_USER_POOL_ID = "us-east-2_ORhu761AY";
+
+/**
+ * Cognito hosted-UI base URL. Owned by Watchtower stack — clients hit
+ * `/oauth2/authorize` and `/oauth2/token` here directly via the OAuth
+ * authorization-server metadata.
+ */
+const COGNITO_DOMAIN_URL = "https://auth.megillini.dev";
 
 /**
  * Local Python bundling for the MCP Lambda. Same approach as the
@@ -128,15 +128,16 @@ function bundleMcpAsset(assetPath: string): lambda.AssetCode {
  *   • Rollback path is `cdk destroy DisneyMcpStack` — removes
  *     every resource this stack created and nothing else
  *
- * v1 auth: shared bearer secret in SSM SecureString, fetched by the
- * Lambda at cold-start init. NOT production-grade — just enough to
- * prove the transport + IAM wiring. Session 2 replaces this with
- * Cognito OAuth + a DCR proxy so Claude mobile's OAuth-only flow
- * can connect.
+ * Auth (2B): Cognito access-token JWTs verified per request against
+ * the user pool's JWKS, gated by an allowlist of `sub` UUIDs bound
+ * at deploy time via CDK context (`mcp_allowed_subs`). DCR proxy
+ * translates RFC 7591 /register calls into CreateUserPoolClient on
+ * the shared pool. The earlier shared-bearer-secret path was hard-
+ * replaced; no dual-auth.
  *
- * v1 IAM: DDB Read only. No write tools port over yet, so the
- * Lambda role doesn't need PutItem/UpdateItem. Hardens the blast
- * radius of any auth bug in session 1.
+ * v1 IAM: DDB Read + Cognito CreateUserPoolClient on the one pool.
+ * No DDB writes (no write tools port over yet — those land alongside
+ * scoped per-user write IAM in session 3+).
  */
 export class DisneyMcpStack extends cdk.Stack {
   public readonly apiUrl: string;
@@ -144,6 +145,16 @@ export class DisneyMcpStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, { env: DEPLOY_ENV, ...props });
+
+    // ─── Allowlist: who can call the MCP server ─────────────────────
+    // Comma-separated Cognito `sub` UUIDs, sourced from CDK context
+    // (`-c mcp_allowed_subs=...` or cdk.json's context block). The
+    // values are public identifiers (not secrets), so cdk.json is
+    // the right home. Empty/undefined → deny-all, which is the safe
+    // default if context is forgotten on a fresh deploy.
+    const allowedSubsRaw = this.node.tryGetContext("mcp_allowed_subs");
+    const allowedSubs: string =
+      typeof allowedSubsRaw === "string" ? allowedSubsRaw : "";
 
     // ─── Lambda function ────────────────────────────────────────────
     const mcpFn = new lambda.Function(this, "McpHttpFunction", {
@@ -164,9 +175,18 @@ export class DisneyMcpStack extends cdk.Stack {
       environment: {
         DISNEY_TABLE_NAME: DDB_TABLE_NAME,
         DISNEY_REGION: this.region,
-        // Parameter name (not value!) so the handler can fetch the
-        // SecureString at cold-start. Value never enters CFN.
-        MCP_BEARER_SECRET_PARAM,
+        // Cognito config for jwt_verifier + dcr_proxy. None of these
+        // are secrets — pool IDs, region names, domain URLs, and
+        // Cognito sub UUIDs are public identifiers — so they ride in
+        // plain Lambda env vars rather than SSM.
+        COGNITO_USER_POOL_ID,
+        COGNITO_REGION: this.region,
+        COGNITO_DOMAIN_URL,
+        MCP_ALLOWED_SUBS: allowedSubs,
+        // MCP_PUBLIC_BASE_URL is added below via addEnvironment once
+        // the HTTP API is constructed (chicken-and-egg: the Lambda
+        // needs to know its own public URL for OAuth metadata, but
+        // the URL only exists after the API is created).
       },
     });
 
@@ -191,16 +211,16 @@ export class DisneyMcpStack extends cdk.Stack {
       }),
     );
 
-    // ─── IAM: SSM SecureString read ────────────────────────────────
-    // Scoped to the exact parameter ARN. SecureString decrypt is
-    // granted via the AWS-managed KMS alias for SSM, so no explicit
-    // KMS permission needed (matches the Pushover-secret pattern in
-    // disney-stack.ts).
+    // ─── IAM: Cognito CreateUserPoolClient (DCR proxy) ─────────────
+    // Scoped to the one shared pool. Each /register call creates a
+    // new app client on the pool; no client is ever deleted by this
+    // role (Cognito's 1000-client limit is irrelevant at 3 users +
+    // occasional reinstalls — deferred per locked decision).
     mcpFn.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["ssm:GetParameter", "ssm:GetParameters"],
+        actions: ["cognito-idp:CreateUserPoolClient"],
         resources: [
-          `arn:aws:ssm:${this.region}:${this.account}:parameter${MCP_BEARER_SECRET_PARAM}`,
+          `arn:aws:cognito-idp:${this.region}:${this.account}:userpool/${COGNITO_USER_POOL_ID}`,
         ],
       }),
     );
@@ -244,10 +264,14 @@ export class DisneyMcpStack extends cdk.Stack {
 
     this.apiUrl = httpApi.apiEndpoint;
 
+    // Wire the public base URL back to the Lambda env so the OAuth
+    // metadata endpoints can advertise their own resource + issuer.
+    mcpFn.addEnvironment("MCP_PUBLIC_BASE_URL", httpApi.apiEndpoint);
+
     // ─── Outputs ───────────────────────────────────────────────────
     new cdk.CfnOutput(this, "McpApiUrl", {
       value: httpApi.apiEndpoint,
-      description: "Base URL for the MCP HTTPS endpoint (smoke-test with curl + bearer header)",
+      description: "Base URL for the MCP HTTPS endpoint (curl OAuth dance starts here)",
     });
     new cdk.CfnOutput(this, "McpFunctionName", {
       value: mcpFn.functionName,
@@ -257,9 +281,12 @@ export class DisneyMcpStack extends cdk.Stack {
       value: `/aws/lambda/${mcpFn.functionName}`,
       description: "CloudWatch Logs group for the MCP Lambda",
     });
-    new cdk.CfnOutput(this, "McpBearerSecretParam", {
-      value: MCP_BEARER_SECRET_PARAM,
-      description: "SSM SecureString parameter holding the v1 bearer secret",
+    new cdk.CfnOutput(this, "McpAllowedSubsCount", {
+      value: String(
+        allowedSubs.split(",").map((s) => s.trim()).filter(Boolean).length,
+      ),
+      description:
+        "How many Cognito subs are allowlisted (sanity check after deploy — should match expected user count)",
     });
   }
 }

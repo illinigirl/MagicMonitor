@@ -103,6 +103,92 @@ Each milestone ships something demo-able; even partial completion
 
 ### Done
 
+#### 2026-05-31 — M9 Phase 1 session 2B: Cognito OAuth wired + bearer removed
+
+Closes M9 Phase 1. The HTTPS MCP transport from session 1 now
+authenticates via Cognito OAuth (access tokens RS256-verified
+against the user pool's JWKS, with a hard sub allowlist on top)
+instead of the placeholder shared bearer secret. Claude Desktop's
+Custom Connector and Claude mobile both verified end-to-end
+against the live API — mobile call worked off home WiFi, which
+was the original driver for M9 Phase 1.
+
+**What shipped:**
+- `mcp/server_http.py` — hard-replaced `_BearerAuthMiddleware`
+  with `_CognitoJwtMiddleware` (verifier injectable for tests).
+  Added 3 public routes handled inside the middleware:
+  `/.well-known/oauth-protected-resource` (RFC 9728),
+  `/.well-known/oauth-authorization-server` (RFC 8414),
+  `POST /register` (RFC 7591 DCR via `dcr_proxy.register_client`).
+  OPTIONS bypass preserved.
+- `mcp/lambda_handler.py` — deleted `_bootstrap_bearer_secret`.
+  Cognito config rides plain Lambda env vars (pool ID, region,
+  domain URL, allowlist, public base URL — none are secrets).
+- `infra/lib/disney-mcp-stack.ts` — swapped SSM bearer IAM grant
+  for scoped `cognito-idp:CreateUserPoolClient` on the one user
+  pool ARN. Added 5 env vars; pulls allowlist from CDK context.
+- `infra/cdk.json` — `mcp_allowed_subs` = Megan's + Jim's
+  Cognito subs (public identifiers, fine in source).
+- `mcp/tests/test_server_http_oauth.py` (new) — 20 tests:
+  metadata route shapes, DCR happy + invalid-payload + non-JSON
+  paths, middleware bypass list (well-known + register + OPTIONS),
+  auth gate (missing/non-bearer/verifier-rejects/verifier-throws/
+  valid), exact-path matching (no misroute on POST to well-known
+  or GET to /register).
+- **SSM `/disney/mcp/bearer_secret` deleted post-deploy.** No code
+  references remain.
+- **OAuth metadata design (pragmatic DCR-proxy quirk):**
+  `issuer` in the AS metadata is our API URL, but `authorization_
+  endpoint` / `token_endpoint` point at Cognito's hosted UI.
+  Clients follow `jwks_uri` (Cognito's) for signature verification,
+  not strict issuer matching. Locked decision: keep until a
+  real-world client breaks on it.
+
+**Verified live (curl smoke):**
+- `GET /.well-known/oauth-protected-resource` → RFC 9728 shape ✓
+- `GET /.well-known/oauth-authorization-server` → RFC 8414 shape ✓
+- `POST /register` (no auth) → 201 + real Cognito client_id ✓
+- Browser `/authorize` → Google → Cognito redirect with code ✓
+- `POST /token` (PKCE) → access_token with sub = Megan's UUID ✓
+- `POST /mcp` with valid token → 200 + `tools/call
+  hello_magic_monitor` returns greeting ✓
+- `POST /mcp` no header → 401 `missing or malformed Authorization` ✓
+- `POST /mcp` bad bearer → 401 `invalid token` (generic, doesn't
+  leak which check failed) ✓
+- Allowlist count from CDK output = 2 (Megan + Jim) ✓
+
+**Verified live (Claude clients):**
+- Claude Desktop Custom Connector — added by URL, auto-discovered
+  metadata + DCR + Cognito login, all 3 tools available ✓
+- Claude mobile off home WiFi — same flow, tool call works ✓
+
+**Test status:** 70 mcp tests green (26 baseline + 20 new HTTP
+OAuth + 24 calibration/forecast). No eval re-run needed (stdio
+`server.py` unchanged).
+
+**Architectural note — Lambda env var write-after-Lambda-construct.**
+`MCP_PUBLIC_BASE_URL` (the API URL the OAuth metadata advertises
+as `resource` + `issuer`) is added via `mcpFn.addEnvironment(...)`
+*after* the HTTP API is created, since the Lambda is constructed
+before the API exists. Clean enough; alternative would be moving
+the API construction up.
+
+**No regression:** stdio `server.py` + Claude Desktop's existing
+`magic-monitor` server unaffected (different module, different
+process). The new Custom Connector "Magic Monitor (Remote)" lives
+alongside it.
+
+**Cost impact:** unchanged. No new always-on resources;
+allowlist + DCR are pure compute.
+
+**Deferred follow-ups:**
+- Cognito app-client cleanup (smoketest clients accumulate — not
+  a real risk at the 1000-client limit / 3 users).
+- DCR rate-limit on `/register` (allowlist on JWT verify is the
+  real gate).
+- HTTPS port of write tools + analytics tools + planning context
+  (session 3+ scope; needs write IAM grants).
+
 #### 2026-05-26 — M9 Phase 1 session 1: HTTPS MCP transport on AWS (v1, bearer-token)
 
 First half of the mobile-MCP arc. Ships an end-to-end HTTPS MCP
@@ -1248,20 +1334,12 @@ to DDB.
    (~10 min, manual). Gated on Disney announcing.
 6. **Blog at megillini.dev** — first post showcases Magic Monitor.
    Separate project queued at `.planning/blog/`. Not blocking.
-7. **M9 Phase 1 (mobile HTTPS MCP)** — **Deferred.** Design captured
-   in the Next section above. OAuth 2.1 with PKCE required (confirmed
-   empirically — Claude mobile UI only offers OAuth on "Add MCP
-   Server"). Real estimate is ~6-10 hr with Cognito as OAuth provider
-   + DCR proxy gap. Worth shipping properly when there's bandwidth;
-   not worth rushing.
-8. **M9 Phases 2-6 (custom web chat UI)** — deferred.
-9. **M5 (trip planning)** — personal-use polish, can slip.
+7. **M9 Phases 2-6 (custom web chat UI)** — deferred.
+8. **M5 (trip planning)** — personal-use polish, can slip.
 
-**Sequencing rationale for what's not shipped:** M6-B is now
-fully closed (Phase 3 shipped 2026-05-25 — nightly automation
-in place). Analytics is AWS-native end-to-end, regenerated
-nightly without manual intervention. The mobile gap (M9 Phase 1)
-is the next major piece but is sequenced deliberately behind
-the lighter-weight items; OAuth + DCR proxy is multi-session
-work. The Pi runs in parallel as a free backup data source
-until the user decides to retire it.
+**Sequencing rationale for what's not shipped:** M6-B is closed
+(Phase 3 shipped 2026-05-25 — nightly automation in place) and
+M9 Phase 1 closed 2026-05-31 (session 2B shipped Cognito OAuth +
+mobile verified end-to-end). Analytics is AWS-native nightly;
+mobile MCP works from anywhere. The Pi runs in parallel as a free
+backup data source until the user decides to retire it.

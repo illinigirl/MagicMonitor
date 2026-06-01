@@ -24,13 +24,16 @@ record_plan_outcome), the analytics-snapshot-bundled tools, and
 the heavyweight `get_planning_context` follow in later sessions
 once OAuth is in place and we've added write-side IAM.
 
-**Auth (session 1 only — placeholder).** This file accepts a
-single shared bearer secret via the `MCP_BEARER_SECRET` env var.
-That is intentionally NOT production-grade: it's there to prove
-the transport layer and IAM wiring before we layer Cognito
-OAuth + DCR proxy on top in session 2. The CDK stack pulls the
-secret from SSM and binds it as an env var on the Lambda; the
-secret never sits in source.
+**Auth (session 2B).** Cognito access tokens, verified per-request
+against the user pool's JWKS, gated by a hard-coded sub allowlist.
+Public OAuth discovery + Dynamic Client Registration endpoints are
+handled inside the middleware (no auth gate, by spec). See
+`jwt_verifier.py` and `dcr_proxy.py` for the verifier + DCR proxy.
+
+The earlier shared-bearer-secret middleware was hard-replaced in
+this session; no dual-auth path exists. The SSM bearer parameter
+is removed in a follow-up commit once the OAuth path is verified
+end-to-end.
 
 **Stateless.** Lambda doesn't keep state across invocations, so
 the streamable-HTTP transport must run in stateless mode — each
@@ -48,18 +51,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+import dcr_proxy
+import jwt_verifier
+
 # ─── Config / constants ─────────────────────────────────────────────
 # Mirror server.py's DDB region pin. In Lambda there's no profile —
 # boto3 uses the execution role's credentials via the default chain.
 _DDB_REGION = os.environ.get("DISNEY_REGION", "us-east-2")
 _DDB_TABLE = os.environ.get("DISNEY_TABLE_NAME", "DisneyData")
-
-# v1 auth: shared bearer secret. The CDK stack reads from SSM at
-# deploy time and binds it as an env var on the Lambda. The secret
-# itself never ships in this repo. Empty string == auth disabled
-# (used in unit tests; never in production — the CDK stack enforces
-# a non-empty value).
-_BEARER_SECRET = os.environ.get("MCP_BEARER_SECRET", "")
 
 # ─── DDB lazy table accessor ────────────────────────────────────────
 # Mirrors server.py's lazy pattern: don't pay for boto3 + session
@@ -361,30 +360,140 @@ def get_park_live_status(
     }
 
 
-# ─── Bearer-token middleware ────────────────────────────────────────
-# v1 only: a single shared bearer secret gates every request. Session
-# 2 replaces this with the Cognito OAuth verifier that the MCP SDK
-# already supports natively (FastMCP._token_verifier). The middleware
-# pattern is intentional — when we swap to OAuth, the auth gate moves
-# from this custom check to the SDK's built-in path, and this whole
-# class can be deleted.
+# ─── OAuth discovery + DCR routes ───────────────────────────────────
+# Per RFC 9728 (Protected Resource Metadata) + RFC 8414 (Authorization
+# Server Metadata) + RFC 7591 (Dynamic Client Registration). These
+# three endpoints are PUBLIC by spec — auth gate is bypassed for them
+# so a client that hasn't registered yet can discover where to go.
+#
+# Routes are handled inside the middleware rather than registered on
+# the Starlette app to avoid coordinating with FastMCP's internal
+# router. Path matching here is exact; no wildcards.
 
-class _BearerAuthMiddleware(BaseHTTPMiddleware):
+_PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource"
+_AUTHORIZATION_SERVER_PATH = "/.well-known/oauth-authorization-server"
+_REGISTER_PATH = "/register"
+
+
+def _public_base_url() -> str:
+    """The HTTPS base URL clients use to reach this server (no trailing /).
+
+    Set by CDK to the API Gateway endpoint. Falls back to empty in
+    local dev — the middleware does not require it for the auth gate,
+    only the metadata endpoints reference it.
+    """
+    return os.environ.get("MCP_PUBLIC_BASE_URL", "").rstrip("/")
+
+
+def _cognito_domain_url() -> str:
+    return os.environ.get("COGNITO_DOMAIN_URL", "").rstrip("/")
+
+
+def _cognito_jwks_url() -> str:
+    region = os.environ.get("COGNITO_REGION", "us-east-2")
+    pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
+    return f"https://cognito-idp.{region}.amazonaws.com/{pool_id}/.well-known/jwks.json"
+
+
+def _protected_resource_metadata() -> dict[str, Any]:
+    """RFC 9728 — points clients at this server's authorization server."""
+    base = _public_base_url()
+    return {
+        "resource": base,
+        "authorization_servers": [base],
+    }
+
+
+def _authorization_server_metadata() -> dict[str, Any]:
+    """RFC 8414 — the DCR-proxy quirk: `issuer` is our base URL, but
+    `authorization_endpoint`/`token_endpoint` point at Cognito's hosted
+    UI. Clients follow `jwks_uri` for verification rather than strict
+    issuer matching, so the issuer mismatch with the token's `iss`
+    claim (Cognito's URL) is tolerated by spec-compliant clients."""
+    base = _public_base_url()
+    cognito = _cognito_domain_url()
+    return {
+        "issuer": base,
+        "authorization_endpoint": f"{cognito}/oauth2/authorize",
+        "token_endpoint": f"{cognito}/oauth2/token",
+        "registration_endpoint": f"{base}{_REGISTER_PATH}",
+        "jwks_uri": _cognito_jwks_url(),
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": ["openid", "email", "profile"],
+    }
+
+
+async def _handle_register(request: Request) -> JSONResponse:
+    """POST /register — RFC 7591 DCR proxy to Cognito CreateUserPoolClient."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(
+            {
+                "error": "invalid_client_metadata",
+                "error_description": "request body must be JSON",
+            },
+            status_code=400,
+        )
+
+    user_pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
+    if not user_pool_id:
+        return JSONResponse(
+            {"error": "server not configured (missing COGNITO_USER_POOL_ID)"},
+            status_code=503,
+        )
+
+    try:
+        result = dcr_proxy.register_client(payload, user_pool_id=user_pool_id)
+    except dcr_proxy.RegistrationError as e:
+        return JSONResponse(
+            {"error": e.code, "error_description": e.description},
+            status_code=400,
+        )
+
+    return JSONResponse(result, status_code=201)
+
+
+# ─── Cognito JWT middleware ─────────────────────────────────────────
+# Replaces the v1 bearer-secret middleware. Every non-public request
+# must carry `Authorization: Bearer <access_token>` where the access
+# token is a Cognito-issued, RS256-signed JWT whose `sub` is in the
+# allowlist (enforced inside jwt_verifier.verify_token()).
+#
+# Public bypass list, in order checked:
+#   1. OPTIONS — CORS preflight
+#   2. /.well-known/oauth-protected-resource — RFC 9728 discovery
+#   3. /.well-known/oauth-authorization-server — RFC 8414 discovery
+#   4. POST /register — RFC 7591 DCR
+#
+# Everything else (FastMCP's /mcp/* routes) requires a valid token.
+
+class _CognitoJwtMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, verifier=None):
+        super().__init__(app)
+        # Injectable for tests. Production callers pass nothing and
+        # we use the env-derived verifier from jwt_verifier.
+        self._verify = verifier or jwt_verifier.verify_token
+
     async def dispatch(self, request: Request, call_next):
-        # Don't gate health / OPTIONS — API Gateway sometimes pings
-        # the root for CORS preflight or health-check probes.
-        if request.method == "OPTIONS":
+        method = request.method
+        path = request.url.path
+
+        if method == "OPTIONS":
             return await call_next(request)
 
-        if not _BEARER_SECRET:
-            # Misconfigured — refuse every request rather than serve
-            # unauthenticated. The CDK stack always sets this, so an
-            # empty secret in production means something went wrong.
-            return JSONResponse(
-                {"error": "server not configured (missing bearer secret)"},
-                status_code=503,
-            )
+        # Public OAuth discovery + DCR — handled here, no auth gate.
+        if method == "GET" and path == _PROTECTED_RESOURCE_PATH:
+            return JSONResponse(_protected_resource_metadata())
+        if method == "GET" and path == _AUTHORIZATION_SERVER_PATH:
+            return JSONResponse(_authorization_server_metadata())
+        if method == "POST" and path == _REGISTER_PATH:
+            return await _handle_register(request)
 
+        # All other paths require a valid Cognito access token.
         auth = request.headers.get("authorization", "")
         if not auth.startswith("Bearer "):
             return JSONResponse(
@@ -393,22 +502,30 @@ class _BearerAuthMiddleware(BaseHTTPMiddleware):
             )
 
         token = auth[len("Bearer "):].strip()
-        # Constant-time compare to avoid timing side-channels on the
-        # short v1 secret. secrets.compare_digest works on str.
-        import secrets as _secrets
-        if not _secrets.compare_digest(token, _BEARER_SECRET):
-            return JSONResponse({"error": "invalid bearer token"}, status_code=401)
+        try:
+            self._verify(token)
+        except jwt_verifier.VerifyError:
+            # Don't leak which check failed — verifier logs the detail
+            # server-side; client sees a generic 401.
+            return JSONResponse({"error": "invalid token"}, status_code=401)
+        except Exception:
+            # Defensive: any unexpected verify-side error (e.g., JWKS
+            # network failure) becomes a 503 so the client can retry.
+            return JSONResponse(
+                {"error": "auth verification failed"},
+                status_code=503,
+            )
 
         return await call_next(request)
 
 
 # ─── Public ASGI app ────────────────────────────────────────────────
-# Build the streamable-HTTP app and wrap it with our bearer-auth
-# middleware. The Lambda handler imports `app` and hands it to
-# Mangum; nothing else in this module is part of the public surface.
+# Build the streamable-HTTP app and wrap it with the Cognito JWT
+# middleware. The Lambda handler imports `app` and hands it to Mangum;
+# nothing else in this module is part of the public surface.
 
 app = mcp.streamable_http_app()
-app.add_middleware(_BearerAuthMiddleware)
+app.add_middleware(_CognitoJwtMiddleware)
 
 
 if __name__ == "__main__":
