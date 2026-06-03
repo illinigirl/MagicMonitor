@@ -135,6 +135,13 @@ class TestRecordPlan:
         out = server.record_plan("MK", [], planned_for_date="June 23")
         assert "Invalid planned_for_date" in out["error"]
 
+    def test_bad_park_returns_clean_error(self, stub):
+        # A malformed park name returns a clean error, not a raised
+        # exception (parity with the HTTP server's guard).
+        out = server.record_plan("Narnia", [{"ride_name": "X", "position": 1}])
+        assert out["error"] == "Invalid park"
+        assert "Narnia" in out["error_message"]
+
     def test_created_by_attribution(self, stub):
         out = server.record_plan("MK", [], created_by="jim")
         stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]

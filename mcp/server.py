@@ -1490,7 +1490,13 @@ def record_plan(
         record_plan_outcome later), user_id, planned_for_date, trip_id,
         active, expires_at_epoch, and a hint for what you should do next.
     """
-    park_key = _normalize_park(park)
+    # Validate the park up front so a bad name returns a clean error
+    # instead of raising out of the tool (the HTTP server already guards
+    # this; backported here for parity on the Desktop/stdio surface).
+    try:
+        park_key = _normalize_park(park)
+    except ValueError as e:
+        return {"error": "Invalid park", "error_message": str(e)}
     now_utc = datetime.now(timezone.utc)
     plan_ts = (context or {}).get("planned_at") or now_utc.isoformat()
 
