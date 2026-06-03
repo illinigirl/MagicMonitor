@@ -210,9 +210,17 @@ export class DisneyMcpStack extends cdk.Stack {
       // boto3 = ~1.5-2.5s, acceptable for an MCP server that
       // typically runs hot once mobile connects.
       memorySize: 512,
-      // 30s budget. Worst case is the paginated Scan in
-      // get_park_live_status: ~50ms per page × a few pages = under 1s.
-      // 30s leaves headroom for cold start + transient DDB latency.
+      // 30s — capped to match the API Gateway HTTP API integration
+      // timeout (30s default max; raising it needs a service-quota
+      // increase). A longer Lambda timeout would be moot: APIGW would
+      // 504 the client at 30s while the Lambda kept burning compute.
+      // get_planning_context (M5) is the heaviest tool — three sequential
+      // upstream HTTPS calls (themeparks.wiki showtimes + hours, Open-
+      // Meteo weather, each 10s-capped) plus per-ride DDB + a park-wide
+      // DOWN scan. Typical runtime ~2-5s; the only way to approach 30s is
+      // multiple upstreams hanging to their 10s cap at once. If that tail
+      // ever bites, parallelize those fetches (or trim per-call timeouts)
+      // rather than raising this — the APIGW ceiling is the real limit.
       timeout: cdk.Duration.seconds(30),
       tracing: lambda.Tracing.ACTIVE,
       environment: {
