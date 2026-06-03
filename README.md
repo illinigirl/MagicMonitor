@@ -120,15 +120,30 @@ RIDE#<id>       | COOLDOWN#STILL_DOWN   | 45-min follow-up alert dedup (TTL)
 RIDE#<id>       | COOLDOWN#LOW_WAIT     | 90-min low-wait alert dedup (TTL)
 USER#<sub>      | PROFILE               | name + Pushover user key
 USER#<sub>      | FAV_RIDE#<id>         | favorite (denormalized park_key)
-USER#<sub>      | PLAN#<iso_ts>         | accepted plan + outcome (24h TTL pending; 1y if recorded). Plan body carries ride_sequence (still-planned), completed_rides (rode, with actual_wait_min), dropped_rides (skipped, with reason)
+USER#<sub>      | PLAN#<iso_ts>         | accepted plan + outcome. TTL keyed to the trip day (a couple days past planned_for_date while pending; 1y once an outcome is recorded). Body carries ride_sequence (still-planned), completed_rides (rode, with actual_wait_min), dropped_rides (skipped, with reason), plus the multi-day fields planned_for_date / trip_id / active / activated_at / plan_window / created_by
+USER#<sub>      | TRIP#<trip_id>        | multi-day trip header (name, start/end date, per-day park list) — groups its PLAN# days
 PARK#<key>      | USER#<sub>            | park subscription (fanout target)
 ```
 
-No GSIs. Every access pattern resolves to a Query or GetItem on
-`PK = <prefix>#<id>` plus an SK predicate. The poller's per-park
-fanout becomes one Query per park. Per-user write paths PutItem /
-UpdateItem on a known PK. TTL handles cooldown expiry without a
-sweeper job.
+Most access patterns resolve to a Query or GetItem on
+`PK = <prefix>#<id>` plus an SK predicate — the poller's per-park
+fanout is one Query per park, per-user write paths PutItem /
+UpdateItem on a known PK, and TTL handles cooldown expiry without a
+sweeper job. Two GSIs exist, and both were added for the same reason:
+a single-table Scan that was fine at first silently broke as the table
+grew, and the fix was to Query an index instead.
+
+- **`park_key-SK-index`** (PK `park_key`, SK `SK`) — powers the web
+  reader's per-park ride list. Replaced a single-page Scan that began
+  returning `[]` once WAIT# rows pushed the table past one 1 MB Scan
+  page (a regression that silently rendered "0 attractions" for ~7
+  days before it was caught).
+- **`planned_for_date-index`** (PK `planned_for_date`, SK `SK`) — a
+  *sparse* index: only PLAN# rows carry `planned_for_date`, so it
+  indexes plans and nothing else. The poller Queries it to find today's
+  active plans. Replaced a full-table Scan whose 50-page safety cap
+  covered only ~8% of the table once it reached ~630 MB — so an
+  activated plan's row usually sat past the cap and never fired alerts.
 
 ### Per-favorite alert intersection
 
@@ -213,12 +228,12 @@ list + LL drop patterns + headliner showtimes for an arbitrary
 list of rides. Ground truth in one round trip, the LLM reasons
 over it.
 
-Three tools then close a feedback loop across sessions:
+A calibration feedback loop then closes across sessions:
 
 - `record_plan(ride_sequence, show_selections, context, ...)` —
-  eager-write at plan-acceptance time (24h TTL so unrecorded plans
-  auto-clean). Captures Claude's predicted waits + arrival times
-  alongside the plan itself.
+  eager-write at plan-acceptance time (TTL keyed to the trip day so
+  unrecorded plans auto-clean). Captures Claude's predicted waits +
+  arrival times alongside the plan itself.
 - `record_plan_outcome(plan_id, aggression_rating, timing_rating,
   per_item_feedback, ...)` — lazy-update when the user reports
   outcomes ("we ran out of time before Mansion", "Big Thunder was
@@ -258,6 +273,26 @@ this runs single-user for the family-use case (`user_id` defaults to
 arrives as the verified Cognito `sub` (see below), so writes can be
 attributed per family member.
 
+### Multi-day trip planner
+
+The same write layer backs a future-dated, shared trip planner. You
+build a trip ahead of time — `create_trip(days=[...])` mints a `TRIP#`
+header plus one **dormant** `PLAN#` per day — and those days sit silent
+until you arrive. On a trip day you pull the plan up
+(`get_plan_for_day`), Claude re-evaluates it against live conditions
+(`get_planning_context` — what's DOWN now, today's real forecast +
+hours), and once you accept, `activate_plan` flips it ACTIVE — which is
+what turns on that day's plan-disruption alerts. A dormant plan fires
+nothing; activation is the gate, and it deliberately happens *after*
+the live re-evaluation, not before. `record_plan` with a
+`planned_for_date` builds a single future day the same way, and
+`get_upcoming_trip` surfaces a trip in progress at session start.
+Mid-day, `mark_ride_complete` / `remove_ride_from_plan` /
+`add_ride_to_plan` keep the active plan honest so monitoring tracks
+what's actually left. The trip space is shared across the family (one
+`USER#megan` partition); each write is stamped with `created_by` from
+the verified login — never a client-supplied id.
+
 ### HTTPS MCP transport: OAuth on a remote data plane
 
 The stdio MCP server only reaches clients that can launch a local
@@ -285,16 +320,21 @@ Cognito OAuth end to end:
   across invocations, so the streamable-HTTP transport runs in
   stateless mode — each request is self-contained.
 
-The Lambda is read-only on DynamoDB and pulls the 1.2 MB analytics
-snapshot from **S3 on cold start** (rather than bundling it into the
-deploy artifact) so the nightly regeneration reaches it without a
-redeploy — data freshness decoupled from code-deploy cadence.
+The Lambda reads across DynamoDB but has *scoped* write access —
+`Put`/`Update`/`Delete` constrained by an IAM `LeadingKeys` condition
+to the `USER#*` / `PARK#*` partitions (plans, trips, subscriptions),
+mirroring the web SSR role — so the trip-planner write tools persist
+plans without being able to touch ride-state rows. It pulls the 1.2 MB
+analytics snapshot from **S3 on cold start** (rather than bundling it
+into the deploy artifact) so the nightly regeneration reaches it
+without a redeploy — data freshness decoupled from code-deploy cadence.
 
 ### Plan-aware alerts on two axes
 
 The "system noticed something that invalidates your plan" loop fires
 along two independent axes, both reading from the same active-plan
-scan the poller runs at the top of every invocation.
+lookup the poller runs at the top of every invocation (a Query against
+the `planned_for_date-index` GSI — formerly a full-table Scan).
 
 **Axis 1 — per-ride disruption.** When a ride in TODAY's plan
 transitions DOWN or BACK UP, every user with that ride in an active
@@ -312,7 +352,7 @@ prevents re-firing while the storm stays in the window; a distinct
 second storm window later in the day can re-alert.
 
 ```python
-# index.py — one scan yields both views, both fanouts dedup per user
+# index.py — one GSI query yields both views, both fanouts dedup per user
 plan_ride_index, active_plans = db.build_active_plan_ride_index(today)
 # Axis 1: ride goes DOWN → look up plan targets by ride identifier
 plan_targets = db.lookup_plan_targets(plan_ride_index, ride_id, name)
@@ -446,14 +486,6 @@ deploy hygiene, common debug commands, and known follow-ups.
 Captured in [`PROJECT.md` → Roadmap](PROJECT.md) and
 [`RUNBOOK.md` → Known follow-ups](RUNBOOK.md#known-follow-ups-low-priority):
 
-- **Trip planning (M5) — in progress** — multi-day, shared,
-  future-dated trip planning over the MCP layer: build a trip ahead
-  of time (a park + ride list per day), then on each day pull it up,
-  re-evaluate against live conditions, and activate it (which is what
-  turns on that day's plan-disruption alerts). The write tools are
-  built across both MCP transports; the live re-evaluation engine
-  (`get_planning_context` over HTTPS) and the poller activation gate
-  are the remaining pieces.
 - **Per-type alert toggles on `/me`** — currently every alert
   recipient gets DOWN, BACK UP, STILL DOWN, and LOW WAIT.
   PROJECT.md M7+ has the natural opt-in shape.
@@ -463,8 +495,11 @@ Captured in [`PROJECT.md` → Roadmap](PROJECT.md) and
   shared tool layer via Anthropic API tool-use with prompt caching and
   per-user token budgets.
 
-Recently shipped: **M6-B** (analytics now regenerate nightly from
-DynamoDB rather than a frozen Pi snapshot) and **M9 Phase 1** (the
+Recently shipped: **M5** (the multi-day shared trip planner above —
+build → activate → re-evaluate, live across both MCP transports with
+the poller activation gate and a sparse GSI backing active-plan
+lookup), **M6-B** (analytics now regenerate nightly from DynamoDB
+rather than a frozen Pi snapshot), and **M9 Phase 1** (the
 [HTTPS MCP transport with Cognito OAuth](#https-mcp-transport-oauth-on-a-remote-data-plane),
 live on Claude mobile + the Desktop Custom Connector).
 
