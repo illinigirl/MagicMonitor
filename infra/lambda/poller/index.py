@@ -183,8 +183,11 @@ def handler(event, context):
     total_changes = 0
     total_alerts = 0
 
-    today_local_iso = datetime.now(_EASTERN).date().isoformat()
-    plan_ride_index, active_plans = db.build_active_plan_ride_index(today_local_iso)
+    now_et = datetime.now(_EASTERN)
+    today_local_iso = now_et.date().isoformat()
+    plan_ride_index, active_plans = db.build_active_plan_ride_index(
+        today_local_iso, now_et=now_et
+    )
     if plan_ride_index:
         print(
             f"[poller] Active plans for {today_local_iso}: "

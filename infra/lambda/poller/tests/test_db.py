@@ -13,6 +13,8 @@ What we're verifying:
     the ride-index view from a single scan (the 2026-05-12 refactor)
 """
 
+from datetime import datetime, timedelta, timezone
+
 import db
 
 
@@ -219,3 +221,82 @@ class TestLowWaitCooldown:
     def test_set_after_mark(self):
         db.mark_low_wait_alert_sent("ride-123")
         assert db.is_low_wait_alert_on_cooldown("ride-123") is True
+
+
+# ── M5 activation + plan-window gating in build_active_plan_ride_index ──
+
+class TestActivePlanGating:
+    """The activation + plan-window gates. The stub scan returns all
+    items without parsing the FilterExpression, so these fixtures use
+    only USER#/PLAN# rows and rely on the in-Python guards (which mirror
+    the DDB FilterExpression) for the active/window behavior."""
+
+    def setup_method(self):
+        self.stub = _StubTable()
+        _swap_in_stub(self.stub)
+
+    def _put_plan(self, plan_id, *, active=None, plan_window=None,
+                  ride_id="r1", ride_name="Space Mountain", pfd="2026-06-23"):
+        item = {
+            "PK": "USER#megan",
+            "SK": f"PLAN#{plan_id}",
+            "planned_for_date": pfd,
+            "outcome_recorded": False,
+            "park_key": "magic_kingdom",
+            "ride_sequence": [{"ride_id": ride_id, "ride_name": ride_name}],
+        }
+        if active is not None:
+            item["active"] = active
+        if plan_window is not None:
+            item["plan_window"] = plan_window
+        self.stub.put_item(item)
+
+    def test_active_plan_included(self):
+        self._put_plan("p1", active=True)
+        index, active_plans = db.build_active_plan_ride_index("2026-06-23")
+        assert ("megan", "p1") in index.get("r1", [])
+        assert any(p["plan_id"] == "p1" for p in active_plans)
+
+    def test_dormant_plan_excluded(self):
+        self._put_plan("p1", active=False)
+        index, active_plans = db.build_active_plan_ride_index("2026-06-23")
+        assert index == {}
+        assert active_plans == []
+
+    def test_legacy_plan_without_active_field_included(self):
+        # Rows predating the `active` field still fire (back-compat).
+        self._put_plan("p1", active=None)
+        index, _ = db.build_active_plan_ride_index("2026-06-23")
+        assert ("megan", "p1") in index.get("r1", [])
+
+    def test_window_containing_now_included(self):
+        now = datetime(2026, 6, 23, 14, 0, tzinfo=timezone(timedelta(hours=-4)))
+        self._put_plan("p1", active=True, plan_window={
+            "open": "2026-06-23T10:00:00-04:00",
+            "close": "2026-06-23T22:00:00-04:00",
+        })
+        index, _ = db.build_active_plan_ride_index("2026-06-23", now_et=now)
+        assert ("megan", "p1") in index.get("r1", [])
+
+    def test_window_before_open_excluded(self):
+        now = datetime(2026, 6, 23, 8, 0, tzinfo=timezone(timedelta(hours=-4)))
+        self._put_plan("p1", active=True, plan_window={
+            "open": "2026-06-23T10:00:00-04:00",
+            "close": "2026-06-23T22:00:00-04:00",
+        })
+        index, active_plans = db.build_active_plan_ride_index("2026-06-23", now_et=now)
+        assert index == {}
+        assert active_plans == []
+
+    def test_no_window_always_included(self):
+        now = datetime(2026, 6, 23, 3, 0, tzinfo=timezone(timedelta(hours=-4)))
+        self._put_plan("p1", active=True)  # no plan_window
+        index, _ = db.build_active_plan_ride_index("2026-06-23", now_et=now)
+        assert ("megan", "p1") in index.get("r1", [])
+
+    def test_window_fail_open_on_unparseable(self):
+        now = datetime(2026, 6, 23, 14, 0, tzinfo=timezone(timedelta(hours=-4)))
+        self._put_plan("p1", active=True,
+                       plan_window={"open": "morning", "close": "night"})
+        index, _ = db.build_active_plan_ride_index("2026-06-23", now_et=now)
+        assert ("megan", "p1") in index.get("r1", [])  # fail-open

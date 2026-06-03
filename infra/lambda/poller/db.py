@@ -365,7 +365,41 @@ def get_user_favorites_for_park(user_id: str, park_key: str) -> set[str]:
 # `(planned_for_date, outcome_recorded)` so we don't scan inactive
 # plans + historical USER#* / RIDE#* partitions to find a few rows.
 
-def build_active_plan_ride_index(today_date_iso: str) -> tuple[dict, list[dict]]:
+def _plan_window_contains(plan_window, now_et) -> bool:
+    """True if `now_et` is inside the plan's [open, close] window.
+
+    Fail-open: returns True when there's no usable window (missing field,
+    unparseable times) — a slightly-early disruption alert is far better
+    than silently suppressing one. `plan_window` open/close are concrete
+    ISO datetimes resolved at activation (from get_planning_context's park
+    hours), normally tz-aware, comparing cleanly against the tz-aware
+    now_et.
+    """
+    if not isinstance(plan_window, dict):
+        return True
+    open_s, close_s = plan_window.get("open"), plan_window.get("close")
+    if not open_s or not close_s:
+        return True
+    try:
+        open_dt = datetime.fromisoformat(open_s)
+        close_dt = datetime.fromisoformat(close_s)
+    except (ValueError, TypeError):
+        return True
+    cmp = now_et
+    # Reconcile naive/aware so the comparison can't raise.
+    if open_dt.tzinfo is None and now_et.tzinfo is not None:
+        cmp = now_et.replace(tzinfo=None)
+    elif open_dt.tzinfo is not None and now_et.tzinfo is None:
+        return True  # can't compare reliably → fail open
+    try:
+        return open_dt <= cmp <= close_dt
+    except TypeError:
+        return True
+
+
+def build_active_plan_ride_index(
+    today_date_iso: str, now_et=None
+) -> tuple[dict, list[dict]]:
     """Scan today's active (outcome_recorded=false) plans and return two
     derived views from a single scan:
 
@@ -398,11 +432,19 @@ def build_active_plan_ride_index(today_date_iso: str) -> tuple[dict, list[dict]]
         kwargs = {
             "FilterExpression": (
                 "planned_for_date = :d AND outcome_recorded = :false "
-                "AND begins_with(SK, :plan_prefix) AND begins_with(PK, :user_prefix)"
+                "AND begins_with(SK, :plan_prefix) AND begins_with(PK, :user_prefix) "
+                # Activation gate (M5): a future trip day is written DORMANT
+                # (active=false) and fires no alerts until activate_plan flips
+                # it on its day. Legacy rows predate the field, so missing
+                # `active` counts as active (back-compat). `#active` aliased
+                # to dodge any reserved-word risk.
+                "AND (attribute_not_exists(#active) OR #active = :true)"
             ),
+            "ExpressionAttributeNames": {"#active": "active"},
             "ExpressionAttributeValues": {
                 ":d": today_date_iso,
                 ":false": False,
+                ":true": True,
                 ":plan_prefix": "PLAN#",
                 ":user_prefix": "USER#",
             },
@@ -420,6 +462,17 @@ def build_active_plan_ride_index(today_date_iso: str) -> tuple[dict, list[dict]]
             user_id = item.get("PK", "").removeprefix("USER#")
             plan_id = item.get("SK", "").removeprefix("PLAN#")
             if not user_id or not plan_id:
+                continue
+            # Activation + window gates (M5), enforced in Python too so the
+            # stub-table tests (which don't parse FilterExpression) cover
+            # them. active=False → dormant, no alerts until activated.
+            # Outside the plan's window → skip (fail-open if no/unparseable
+            # window). Missing `active` (legacy rows) counts as active.
+            if item.get("active") is False:
+                continue
+            if now_et is not None and not _plan_window_contains(
+                item.get("plan_window"), now_et
+            ):
                 continue
             active_plans.append({
                 "user_id":   user_id,
