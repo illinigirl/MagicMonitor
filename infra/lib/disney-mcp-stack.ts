@@ -23,15 +23,15 @@ const DDB_TABLE_NAME = "DisneyData";
 const DEPLOY_ENV = { account: "601669029997", region: "us-east-2" };
 
 /**
- * Cognito user pool that owns Magic Monitor's auth. Owned by Watchtower
- * stack — referenced here by ID so this stack doesn't take a cross-
+ * Cognito user pool that owns Magic Monitor's auth. Pre-existing (from
+ * an earlier project) — referenced here by ID so this stack doesn't take a cross-
  * stack reference. The MCP Lambda's role is granted scoped
  * CreateUserPoolClient on this exact pool ARN for the DCR proxy.
  */
 const COGNITO_USER_POOL_ID = "us-east-2_ORhu761AY";
 
 /**
- * Cognito hosted-UI base URL. Owned by Watchtower stack — clients hit
+ * Cognito hosted-UI base URL. Owned by an earlier project — clients hit
  * `/oauth2/authorize` and `/oauth2/token` here directly via the OAuth
  * authorization-server metadata.
  */

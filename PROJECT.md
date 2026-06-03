@@ -1,8 +1,8 @@
 # Magic Monitor
 
-A serverless live-status dashboard for Walt Disney World, built as a
-sibling project to Watchtower (shared visual lineage + Cognito user
-pool).
+A serverless live-status dashboard for Walt Disney World. Built on AWS,
+reusing a pre-existing Cognito user pool (imported by ID) and some
+visual + tooling patterns from an earlier project.
 
 Live at: `magicmonitor.megillini.dev` (after M2-B deploy)
 
@@ -32,17 +32,17 @@ working product.
 
 | Layer | Choice | One-line rationale |
 |---|---|---|
-| Compute | AWS Lambda (Python 3.12) | Cheap at low traffic; matches Watchtower's tier |
+| Compute | AWS Lambda (Python 3.12) | Cheap at low traffic; matches the earlier project's tier |
 | Schedule | EventBridge | Native AWS cron, no separate service needed |
 | Storage | DynamoDB single-table | Serverless, free at this scale, fits the project's narrow access patterns |
 | Notifications | Pushover (HTTPS API from Lambda) | Family already uses it; ~$0/mo recurring |
 | Frontend | Next.js 16 + Tailwind 4 + React 19 | Modern SSR stack; Server Components let us read DynamoDB directly without a separate API tier |
-| Type stack | Fraunces + Inter + JetBrains Mono | Mirrors Watchtower; shared visual lineage |
+| Type stack | Fraunces + Inter + JetBrains Mono | Mirrors an earlier project; shared visual lineage |
 | Color palette | Castle: deep navy + pink + gold (OKLCH) | Disney-feeling without using any actual Disney TM |
-| Auth | Amazon Cognito + Google federation | Reuses Watchtower's user pool via second app client (no new Google OAuth setup) |
+| Auth | Amazon Cognito + Google federation | Reuses the earlier project's user pool via second app client (no new Google OAuth setup) |
 | Read API | None — Server Components query DynamoDB directly | Read path is render-on-navigation; APIGW + FastAPI would add a hop with no benefit at this scale |
 | Write API (M3+) | Next.js Route Handlers in same app | Small data plane (toggles, favorites) — TS end-to-end, NextAuth session in-handler, one fewer Lambda than the FastAPI approach |
-| IaC | AWS CDK (TypeScript) | Reuses Watchtower's Python Lambda bundling helper for the poller |
+| IaC | AWS CDK (TypeScript) | Reuses the earlier project's Python Lambda bundling helper for the poller |
 | Hosting | AWS Amplify | SSR Next.js with custom domain; SSR compute role gets scoped DynamoDB access |
 | Observability | CloudWatch + X-Ray | Native AWS, native to Lambda + Amplify |
 
@@ -76,9 +76,9 @@ working product.
 - **Time**: 5-10 hours/week, no fixed deadline.
 - **Quality bar**: stands on its own as a working product — TLS,
   custom domain, Google sign-in, deploy hygiene, README with cost
-  breakdown and architecture diagram. Shares visual lineage and the
-  Cognito user pool with Watchtower so they reinforce each other if
-  both ship, but Magic Monitor must be usable independently.
+  breakdown and architecture diagram. Reuses a Cognito user pool (and
+  some visual patterns) from an earlier project, but Magic Monitor is
+  fully usable independently.
 
 ## Definition of done
 
@@ -92,7 +92,7 @@ Magic Monitor is "done" enough to put on a resume when:
    park hours so no closing-time noise.
 4. README with architecture diagram, deploy steps, cost breakdown,
    and screenshots.
-5. CI/CD via GitHub Actions, mirroring Watchtower's setup.
+5. CI/CD via GitHub Actions, mirroring the earlier project's setup.
 6. At least 30 days of polling history visible in DynamoDB so the
    M6 analytics page has real data to render.
 
@@ -843,7 +843,7 @@ awareness for after-hours parties.
   rights.
 - **`docs/aws-setup-brief.md`** — self-contained briefing document
   for spinning up sibling projects under the same AWS account.
-  Covers identity/auth, sibling project context (Watchtower, MM),
+  Covers identity/auth, multi-project AWS-account context,
   reuse-vs-fresh decisions, the five M2-B lessons, CDK conventions,
   Python 3.12 default rationale, Megan's working preferences. Drop-in
   prompt for fresh agents on new projects.
@@ -1006,7 +1006,7 @@ Single-day wave that landed the most demo-visible web features:
 - Fail-open if schedule API breaks (better noise than missed alerts)
 
 #### M2-A — Public web dashboard (✅ local 2026-05-04)
-- Next.js 16 + Tailwind 4 + React 19 scaffold, mirrors Watchtower
+- Next.js 16 + Tailwind 4 + React 19 scaffold, mirrors an earlier project
 - Castle palette (deep navy / castle pink / castle gold) in OKLCH
 - Landing page with park selector cards, each showing live status
 - Per-park page with Down rides surfaced first, then Open, then Closed

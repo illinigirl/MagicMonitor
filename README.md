@@ -36,10 +36,10 @@ downtime rankings drawn from millions of historical poll rows.
 | Storage | DynamoDB single table (`DisneyData`) | Serverless, free at this scale, schema documented in CDK |
 | Read API | None — Next.js Server Components query DynamoDB directly | One fewer hop. Render-on-navigation is the right default for cheap reads |
 | Write API | Next.js Route Handlers under `/api/me/*` | Same Amplify Lambda, scoped IAM grants on USER#/PARK# partitions |
-| Auth | Amazon Cognito + Google IdP | Sibling Watchtower stack owns the pool; MM imports it via a second app client |
+| Auth | Amazon Cognito + Google IdP | Imports a pre-existing Cognito user pool by ID; MM adds its own app client |
 | Notifications | Pushover HTTPS API | Family already uses it; ~$0/mo recurring |
 | Agentic / MCP | stdio MCP (Claude Desktop) + HTTPS MCP (API Gateway → Lambda, FastMCP + Mangum) | Same tool surface over two transports; remote one lets Claude mobile hit the live data plane |
-| MCP auth | Cognito OAuth (access-token JWT, JWKS verify) + custom RFC 7591 DCR proxy + sub allowlist | Standards-based remote-MCP auth without standing secrets; reuses the shared pool |
+| MCP auth | Cognito OAuth (access-token JWT, JWKS verify) + custom RFC 7591 DCR proxy + sub allowlist | Standards-based remote-MCP auth without standing secrets; reuses the same imported pool |
 | Analytics delivery | Nightly GitHub Action regenerates the snapshot from DDB → commits (web) + uploads to S3 (MCP Lambda) | Data refresh decoupled from code deploys; Lambda fetches fresh on cold start |
 | Frontend | Next.js 16 + Tailwind 4 + React 19 (Turbopack) | Modern SSR; Server Components let us drop the API tier |
 | IaC | AWS CDK (TypeScript) | One stack, custom domain, GitHub OIDC role, Cognito client, Amplify app |
@@ -55,7 +55,7 @@ flowchart TD
     CF --> SSR[Amplify SSR Lambda<br/>Node 22, us-east-2]
     SSR -.->|reads| DDB[(DynamoDB<br/>DisneyData<br/>single table)]
     SSR -.->|fetches| TPW[themeparks.wiki]
-    Cog[Cognito User Pool<br/>shared with Watchtower] -.->|OAuth via Cognito hosted UI| SSR
+    Cog[Cognito User Pool<br/>imported by ID] -.->|OAuth via Cognito hosted UI| SSR
 
     EB[EventBridge ⏰<br/>every 2 min] --> Poll[Poller Lambda<br/>Python 3.12]
     Poll -->|fetches| TPW
@@ -375,7 +375,7 @@ at our scale. RUNBOOK Lesson 3 has the long form.
 | EventBridge | $0 |
 | Amplify Hosting (SSR + bandwidth at family traffic) | <$0.20 |
 | CloudFront / data transfer | <$0.05 |
-| Cognito (sibling Watchtower stack) | $0 |
+| Cognito (imported pool, own app client) | $0 |
 | Pushover | $5 one-time (already paid) |
 | **Total recurring** | **~$0.30/mo** |
 

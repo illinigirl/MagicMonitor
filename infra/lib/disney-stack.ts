@@ -15,7 +15,7 @@ import * as fs from "fs";
 
 /** SSM parameter names for the Pushover credentials. Bootstrapped manually
  * (one-time `aws ssm put-parameter`) so secrets never live in CDK,
- * CloudFormation, or git. Same hygiene pattern as Watchtower's TMDB key. */
+ * CloudFormation, or git. Same hygiene pattern as the earlier project's TMDB key. */
 const PUSHOVER_APP_TOKEN_PARAM = "/disney/pushover/app_token";
 const PUSHOVER_USER_KEY_PARAM = "/disney/pushover/megan_user_key";
 
@@ -39,13 +39,13 @@ const APP_DOMAIN = "magicmonitor.megillini.dev";
 // via CloudFront, which is global/us-east-1 for cert lookup). Rather
 // than maintain a us-east-1 cert ourselves and pass it via the L2
 // `customCertificate` prop, we let `addDomain` auto-issue and manage
-// its own cert — same approach Watchtower uses. The trade-off is a
+// its own cert — same approach an earlier project uses. The trade-off is a
 // second validation CNAME at Cloudflare (Amplify emits it at deploy
 // time and the deploy stalls until the cert validates), in exchange
 // for one less moving part in our IaC.
 
 /** Secrets Manager name for the GitHub PAT used by Amplify to pull
- * source from illinigirl/MagicMonitor. Separate from Watchtower's PAT
+ * source from illinigirl/MagicMonitor. Separate from the earlier project's PAT
  * secret so rotating one doesn't impact the other. */
 const GITHUB_TOKEN_SECRET = "/magicmonitor/github-token";
 
@@ -56,23 +56,23 @@ const GITHUB_TOKEN_SECRET = "/magicmonitor/github-token";
 const NEXTAUTH_SECRET_NAME = "/magicmonitor/nextauth-secret";
 
 /** Cognito user pool that owns Magic Monitor's auth. Owned by
- * Watchtower stack — imported here read-only as `IUserPool`. The pool
+ * an earlier project — imported here read-only as `IUserPool`. The pool
  * also owns the Google IdP and the `auth.megillini.dev` custom hosted-UI
  * domain, both of which Magic Monitor reuses verbatim. Cross-stack
- * coupling: if Watchtower destroys this pool, MM auth breaks too. */
-const WATCHTOWER_USER_POOL_ID = "us-east-2_ORhu761AY";
+ * coupling: if an earlier project destroys this pool, MM auth breaks too. */
+const IMPORTED_USER_POOL_ID = "us-east-2_ORhu761AY";
 
-/** Cognito hosted-UI base URL — owned by Watchtower stack at
+/** Cognito hosted-UI base URL — owned by an earlier project at
  * auth.megillini.dev. Reused as-is so MM doesn't need its own auth
  * subdomain or its own us-east-1 cert (Cognito custom domains require
- * us-east-1 certs regardless of pool region; Watchtower already paid
+ * us-east-1 certs regardless of pool region; an earlier project already paid
  * that cost). The Google OAuth callback configured in Google Cloud
  * Console points at https://auth.megillini.dev/oauth2/idpresponse,
  * which works for any app client on the pool — no Google Cloud
  * changes needed for MM. */
 const COGNITO_DOMAIN_URL = "https://auth.megillini.dev";
 
-/** GitHub OIDC provider ARN (pre-existing — Watchtower stack created it).
+/** GitHub OIDC provider ARN (pre-existing — an earlier project created it).
  * AWS only allows one provider per token URL per account, so MM imports
  * the existing one rather than creating a new one. */
 const GITHUB_OIDC_PROVIDER_ARN =
@@ -85,7 +85,7 @@ const GITHUB_REPO = "MagicMonitor";
 
 /**
  * Local Python bundling for the poller Lambda. Same approach as
- * Watchtower — uses host python3 to install deps with manylinux wheels,
+ * an earlier project — uses host python3 to install deps with manylinux wheels,
  * falls back to Docker if python3 isn't available. Cross-compiles from
  * macOS to Lambda's Linux x86_64 by forcing the platform/wheel flags.
  */
@@ -266,7 +266,7 @@ export class DisneyStack extends cdk.Stack {
         HISTORY_RETENTION_DAYS: "1825",
       },
       // No reserved concurrency — account-wide cap is 10 and
-      // Watchtower already uses ~3-4 concurrent slots. The poller
+      // an earlier project already uses ~3-4 concurrent slots. The poller
       // runs alone every 2 min so concurrency is effectively 1.
     });
 
@@ -332,34 +332,34 @@ export class DisneyStack extends cdk.Stack {
     //   DynamoDB DataTable (RIDE#*/STATE rows)
     //
     //   Auth: NextAuth → Cognito hosted UI (auth.megillini.dev, owned
-    //   by Watchtower stack) → Google. MM has its own app client on
+    //   by an earlier project) → Google. MM has its own app client on
     //   the shared user pool. M3 will grow this Lambda's role to
     //   include scoped writes for per-user toggles + favorites.
     // ═════════════════════════════════════════════════════════════════
 
-    // ─── Cognito: 2nd app client on Watchtower's existing user pool ──
+    // ─── Cognito: 2nd app client on the earlier project's existing user pool ──
     // Imported (read-only handle). The pool itself, the Google IdP,
-    // and the auth.megillini.dev custom domain are all owned by the
-    // Watchtower stack — Magic Monitor's only Cognito-side resource
+    // and the auth.megillini.dev custom domain were all created in
+    // an earlier project — Magic Monitor's only Cognito-side resource
     // is this app client.
     const userPool = cognito.UserPool.fromUserPoolId(
       this,
       "ImportedUserPool",
-      WATCHTOWER_USER_POOL_ID,
+      IMPORTED_USER_POOL_ID,
     );
 
     // GOOGLE here is a static string-name reference ("Google") that
     // resolves at runtime against the IdP attached to the imported
     // pool. We can't add a CDK dependency edge across stacks, so the
-    // contract is "Watchtower owns the Google IdP, MM consumes it."
-    // If the Watchtower IdP is ever removed, MM sign-ins break too.
+    // contract is "an earlier project owns the Google IdP, MM consumes it."
+    // If that earlier project's IdP is ever removed, MM sign-ins break too.
     const userPoolClient = new cognito.UserPoolClient(this, "UserPoolClient", {
       userPool,
       userPoolClientName: "magicmonitor-web",
       // PKCE is conceptually sufficient, but NextAuth v5's Cognito
       // provider validation requires a clientSecret in its config —
       // the secret stays server-side in the SSR Lambda env and never
-      // reaches the browser. Same constraint Watchtower hit.
+      // reaches the browser. Same constraint an earlier project hit.
       generateSecret: true,
       supportedIdentityProviders: [
         cognito.UserPoolClientIdentityProvider.GOOGLE,
@@ -388,10 +388,10 @@ export class DisneyStack extends cdk.Stack {
       preventUserExistenceErrors: true,
     });
 
-    const cognitoIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${WATCHTOWER_USER_POOL_ID}`;
+    const cognitoIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${IMPORTED_USER_POOL_ID}`;
 
     // ─── Amplify app ─────────────────────────────────────────────────
-    // Same monorepo build pattern as Watchtower (pnpm + .env.production
+    // Same monorepo build pattern as an earlier project (pnpm + .env.production
     // materialization). The L2 alpha sets the legacy `OauthToken` field
     // for GitHub PATs; we override to `AccessToken` (the modern field)
     // via the L1 escape hatch below.
@@ -507,7 +507,7 @@ export class DisneyStack extends cdk.Stack {
 
     // Escape hatch: swap OauthToken (legacy field set by alpha module)
     // for AccessToken (modern field that fine-grained PATs need).
-    // Same workaround Watchtower uses.
+    // Same workaround an earlier project uses.
     const cfnApp = webApp.node.defaultChild as cdk.CfnResource;
     cfnApp.addPropertyOverride(
       "AccessToken",
@@ -532,7 +532,7 @@ export class DisneyStack extends cdk.Stack {
     // `aws iam update-assume-role-policy`.
     //
     // Override the role's trust policy to the minimal "amplify can
-    // assume" form (matching Watchtower's working role). Future alpha
+    // assume" form (matching the earlier project's working role). Future alpha
     // upgrades that re-add conditions will get overwritten on every
     // deploy.
     // The L2 alpha doesn't expose the auto-created service role via a
@@ -636,7 +636,7 @@ export class DisneyStack extends cdk.Stack {
 
     // CloudWatch Logs permissions for the SSR compute role. Newer
     // alpha versions of @aws-cdk/aws-amplify-alpha don't auto-attach
-    // these (Watchtower's deploy at v2.251.0 picked up an
+    // these (the earlier project's deploy at v2.251.0 picked up an
     // `AmplifyComputeLogs` policy automatically; MM's identical-version
     // deploy did NOT — likely an upstream change in how the L2 wires
     // default policies when the user adds their own). Without these,
@@ -666,7 +666,7 @@ export class DisneyStack extends cdk.Stack {
     });
 
     // ─── GitHub Actions OIDC role ────────────────────────────────────
-    // Imports the existing OIDC provider (created by Watchtower stack —
+    // Imports the existing OIDC provider (created by an earlier project —
     // AWS only allows one provider per token URL per account). The
     // role itself is MM-specific and trust-policy-scoped to pushes/PRs
     // on illinigirl/MagicMonitor only.
@@ -724,7 +724,7 @@ export class DisneyStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, "CognitoClientId", {
       value: userPoolClient.userPoolClientId,
-      description: "Magic Monitor's Cognito app client (separate from Watchtower's)",
+      description: "Magic Monitor's Cognito app client (separate from the earlier project's)",
     });
     new cdk.CfnOutput(this, "CognitoIssuer", {
       value: cognitoIssuer,
@@ -732,7 +732,7 @@ export class DisneyStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, "CognitoDomainUrl", {
       value: COGNITO_DOMAIN_URL,
-      description: "Cognito hosted-UI base URL (shared with Watchtower)",
+      description: "Cognito hosted-UI base URL (shared with an earlier project)",
     });
     new cdk.CfnOutput(this, "GithubDeployRoleArn", {
       value: deployRole.roleArn,

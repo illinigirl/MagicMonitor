@@ -4,7 +4,7 @@ Operational reference for Magic Monitor. Read this when:
 - Picking the project up after a break
 - Debugging a deployment failure
 - Onboarding another engineer or AI agent
-- Comparing this project's architecture against Watchtower's
+- Comparing this project's architecture against the earlier project's
 
 `PROJECT.md` is the roadmap (what's done / what's next).
 `README.md` is the user-facing setup guide.
@@ -22,8 +22,8 @@ hard-won lessons, and the runtime architecture as it actually exists.
 | AWS CLI profile | `watchtower` (SSO — refresh with `aws sso login --profile watchtower`) |
 | GitHub repo | https://github.com/illinigirl/MagicMonitor (public as of 2026-05-11, MIT license) |
 | CFN stack name | `DisneyStack` |
-| Cognito user pool | `us-east-2_ORhu761AY` (owned by Watchtower stack, imported here) |
-| Cognito hosted-UI | https://auth.megillini.dev (owned by Watchtower stack, reused here) |
+| Cognito user pool | `us-east-2_ORhu761AY` (pre-existing, imported here by ID) |
+| Cognito hosted-UI | https://auth.megillini.dev (pre-existing, reused as-is) |
 | MM Cognito app client | `7m45buvekqqjt8c9vfmtbrfld4` |
 | Amplify app id | `d1ykat3qyev5c8` |
 | DDB table | `DisneyData` |
@@ -65,7 +65,7 @@ hard-won lessons, and the runtime architecture as it actually exists.
                 └───────────────────┘
 ```
 
-**Single-tier read pattern** is deliberate (vs Watchtower's APIGW + FastAPI):
+**Single-tier read pattern** is deliberate (vs the earlier project's APIGW + FastAPI):
 - Server Components scan DDB directly through the Amplify SSR compute role
 - M3 writes will be Next.js Route Handlers in the same app (NOT a separate FastAPI Lambda)
 - Trade-off: we lose blast-radius separation between read and write paths;
@@ -82,7 +82,7 @@ docs or CDK alpha-module signatures.
 ### Lesson 1: Amplify Hosting + new GitHub apps require manual GitHub App install
 
 **Symptom:** every Amplify build for MM failed in <1 second with
-`Unable to assume specified IAM Role`. Watchtower's identical-pattern
+`Unable to assume specified IAM Role`. the earlier project's identical-pattern
 build succeeded the same day. Tried clearing roles, recreating roles,
 matching trust policies exactly — none of it helped.
 
@@ -91,7 +91,7 @@ App (`https://github.com/apps/aws-amplify-<region>`) to be installed on
 the GitHub account before any new Amplify app's PAT-based connection
 will validate. The error message is wildly misleading — it's the
 generic "couldn't bootstrap the build container" and has nothing to do
-with IAM. Watchtower was set up before this requirement (or was
+with IAM. An earlier project was set up before this requirement (or was
 installed at the time of its initial console-driven creation).
 
 **Fix:**
@@ -166,7 +166,7 @@ having it inline is a few hundred KB and zero runtime issues.
 ### Lesson 4: The L2 alpha auto-creates the compute role correctly; don't override
 
 **Symptom:** When I provided a custom `computeRole` (named explicitly,
-trust policy = `amplify.amazonaws.com`, identical to Watchtower's
+trust policy = `amplify.amazonaws.com`, identical to the earlier project's
 auto-generated role), builds failed.
 
 **Cause unclear** but consistent: the L2 alpha's auto-generated role
@@ -191,7 +191,7 @@ chain whose source ARN doesn't match the obvious branch ARN we
 expected. The condition was too narrow.
 
 **Fix:** keep the trust policy minimal — just `Service:
-amplify.amazonaws.com` with no conditions. Watchtower's working role
+amplify.amazonaws.com` with no conditions. the earlier project's working role
 has none, ours shouldn't either. Add SourceArn ONLY after careful
 testing.
 
@@ -212,7 +212,7 @@ deploys — at which point Amplify started assuming the role through
 its internal service-role chain, where the SourceArn condition no
 longer matched. Builds failed silently.
 
-Watchtower didn't have the issue because its role was created on an
+An earlier project didn't have the issue because its role was created on an
 even earlier alpha that emitted no conditions, and it hasn't been
 re-templated since.
 
@@ -240,15 +240,15 @@ defensive no-op today; if a future alpha upgrade re-introduces the
 conditions, the next CDK deploy that touches the role will reset it.
 
 **Diagnostic shortcut:** when an Amplify build fails with the IAM
-error and no console banner is shown, compare the failing role's
-trust policy against Watchtower's working one:
+error and no console banner is shown, inspect the failing role's
+trust policy:
 ```
 aws iam get-role --role-name DisneyStack-WebAppRole1AA0E641-... \
   --profile watchtower --query 'Role.AssumeRolePolicyDocument'
-aws iam get-role --role-name WatchtowerStack-WebAppRole1AA0E641-... \
-  --profile watchtower --query 'Role.AssumeRolePolicyDocument'
 ```
-If MM has Conditions and Watchtower doesn't, this is the cause.
+The working form is a bare `amplify.amazonaws.com` service principal
+with no `Conditions` block. If MM's role has a `Conditions` block,
+that's the cause.
 
 ## Hand-maintained data files
 
@@ -448,7 +448,7 @@ These don't block anything; clean up when convenient.
    specified IAM Role'." That's wrong; the actual cause was the GitHub
    connection state (Lesson 1). Either delete the block (Amplify
    auto-attaches what it needs) or update the comment to "matches
-   Watchtower's auto-generated logs grant; harmless either way."
+   the earlier project's auto-generated logs grant; harmless either way."
 
 2. **`web/src/lib/dynamodb.ts`** — the `DISNEY_REGION` env-var
    fallback was added on the (incorrect) theory that the SSR runtime
@@ -458,7 +458,7 @@ These don't block anything; clean up when convenient.
 3. **us-east-2 ACM cert** — orphan cert issued during the false start.
    Free to keep, easy to delete (see Lesson 2).
 
-4. **Watchtower** — check the AWS Amplify console for an "Update
+4. **an earlier project** — check the AWS Amplify console for an "Update
    required" badge. If present, run the same Reconnect Repository flow
    we did for MM. Better to do it on your schedule than have a build
    silently break before a demo.

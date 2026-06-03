@@ -7,8 +7,8 @@ const app = new cdk.App();
 
 new DisneyStack(app, "DisneyStack", {
   env: {
-    // Pinned to the same account+region as Watchtower so the SSO session
-    // and Cloudflare DNS workflow you already use Just Work.
+    // Pinned to the same account+region as an earlier project so the SSO
+    // session and Cloudflare DNS workflow you already use Just Work.
     account: "601669029997",
     region: "us-east-2",
   },
