@@ -31,6 +31,7 @@
     "@aws-cdk/aws-lambda:useCdkManagedLogGroup": true,
     "@aws-cdk/aws-events:requireEventBusPolicySid": true,
     "@aws-cdk/core:enableAdditionalMetadataCollection": true,
-    "mcp_allowed_subs": "e1bb9500-40d1-701b-ba48-684e500ecd1d,b18be5c0-90f1-70c4-bbc3-fb446f000663"
+    "mcp_allowed_subs": "e1bb9500-40d1-701b-ba48-684e500ecd1d,b18be5c0-90f1-70c4-bbc3-fb446f000663",
+    "mcp_sub_user_map": "e1bb9500-40d1-701b-ba48-684e500ecd1d:megan,b18be5c0-90f1-70c4-bbc3-fb446f000663:jim"
   }
 }

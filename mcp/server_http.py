@@ -58,6 +58,7 @@ session. FastMCP supports this via the `stateless_http=True`
 setting; we pass it at construction.
 """
 
+import contextvars
 import json
 import os
 import re as _re
@@ -501,6 +502,410 @@ def _next_upcoming_showtime(
         if t["start"] > now_iso:
             return t
     return None
+
+
+# ─── Plan / trip write-side helpers (M5, ported from server.py) ─────
+# Duplicate-first (per the locked decision): these mirror server.py's
+# plan-feedback + multi-day-trip helpers verbatim, except the HTTP side
+# writes to ONE shared partition and derives the writer's attribution
+# from the verified token rather than a client-supplied user_id.
+
+# Shared family trip space — every HTTP write lands here (see design
+# doc §7). Reuses the stdio default partition so Megan's Desktop and
+# mobile plans are unified and Jim/sister join the same trip.
+_SHARED_USER_ID = "megan"
+
+# Plan TTLs (mirror server.py).
+_PLAN_PENDING_TTL_SECS = 24 * 60 * 60
+_PLAN_RECORDED_TTL_SECS = 365 * 24 * 60 * 60
+_PLAN_STALENESS_DAYS = 14
+_PLAN_PENDING_BUFFER_DAYS = 2
+_TRIP_BUFFER_DAYS = 3
+
+
+def _floats_to_decimals(obj: Any) -> Any:
+    """Recursively convert Python floats to Decimal for DDB writes.
+
+    boto3's resource interface refuses native floats. Reverse of
+    _convert_decimals; used on the write side. Verbatim from server.py.
+    """
+    from decimal import Decimal
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {k: _floats_to_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_floats_to_decimals(v) for v in obj]
+    return obj
+
+
+def _epoch_now() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
+def _coerce_plan_id_to_sk(plan_id: str) -> str:
+    """plan_id is the ISO timestamp suffix; SK is `PLAN#<ts>`. Accept
+    either form. Verbatim from server.py."""
+    if plan_id.startswith("PLAN#"):
+        return plan_id
+    return f"PLAN#{plan_id}"
+
+
+def _today_et_date_iso() -> str:
+    """Calendar date in Eastern time, ISO. Matches server.py."""
+    return datetime.now(_EASTERN).date().isoformat()
+
+
+def _plan_pending_ttl(planned_for_date: str) -> int:
+    """Date-based pending TTL — a future plan survives past its day.
+    Verbatim from server.py."""
+    try:
+        d = datetime.fromisoformat(planned_for_date).date()
+    except ValueError:
+        return _epoch_now() + _PLAN_PENDING_TTL_SECS
+    expiry_et = datetime.combine(
+        d + timedelta(days=_PLAN_PENDING_BUFFER_DAYS + 1),
+        time(_PARK_DAY_BOUNDARY_HOUR),
+        tzinfo=_EASTERN,
+    )
+    return int(expiry_et.astimezone(timezone.utc).timestamp())
+
+
+def _build_plan_item(
+    *,
+    user_id: str,
+    park_key: str,
+    ride_sequence: list[dict[str, Any]],
+    planned_for_date: str,
+    plan_ts: str,
+    show_selections: list[dict[str, Any]] | None = None,
+    context: dict[str, Any] | None = None,
+    notes: str | None = None,
+    trip_id: str | None = None,
+    plan_window: dict[str, Any] | None = None,
+    active: bool = False,
+    activated_at: str | None = None,
+    created_by: str | None = None,
+) -> dict[str, Any]:
+    """Assemble a PLAN# row. Verbatim from server.py — see that file's
+    docstring for the multi-day field semantics."""
+    return {
+        "PK": f"USER#{user_id}",
+        "SK": f"PLAN#{plan_ts}",
+        "park_key": park_key,
+        "planned_at": plan_ts,
+        "planned_for_date": planned_for_date,
+        "trip_id": trip_id,
+        "ride_sequence": ride_sequence,
+        "completed_rides": [],
+        "dropped_rides": [],
+        "show_selections": show_selections or [],
+        "context": context or {},
+        "notes": notes,
+        "plan_window": plan_window,
+        "active": active,
+        "activated_at": activated_at,
+        "created_by": created_by or user_id,
+        "outcome_recorded": False,
+        "ttl": _plan_pending_ttl(planned_for_date),
+    }
+
+
+def _pop_ride_from_sequence(
+    ride_sequence: list[dict[str, Any]],
+    ride_id: str,
+    ride_name: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Find+remove a ride (id match first, name fallback). Verbatim."""
+    name_lc = (ride_name or "").lower()
+    popped: dict[str, Any] | None = None
+    new_seq: list[dict[str, Any]] = []
+    for r in ride_sequence:
+        if popped is None and (
+            r.get("ride_id") == ride_id
+            or (r.get("ride_name") or "").lower() == name_lc
+        ):
+            popped = r
+            continue
+        new_seq.append(r)
+    return new_seq, popped
+
+
+# ─── Calibration summary (verbatim from server.py) ─────────────────
+_AGGRESSION_SCORES = {
+    "too_aggressive": -1.0,
+    "about_right": 0.0,
+    "not_aggressive_enough": 1.0,
+}
+_BIAS_CONFIDENCE_HIGH = 5
+_BIAS_CONFIDENCE_MEDIUM = 3
+_BIAS_NEUTRAL_MINUTES = 5
+
+
+def _bias_confidence(n: int) -> str:
+    if n >= _BIAS_CONFIDENCE_HIGH:
+        return "high"
+    if n >= _BIAS_CONFIDENCE_MEDIUM:
+        return "medium"
+    return "low"
+
+
+def _compute_calibration_summary(
+    recorded_plans: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Aggregate recorded plans into per-user calibration signals.
+
+    Verbatim from server.py. Pre-computes aggression/timing aggregates +
+    per-ride/per-show prediction bias with confidence labels and ready
+    interpretation strings. Returns None if no plans have outcomes.
+    """
+    plans = [p for p in recorded_plans if p.get("outcome_recorded")]
+    if not plans:
+        return None
+
+    agg_scores = [
+        _AGGRESSION_SCORES[p["aggression_rating"]]
+        for p in plans
+        if p.get("aggression_rating") in _AGGRESSION_SCORES
+    ]
+    if agg_scores:
+        avg_agg = sum(agg_scores) / len(agg_scores)
+        if avg_agg < -0.3:
+            agg_interp = (
+                "User's recent plans tend to run too aggressive — they "
+                "didn't fit. Be more conservative today: longer buffers, "
+                "fewer rides, or both."
+            )
+        elif avg_agg > 0.3:
+            agg_interp = (
+                "User's recent plans tend to finish with time to spare. "
+                "Pack more in today — shorter buffers, add a ride, or "
+                "fit a show that wouldn't normally make the cut."
+            )
+        else:
+            agg_interp = (
+                "User's recent plans have been balanced — predicted "
+                "aggression has been about right. Use baseline buffers."
+            )
+        aggression = {
+            "avg_score": round(avg_agg, 2),
+            "interpretation": agg_interp,
+            "n_samples": len(agg_scores),
+        }
+    else:
+        aggression = None
+
+    timing_buckets = {"ran_over": 0, "on_time": 0, "extra_time": 0}
+    extra_times: list[float] = []
+    for p in plans:
+        t = p.get("timing_rating")
+        if t in timing_buckets:
+            timing_buckets[t] += 1
+        if t == "extra_time" and p.get("extra_time_minutes") is not None:
+            extra_times.append(float(p["extra_time_minutes"]))
+    n_timing = sum(timing_buckets.values())
+    if n_timing > 0:
+        avg_extra = (
+            round(sum(extra_times) / len(extra_times), 1)
+            if extra_times else None
+        )
+        share_extra = timing_buckets["extra_time"] / n_timing
+        share_over = timing_buckets["ran_over"] / n_timing
+        if share_extra >= 0.6:
+            extra_blurb = (
+                f" (averaging ~{avg_extra:.0f} min spare on those days)"
+                if avg_extra else ""
+            )
+            timing_interp = (
+                f"User finishes with extra time on {timing_buckets['extra_time']}/"
+                f"{n_timing} recent plans{extra_blurb} — pack today's plan "
+                f"more aggressively."
+            )
+        elif share_over >= 0.5:
+            timing_interp = (
+                f"User runs over time on {timing_buckets['ran_over']}/"
+                f"{n_timing} recent plans — be more conservative today, "
+                f"cut a ride or extend buffers."
+            )
+        elif timing_buckets["on_time"] / n_timing >= 0.5:
+            timing_interp = (
+                f"User finishes on time on {timing_buckets['on_time']}/"
+                f"{n_timing} recent plans — current calibration is working."
+            )
+        else:
+            timing_interp = (
+                f"Mixed timing pattern across {n_timing} recent plans "
+                f"(ran_over={timing_buckets['ran_over']}, "
+                f"on_time={timing_buckets['on_time']}, "
+                f"extra_time={timing_buckets['extra_time']}) — no clear "
+                f"adjustment. Use baselines."
+            )
+        timing = {
+            "distribution": timing_buckets,
+            "avg_extra_time_minutes": avg_extra,
+            "interpretation": timing_interp,
+            "n_samples": n_timing,
+        }
+    else:
+        timing = None
+
+    ride_deltas: dict[str, list[float]] = {}
+    show_deltas: dict[str, list[float]] = {}
+    for p in plans:
+        for r in (p.get("completed_rides") or []):
+            predicted = r.get("predicted_wait_min")
+            actual = r.get("actual_wait_min")
+            ride_name = r.get("ride_name")
+            if predicted is None or actual is None or not ride_name:
+                continue
+            try:
+                delta = float(actual) - float(predicted)
+            except (TypeError, ValueError):
+                continue
+            ride_deltas.setdefault(ride_name, []).append(delta)
+
+        feedback = p.get("per_item_feedback") or {}
+        if not isinstance(feedback, dict):
+            continue
+        ride_predictions: dict[str, Any] = {}
+        for r in (p.get("ride_sequence") or []) + (p.get("completed_rides") or []):
+            name = r.get("ride_name")
+            pred = r.get("predicted_wait_min")
+            if name and pred is not None:
+                ride_predictions[name] = pred
+        for ride_name, predicted in ride_predictions.items():
+            fb = feedback.get(ride_name)
+            if not isinstance(fb, dict):
+                continue
+            actual = fb.get("actual_wait_min")
+            if actual is None:
+                continue
+            try:
+                delta = float(actual) - float(predicted)
+            except (TypeError, ValueError):
+                continue
+            ride_deltas.setdefault(ride_name, []).append(delta)
+
+        show_predictions = {
+            s["show_name"]: s.get("predicted_arrival_min")
+            for s in (p.get("show_selections") or [])
+            if s.get("show_name") and s.get("predicted_arrival_min") is not None
+        }
+        for show_name, predicted in show_predictions.items():
+            fb = feedback.get(show_name)
+            if not isinstance(fb, dict):
+                continue
+            actual = fb.get("arrived_with_min")
+            if actual is None:
+                continue
+            try:
+                delta = float(actual) - float(predicted)
+            except (TypeError, ValueError):
+                continue
+            show_deltas.setdefault(show_name, []).append(delta)
+
+    def _bias_entries(deltas, item_label, kind):
+        out = []
+        for name, ds in deltas.items():
+            n = len(ds)
+            avg = round(sum(ds) / n, 1)
+            confidence = _bias_confidence(n)
+            if abs(avg) <= _BIAS_NEUTRAL_MINUTES:
+                interp = f"Predictions for {name} have been roughly accurate ({avg:+.0f} min avg)."
+            elif kind == "ride_wait":
+                if avg > 0:
+                    interp = (
+                        f"{name} tends to wait LONGER than predicted "
+                        f"(+{avg:.0f} min avg, {confidence} confidence "
+                        f"on n={n}). Scale this ride's prediction up by "
+                        f"~{avg:.0f} min for this user."
+                    )
+                else:
+                    interp = (
+                        f"{name} tends to wait SHORTER than predicted "
+                        f"({avg:.0f} min avg, {confidence} confidence "
+                        f"on n={n}). Scale this ride's prediction down "
+                        f"by ~{abs(avg):.0f} min for this user."
+                    )
+            else:
+                if avg > 0:
+                    interp = (
+                        f"User arrives at {name} LATER than recommended "
+                        f"(+{avg:.0f} min avg). Either they cut it close "
+                        f"(no problem if they got a fine spot) or your "
+                        f"recommendation was more conservative than needed."
+                    )
+                else:
+                    interp = (
+                        f"User arrives at {name} EARLIER than recommended "
+                        f"({avg:.0f} min avg) — your arrival recommendation "
+                        f"may be padding too much for this user."
+                    )
+            out.append({
+                f"{item_label}_name": name,
+                "n_samples": n,
+                "avg_delta_min": avg,
+                "confidence": confidence,
+                "interpretation": interp,
+            })
+        out.sort(key=lambda x: -x["n_samples"])
+        return out
+
+    return {
+        "n_recorded_plans": len(plans),
+        "aggression": aggression,
+        "timing": timing,
+        "per_ride_prediction_bias": _bias_entries(ride_deltas, "ride", "ride_wait"),
+        "per_show_arrival_bias": _bias_entries(show_deltas, "show", "show_arrival"),
+        "usage_hint": (
+            "Apply aggression + timing interpretations as ONE upfront "
+            "calibration note in your response. Apply per-ride / per-show "
+            "bias entries selectively: high-confidence biases (n>=5) can be "
+            "quoted to the user; medium (n=3-4) applied silently; low (n<3) "
+            "ignored — too noisy to be useful."
+        ),
+    }
+
+
+# ─── Identity (token → attribution) ─────────────────────────────────
+# The Cognito middleware stores the verified `sub` here per request
+# (ContextVar propagates into tool handlers — confirmed). The trip space
+# is SHARED, so identity does NOT route partitions; it only labels rows
+# (`created_by`) so a shared trip shows who recorded/edited what.
+_authenticated_sub: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "authenticated_sub", default=None
+)
+
+
+def _parse_sub_user_map(raw: str) -> dict[str, str]:
+    """Parse "sub1:megan,sub2:jim" into {sub: friendly_id}."""
+    out: dict[str, str] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        sub, name = pair.split(":", 1)
+        if sub.strip() and name.strip():
+            out[sub.strip()] = name.strip()
+    return out
+
+
+_SUB_USER_MAP = _parse_sub_user_map(os.environ.get("MCP_SUB_USER_MAP", ""))
+
+
+def _created_by_from_context() -> str:
+    """Attribution label for the current request's writer.
+
+    Maps the verified Cognito sub → friendly id. Falls back to the raw
+    sub if unmapped (still attributable — the shared partition means an
+    unmapped-but-allowlisted user can't misroute, so we don't hard-fail
+    on a missing label), then to the shared id if there's no sub at all
+    (only reachable off-request, e.g. local tests).
+    """
+    sub = _authenticated_sub.get()
+    if not sub:
+        return _SHARED_USER_ID
+    return _SUB_USER_MAP.get(sub, sub)
 
 
 # ─── FastMCP server + tools ─────────────────────────────────────────
@@ -1575,6 +1980,848 @@ def get_mll_tiers(park: str) -> dict[str, Any]:
     }
 
 
+# ─── Plan / trip write tools (M5) ───────────────────────────────────
+# Shared trip space: every write lands in USER#<_SHARED_USER_ID>. The
+# writer's identity is NOT a client param (a crafted call mustn't write
+# as someone else) — it's the verified token's sub, mapped to a friendly
+# created_by label. Otherwise these mirror server.py's plan tools.
+
+
+@mcp.tool()
+def record_plan(
+    park: str,
+    ride_sequence: list[dict[str, Any]],
+    show_selections: list[dict[str, Any]] | None = None,
+    context: dict[str, Any] | None = None,
+    notes: str | None = None,
+    planned_for_date: str | None = None,
+    trip_id: str | None = None,
+    plan_window: dict[str, Any] | None = None,
+    active: bool | None = None,
+) -> dict[str, Any]:
+    """Persist a plan the user accepted (same-day live-assist, or a
+    future day of a trip).
+
+    Call AFTER the user accepts a plan you laid out. By default records a
+    plan for TODAY, which auto-activates (the poller immediately watches
+    it for live disruption alerts). To pre-build a FUTURE trip day, pass
+    `planned_for_date` (+ usually `trip_id`); that row stays DORMANT (no
+    alerts) until activate_plan is called on the day. For a whole trip at
+    once, prefer create_trip.
+
+    The plan is written to the shared family trip space and stamped with
+    who recorded it (from your login). TTL keys to the trip day: an
+    un-recorded plan survives a couple days past it, then auto-cleans.
+
+    Args:
+        park: Park key or human name.
+        ride_sequence: Ordered rides; each {"ride_name","ride_id",
+            "predicted_wait_min"?, "position"?}. Include ride_id so the
+            poller can match plans against live DOWN/UP events.
+        show_selections: Optional shows being fitted in.
+        context: Optional planner-side snapshot (park_load_ratio, weather,
+            planned_at, ...).
+        notes: Optional user constraints ("dining at 6pm").
+        planned_for_date: ISO date the plan is FOR. Defaults to today (ET).
+        trip_id: Optional. Groups this day into a multi-day trip.
+        plan_window: Optional {"open","close"} ET window; once set +
+            activated, alerts fire only inside it.
+        active: Override the default (same-day active / future dormant).
+
+    Returns:
+        Dict with plan_id, planned_for_date, trip_id, active,
+        expires_at_epoch, created_by, and a next-step hint.
+    """
+    try:
+        park_key = _normalize_park(park)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    now_utc = datetime.now(timezone.utc)
+    plan_ts = (context or {}).get("planned_at") or now_utc.isoformat()
+    pfd = planned_for_date or _today_et_date_iso()
+    try:
+        datetime.fromisoformat(pfd)
+    except ValueError:
+        return {
+            "error": "Invalid planned_for_date",
+            "error_message": f"Could not parse '{planned_for_date}'. Use YYYY-MM-DD.",
+        }
+
+    if active is None:
+        active = pfd == _today_et_date_iso()
+    activated_at = now_utc.isoformat() if active else None
+    created_by = _created_by_from_context()
+
+    item = _build_plan_item(
+        user_id=_SHARED_USER_ID,
+        park_key=park_key,
+        ride_sequence=ride_sequence,
+        planned_for_date=pfd,
+        plan_ts=plan_ts,
+        show_selections=show_selections,
+        context=context,
+        notes=notes,
+        trip_id=trip_id,
+        plan_window=plan_window,
+        active=active,
+        activated_at=activated_at,
+        created_by=created_by,
+    )
+
+    try:
+        _ddb_table().put_item(Item=_floats_to_decimals(item))
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan write failed", "error_message": str(e),
+        }
+
+    if active:
+        hint = (
+            "Plan saved and ACTIVE — Magic Monitor is now watching its "
+            "rides for live disruptions. Call record_plan_outcome at "
+            "end-of-day."
+        )
+    else:
+        hint = (
+            f"Future plan saved as DORMANT for {pfd} (no alerts yet). On "
+            f"that day, call activate_plan to re-evaluate against live "
+            f"conditions and start monitoring."
+        )
+
+    return {
+        "plan_id": plan_ts,
+        "planned_for_date": pfd,
+        "trip_id": trip_id,
+        "active": active,
+        "park_key": park_key,
+        "created_by": created_by,
+        "expires_at_epoch": item["ttl"],
+        "next_step_hint": hint,
+    }
+
+
+@mcp.tool()
+def create_trip(name: str, days: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pre-build a whole multi-day trip: a TRIP header + one dormant
+    day-plan per date, in the shared trip space.
+
+    Use this when the user wants to plan an upcoming trip ahead of time.
+    Each day is DORMANT (no alerts) until activate_plan on its day.
+
+    Args:
+        name: Human label ("June 2026 family trip").
+        days: Ordered list, one per day. Each: {"date":"YYYY-MM-DD",
+            "park": key/name, "ride_sequence"?:[...], "show_selections"?,
+            "plan_window"?:{open,close}, "notes"?}.
+
+    Returns:
+        Dict with trip_id, name, start_date, end_date, days [{date,
+        park_key, plan_id}], created_by. All validation happens before
+        any write — no partial trip on error.
+    """
+    if not days:
+        return {"error": "A trip needs at least one day",
+                "error_message": "days was empty."}
+
+    normalized: list[dict[str, Any]] = []
+    for i, day in enumerate(days):
+        date_str = (day or {}).get("date")
+        park = (day or {}).get("park")
+        if not date_str or not park:
+            return {"error": "Each day needs 'date' and 'park'",
+                    "error_message": f"day index {i} missing date/park: {day!r}"}
+        try:
+            datetime.fromisoformat(date_str)
+        except ValueError:
+            return {"error": "Invalid day date",
+                    "error_message": f"day {i}: could not parse '{date_str}'. Use YYYY-MM-DD."}
+        try:
+            park_key = _normalize_park(park)
+        except ValueError as e:
+            return {"error": "Invalid day park", "error_message": f"day {i}: {e}"}
+        normalized.append({
+            "date": date_str,
+            "park_key": park_key,
+            "ride_sequence": day.get("ride_sequence") or [],
+            "show_selections": day.get("show_selections") or [],
+            "plan_window": day.get("plan_window"),
+            "notes": day.get("notes"),
+        })
+
+    normalized.sort(key=lambda d: d["date"])
+    start_date = normalized[0]["date"]
+    end_date = normalized[-1]["date"]
+    now_utc = datetime.now(timezone.utc)
+    trip_id = f"{start_date}_{int(now_utc.timestamp())}"
+    created_by = _created_by_from_context()
+
+    try:
+        end_d = datetime.fromisoformat(end_date).date()
+        header_ttl = int(datetime.combine(
+            end_d + timedelta(days=_TRIP_BUFFER_DAYS + 1),
+            time(_PARK_DAY_BOUNDARY_HOUR), tzinfo=_EASTERN,
+        ).astimezone(timezone.utc).timestamp())
+    except ValueError:
+        header_ttl = _epoch_now() + _PLAN_RECORDED_TTL_SECS
+
+    header = {
+        "PK": f"USER#{_SHARED_USER_ID}",
+        "SK": f"TRIP#{trip_id}",
+        "name": name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "days": [{"date": d["date"], "park_key": d["park_key"]} for d in normalized],
+        "created_by": created_by,
+        "created_at": now_utc.isoformat(),
+        "ttl": header_ttl,
+    }
+
+    day_results: list[dict[str, Any]] = []
+    try:
+        table = _ddb_table()
+        with table.batch_writer() as batch:
+            batch.put_item(Item=_floats_to_decimals(header))
+            for i, d in enumerate(normalized):
+                plan_ts = (now_utc + timedelta(microseconds=i + 1)).isoformat()
+                item = _build_plan_item(
+                    user_id=_SHARED_USER_ID,
+                    park_key=d["park_key"],
+                    ride_sequence=d["ride_sequence"],
+                    planned_for_date=d["date"],
+                    plan_ts=plan_ts,
+                    show_selections=d["show_selections"],
+                    notes=d["notes"],
+                    trip_id=trip_id,
+                    plan_window=d["plan_window"],
+                    active=False,
+                    created_by=created_by,
+                )
+                batch.put_item(Item=_floats_to_decimals(item))
+                day_results.append({"date": d["date"], "park_key": d["park_key"],
+                                    "plan_id": plan_ts})
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Trip write failed", "error_message": str(e),
+        }
+
+    return {
+        "trip_id": trip_id,
+        "name": name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "days": day_results,
+        "created_by": created_by,
+        "next_step_hint": (
+            "Trip created — all days dormant (no alerts). Refine each day's "
+            "rides with record_plan (same trip_id) or add_ride_to_plan. On "
+            "each trip day, call activate_plan to re-evaluate + monitor."
+        ),
+    }
+
+
+@mcp.tool()
+def get_plan_for_day(date: str | None = None) -> dict[str, Any]:
+    """Return the shared plan recorded for a day (default today).
+
+    Use on a trip day ("what's my plan today?") to pull the plan up for
+    re-evaluation + activation, or mid-day to see what's left. Prefers
+    the ACTIVE plan for the date, else the most recently recorded.
+
+    Args:
+        date: ISO date (YYYY-MM-DD). Defaults to today (ET).
+
+    Returns:
+        Dict with date, found (bool), and when found plan_id + full plan
+        body (park_key, trip_id, active, activated_at, plan_window,
+        ride_sequence, completed_rides, dropped_rides, show_selections,
+        notes, created_by, outcome_recorded).
+    """
+    target = date or _today_et_date_iso()
+    try:
+        datetime.fromisoformat(target)
+    except ValueError:
+        return {"error": "Invalid date",
+                "error_message": f"Could not parse '{date}'. Use YYYY-MM-DD."}
+
+    try:
+        table = _ddb_table()
+        items: list[dict] = []
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{_SHARED_USER_ID}", ":sk": "PLAN#"},
+        }
+        while True:
+            resp = table.query(**kwargs)
+            items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan read failed", "error_message": str(e),
+        }
+
+    matches = [
+        _convert_decimals(it) for it in items
+        if it.get("planned_for_date") == target
+    ]
+    if not matches:
+        return {"date": target, "found": False, "note": f"No plan recorded for {target}."}
+
+    matches.sort(key=lambda it: it.get("planned_at") or it["SK"], reverse=True)
+    chosen = next((m for m in matches if m.get("active")), matches[0])
+
+    return {
+        "date": target,
+        "found": True,
+        "plan_id": chosen["SK"][len("PLAN#"):],
+        "trip_id": chosen.get("trip_id"),
+        "park_key": chosen.get("park_key"),
+        "active": bool(chosen.get("active")),
+        "activated_at": chosen.get("activated_at"),
+        "plan_window": chosen.get("plan_window"),
+        "ride_sequence": chosen.get("ride_sequence", []),
+        "completed_rides": chosen.get("completed_rides", []),
+        "dropped_rides": chosen.get("dropped_rides", []),
+        "show_selections": chosen.get("show_selections", []),
+        "notes": chosen.get("notes"),
+        "created_by": chosen.get("created_by"),
+        "outcome_recorded": bool(chosen.get("outcome_recorded")),
+        "other_plans_for_day": len(matches) - 1,
+    }
+
+
+@mcp.tool()
+def get_upcoming_trip() -> dict[str, Any]:
+    """Return the soonest upcoming (or in-progress) shared trip + its days.
+
+    Use at session start to surface a trip in progress. Returns the
+    nearest trip whose end_date >= today with each day's park + whether
+    that day's plan is active or still dormant.
+
+    Returns:
+        Dict with found (bool); when found: trip_id, name, start_date,
+        end_date, days [{date, park_key, plan_id, active, ride_count,
+        outcome_recorded}].
+    """
+    today = _today_et_date_iso()
+    try:
+        table = _ddb_table()
+        trip_items: list[dict] = []
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{_SHARED_USER_ID}", ":sk": "TRIP#"},
+        }
+        while True:
+            resp = table.query(**kwargs)
+            trip_items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Trip read failed", "error_message": str(e),
+        }
+
+    trips = [
+        _convert_decimals(it) for it in trip_items
+        if (it.get("end_date") or "") >= today
+    ]
+    if not trips:
+        return {"found": False, "note": "No upcoming trip."}
+    trips.sort(key=lambda t: t.get("start_date") or "")
+    trip = trips[0]
+    trip_id = trip["SK"][len("TRIP#"):]
+
+    day_status: dict[str, dict[str, Any]] = {}
+    try:
+        plan_items: list[dict] = []
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{_SHARED_USER_ID}", ":sk": "PLAN#"},
+        }
+        while True:
+            resp = table.query(**kwargs)
+            plan_items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        for it in plan_items:
+            it = _convert_decimals(it)
+            if it.get("trip_id") != trip_id:
+                continue
+            day_status[it.get("planned_for_date")] = {
+                "plan_id": it["SK"][len("PLAN#"):],
+                "active": bool(it.get("active")),
+                "ride_count": len(it.get("ride_sequence") or []),
+                "outcome_recorded": bool(it.get("outcome_recorded")),
+            }
+    except Exception:
+        pass
+
+    days_out = []
+    for d in trip.get("days", []):
+        st = day_status.get(d.get("date"), {})
+        days_out.append({
+            "date": d.get("date"),
+            "park_key": d.get("park_key"),
+            "plan_id": st.get("plan_id"),
+            "active": st.get("active", False),
+            "ride_count": st.get("ride_count", 0),
+            "outcome_recorded": st.get("outcome_recorded", False),
+        })
+
+    return {
+        "found": True,
+        "trip_id": trip_id,
+        "name": trip.get("name"),
+        "start_date": trip.get("start_date"),
+        "end_date": trip.get("end_date"),
+        "days": days_out,
+    }
+
+
+@mcp.tool()
+def activate_plan(
+    plan_id: str | None = None,
+    date: str | None = None,
+    ride_sequence: list[dict[str, Any]] | None = None,
+    plan_window: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Activate a day's plan: turn on live disruption monitoring after
+    re-evaluating against live conditions.
+
+    On the trip day, AFTER pulling the plan up (get_plan_for_day) and
+    re-checking it against get_planning_context (what's DOWN now, today's
+    forecast, weather, hours) and the user accepts the adjusted plan,
+    call this to flip the plan ACTIVE (poller starts firing disruption
+    alerts) and store the re-evaluated `ride_sequence` + resolved
+    `plan_window`. A dormant future plan fires nothing until activated.
+
+    Args:
+        plan_id: The plan to activate. If omitted, the plan for `date`
+            (default today) is looked up.
+        date: ISO date to look up the plan by, if plan_id isn't given.
+        ride_sequence: Optional accepted re-evaluated ride order.
+        plan_window: Optional {"open","close"} resolved ET window.
+
+    Returns:
+        Dict with plan_id, active=true, activated_at, planned_for_date,
+        plan_window, ride_count.
+    """
+    if not plan_id:
+        lookup = get_plan_for_day(date=date)
+        if lookup.get("error"):
+            return lookup
+        if not lookup.get("found"):
+            return {"error": "No plan to activate",
+                    "error_message": lookup.get("note") or f"No plan for {date or 'today'}."}
+        plan_id = lookup["plan_id"]
+
+    sk = _coerce_plan_id_to_sk(plan_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    set_parts = ["active = :a", "activated_at = :at"]
+    expr_values: dict[str, Any] = {":a": True, ":at": now_iso}
+    if ride_sequence is not None:
+        set_parts.append("ride_sequence = :seq")
+        expr_values[":seq"] = ride_sequence
+    if plan_window is not None:
+        set_parts.append("plan_window = :win")
+        expr_values[":win"] = plan_window
+    update_expr = "SET " + ", ".join(set_parts)
+
+    try:
+        resp = _ddb_table().update_item(
+            Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=_floats_to_decimals(expr_values),
+            ConditionExpression="attribute_exists(PK)",
+            ReturnValues="ALL_NEW",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        if err is not None:
+            return err
+        if "ConditionalCheckFailedException" in str(e):
+            return {"error": "Plan not found",
+                    "error_message": f"No plan with id '{plan_id}'.", "plan_id": plan_id}
+        return {"error": "Plan activation failed", "error_message": str(e)}
+
+    attrs = _convert_decimals(resp.get("Attributes", {}))
+    return {
+        "plan_id": plan_id,
+        "active": True,
+        "activated_at": now_iso,
+        "planned_for_date": attrs.get("planned_for_date"),
+        "plan_window": attrs.get("plan_window"),
+        "ride_count": len(attrs.get("ride_sequence") or []),
+        "note": (
+            "Plan activated — Magic Monitor is now watching its rides for "
+            "live disruptions"
+            + (" within the plan window." if attrs.get("plan_window") else ".")
+        ),
+    }
+
+
+@mcp.tool()
+def record_plan_outcome(
+    plan_id: str,
+    aggression_rating: str | None = None,
+    timing_rating: str | None = None,
+    extra_time_minutes: int | None = None,
+    per_item_feedback: dict[str, dict[str, Any]] | None = None,
+    free_text: str | None = None,
+) -> dict[str, Any]:
+    """Log how a recorded plan actually went (feeds calibration).
+
+    Call when the user reports outcomes ("Big Thunder was 60 not 40",
+    "we're done, that worked great"). Needs a plan_id — find it via
+    get_plan_for_day or get_user_plan_history if not in context.
+
+    Args:
+        plan_id: From record_plan / get_plan_for_day.
+        aggression_rating: "too_aggressive" | "about_right" |
+            "not_aggressive_enough".
+        timing_rating: "ran_over" | "on_time" | "extra_time".
+        extra_time_minutes: When timing="extra_time", ~how much was left.
+        per_item_feedback: Optional per-ride/show {actual_wait_min,
+            arrived_with_min, notes}, keyed by name.
+        free_text: Catch-all notes.
+
+    Returns:
+        Dict with plan_id, outcome_recorded=true, new_expires_at_epoch.
+    """
+    sk = _coerce_plan_id_to_sk(plan_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_ttl = _epoch_now() + _PLAN_RECORDED_TTL_SECS
+
+    set_parts = ["outcome_recorded = :rec", "outcome_recorded_at = :rat", "#ttl = :ttl"]
+    expr_values: dict[str, Any] = {":rec": True, ":rat": now_iso, ":ttl": new_ttl}
+    expr_names = {"#ttl": "ttl"}
+    if aggression_rating is not None:
+        set_parts.append("aggression_rating = :agg")
+        expr_values[":agg"] = aggression_rating
+    if timing_rating is not None:
+        set_parts.append("timing_rating = :tim")
+        expr_values[":tim"] = timing_rating
+    if extra_time_minutes is not None:
+        set_parts.append("extra_time_minutes = :etm")
+        expr_values[":etm"] = extra_time_minutes
+    if per_item_feedback is not None:
+        set_parts.append("per_item_feedback = :pif")
+        expr_values[":pif"] = per_item_feedback
+    if free_text is not None:
+        set_parts.append("free_text = :ftx")
+        expr_values[":ftx"] = free_text
+
+    try:
+        _ddb_table().update_item(
+            Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk},
+            UpdateExpression="SET " + ", ".join(set_parts),
+            ExpressionAttributeValues=_floats_to_decimals(expr_values),
+            ExpressionAttributeNames=expr_names,
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        if err is not None:
+            return err
+        if "ConditionalCheckFailedException" in str(e):
+            return {"error": "Plan not found",
+                    "error_message": f"No plan with id '{plan_id}'.", "plan_id": plan_id}
+        return {"error": "Outcome write failed", "error_message": str(e)}
+
+    return {
+        "plan_id": plan_id,
+        "outcome_recorded": True,
+        "outcome_recorded_at": now_iso,
+        "new_expires_at_epoch": new_ttl,
+    }
+
+
+@mcp.tool()
+def mark_ride_complete(
+    plan_id: str,
+    ride_id: str,
+    ride_name: str,
+    actual_wait_min: int | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """Mark a ride done — moves it from ride_sequence to completed_rides
+    (stops its disruption alerts + captures actual_wait_min for
+    calibration). Prefer this over remove_ride_from_plan when the user
+    actually rode it.
+
+    Args:
+        plan_id, ride_id, ride_name: identify the plan + ride.
+        actual_wait_min: Optional actual wait (strongest calibration signal).
+        notes: Optional free-text.
+
+    Returns:
+        Dict with completed (0/1), remaining_rides, total_completed.
+    """
+    sk = _coerce_plan_id_to_sk(plan_id)
+    try:
+        table = _ddb_table()
+        item = table.get_item(Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk}).get("Item")
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {"error": "Plan read failed", "error_message": str(e)}
+    if not item:
+        return {"error": "Plan not found", "error_message": f"No plan with id '{plan_id}'.",
+                "plan_id": plan_id}
+
+    item = _convert_decimals(item)
+    ride_seq = list(item.get("ride_sequence") or [])
+    completed_rides = list(item.get("completed_rides") or [])
+    name_lc = (ride_name or "").lower()
+    if any(r.get("ride_id") == ride_id or (r.get("ride_name") or "").lower() == name_lc
+           for r in completed_rides):
+        return {"plan_id": plan_id, "ride_name": ride_name, "ride_id": ride_id, "completed": 0,
+                "remaining_rides": len(ride_seq), "total_completed": len(completed_rides),
+                "note": f"'{ride_name}' is already marked complete."}
+
+    new_seq, popped = _pop_ride_from_sequence(ride_seq, ride_id, ride_name)
+    if popped is None:
+        return {"plan_id": plan_id, "ride_name": ride_name, "ride_id": ride_id, "completed": 0,
+                "remaining_rides": len(ride_seq), "total_completed": len(completed_rides),
+                "note": f"'{ride_name}' is not in ride_sequence — nothing to complete."}
+
+    entry = dict(popped)
+    entry["completed_at"] = datetime.now(timezone.utc).isoformat()
+    if actual_wait_min is not None:
+        entry["actual_wait_min"] = actual_wait_min
+    if notes:
+        entry["notes"] = notes
+    completed_rides.append(entry)
+
+    try:
+        table.update_item(
+            Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk},
+            UpdateExpression="SET ride_sequence = :seq, completed_rides = :done",
+            ExpressionAttributeValues=_floats_to_decimals({":seq": new_seq, ":done": completed_rides}),
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {"error": "Plan update failed", "error_message": str(e)}
+
+    return {"plan_id": plan_id, "ride_name": ride_name, "ride_id": ride_id, "completed": 1,
+            "remaining_rides": len(new_seq), "total_completed": len(completed_rides),
+            "note": f"Marked '{ride_name}' complete. {len(new_seq)} ride(s) still planned."}
+
+
+@mcp.tool()
+def remove_ride_from_plan(
+    plan_id: str,
+    ride_id: str,
+    ride_name: str,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Drop a ride from a plan — moves it to dropped_rides (stops its
+    alerts). Use for skipped/abandoned rides (a "too aggressive" signal);
+    use mark_ride_complete for rides actually ridden.
+
+    Returns:
+        Dict with dropped (0/1), remaining_rides, total_dropped.
+    """
+    sk = _coerce_plan_id_to_sk(plan_id)
+    try:
+        table = _ddb_table()
+        item = table.get_item(Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk}).get("Item")
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {"error": "Plan read failed", "error_message": str(e)}
+    if not item:
+        return {"error": "Plan not found", "error_message": f"No plan with id '{plan_id}'.",
+                "plan_id": plan_id}
+
+    item = _convert_decimals(item)
+    ride_seq = list(item.get("ride_sequence") or [])
+    dropped_rides = list(item.get("dropped_rides") or [])
+    new_seq, popped = _pop_ride_from_sequence(ride_seq, ride_id, ride_name)
+    if popped is None:
+        return {"plan_id": plan_id, "ride_name": ride_name, "ride_id": ride_id, "dropped": 0,
+                "remaining_rides": len(ride_seq), "total_dropped": len(dropped_rides),
+                "note": f"'{ride_name}' was not in ride_sequence — nothing to drop."}
+
+    entry = dict(popped)
+    entry["dropped_at"] = datetime.now(timezone.utc).isoformat()
+    if reason:
+        entry["reason"] = reason
+    dropped_rides.append(entry)
+
+    try:
+        table.update_item(
+            Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk},
+            UpdateExpression="SET ride_sequence = :seq, dropped_rides = :gone",
+            ExpressionAttributeValues=_floats_to_decimals({":seq": new_seq, ":gone": dropped_rides}),
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {"error": "Plan update failed", "error_message": str(e)}
+
+    return {"plan_id": plan_id, "ride_name": ride_name, "ride_id": ride_id, "dropped": 1,
+            "remaining_rides": len(new_seq), "total_dropped": len(dropped_rides),
+            "note": f"Dropped '{ride_name}'. {len(new_seq)} ride(s) still planned."}
+
+
+@mcp.tool()
+def add_ride_to_plan(
+    plan_id: str,
+    ride_id: str,
+    ride_name: str,
+    predicted_wait_min: int | None = None,
+    position: int | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """Add a spontaneous ride to a plan's ride_sequence (starts
+    monitoring it for disruptions). Idempotent on ride_id.
+
+    Returns:
+        Dict with added (0/1), total_rides.
+    """
+    sk = _coerce_plan_id_to_sk(plan_id)
+    try:
+        table = _ddb_table()
+        item = table.get_item(Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk}).get("Item")
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {"error": "Plan read failed", "error_message": str(e)}
+    if not item:
+        return {"error": "Plan not found", "error_message": f"No plan with id '{plan_id}'.",
+                "plan_id": plan_id}
+
+    item = _convert_decimals(item)
+    ride_seq = list(item.get("ride_sequence") or [])
+    if any(r.get("ride_id") == ride_id for r in ride_seq if r.get("ride_id")):
+        return {"plan_id": plan_id, "ride_name": ride_name, "ride_id": ride_id, "added": 0,
+                "total_rides": len(ride_seq),
+                "note": f"'{ride_name}' is already in the plan."}
+
+    entry: dict[str, Any] = {"ride_name": ride_name, "ride_id": ride_id}
+    if predicted_wait_min is not None:
+        entry["predicted_wait_min"] = predicted_wait_min
+    if position is not None:
+        entry["position"] = position
+    if notes:
+        entry["notes"] = notes
+    ride_seq.append(entry)
+
+    try:
+        table.update_item(
+            Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk},
+            UpdateExpression="SET ride_sequence = :seq",
+            ExpressionAttributeValues=_floats_to_decimals({":seq": ride_seq}),
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {"error": "Plan update failed", "error_message": str(e)}
+
+    return {"plan_id": plan_id, "ride_name": ride_name, "ride_id": ride_id, "added": 1,
+            "total_rides": len(ride_seq),
+            "note": f"Added '{ride_name}'. Monitoring starts within ~2 min."}
+
+
+@mcp.tool()
+def get_user_plan_history(
+    limit: int = 10,
+    include_unrecorded_only: bool = False,
+    include_calibration: bool = True,
+) -> dict[str, Any]:
+    """Recent plans in the shared trip space, with outcomes + a
+    pre-computed calibration_summary from the recorded ones.
+
+    Use this: (1) at the start of a planning session to catch an
+    unrecorded plan from 1-14 days ago worth asking about; (2) before
+    responding to an outcome report when no plan_id is in context (match
+    by park + planned_for_date); (3) for calibration — READ the
+    pre-computed calibration_summary rather than eyeballing raw plans.
+
+    Args:
+        limit: Max plans (1-50, default 10), newest first.
+        include_unrecorded_only: Only outcome_recorded=false plans.
+        include_calibration: Compute calibration_summary (default True).
+
+    Returns:
+        Dict with count, plans (each with plan_id, planned_at,
+        planned_for_date, trip_id, active, park_key, ride_sequence,
+        completed_rides, dropped_rides, show_selections, notes,
+        outcome fields, days_since_plan, stale_for_recall, created_by),
+        and calibration_summary (or null). See server.py for the full
+        calibration_summary shape.
+    """
+    limit = max(1, min(limit, 50))
+    try:
+        resp = _ddb_table().query(
+            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
+            ExpressionAttributeValues={":pk": f"USER#{_SHARED_USER_ID}", ":sk": "PLAN#"},
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        items = [_convert_decimals(it) for it in resp.get("Items", [])]
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan history read failed", "error_message": str(e),
+        }
+
+    now_utc = datetime.now(timezone.utc)
+    plans = []
+    for it in items:
+        if include_unrecorded_only and it.get("outcome_recorded"):
+            continue
+        plan_ts = it.get("planned_at") or it["SK"][len("PLAN#"):]
+        try:
+            days_since = (now_utc - datetime.fromisoformat(plan_ts)).days
+        except ValueError:
+            days_since = None
+        plans.append({
+            "plan_id": it["SK"][len("PLAN#"):],
+            "planned_at": plan_ts,
+            "planned_for_date": it.get("planned_for_date"),
+            "trip_id": it.get("trip_id"),
+            "active": bool(it.get("active")),
+            "activated_at": it.get("activated_at"),
+            "plan_window": it.get("plan_window"),
+            "park_key": it.get("park_key"),
+            "created_by": it.get("created_by"),
+            "ride_sequence": it.get("ride_sequence", []),
+            "completed_rides": it.get("completed_rides", []),
+            "dropped_rides": it.get("dropped_rides", []),
+            "show_selections": it.get("show_selections", []),
+            "context": it.get("context", {}),
+            "notes": it.get("notes"),
+            "outcome_recorded": bool(it.get("outcome_recorded")),
+            "outcome_recorded_at": it.get("outcome_recorded_at"),
+            "aggression_rating": it.get("aggression_rating"),
+            "timing_rating": it.get("timing_rating"),
+            "extra_time_minutes": it.get("extra_time_minutes"),
+            "per_item_feedback": it.get("per_item_feedback"),
+            "free_text": it.get("free_text"),
+            "days_since_plan": days_since,
+            "stale_for_recall": (
+                days_since is not None and days_since > _PLAN_STALENESS_DAYS
+            ),
+        })
+
+    result: dict[str, Any] = {
+        "user_id": _SHARED_USER_ID,
+        "count": len(plans),
+        "plans": plans,
+    }
+    if include_calibration:
+        result["calibration_summary"] = _compute_calibration_summary(plans)
+    return result
+
+
 # ─── OAuth discovery + DCR routes ───────────────────────────────────
 # Per RFC 9728 (Protected Resource Metadata) + RFC 8414 (Authorization
 # Server Metadata) + RFC 7591 (Dynamic Client Registration). These
@@ -1718,7 +2965,14 @@ class _CognitoJwtMiddleware(BaseHTTPMiddleware):
 
         token = auth[len("Bearer "):].strip()
         try:
-            self._verify(token)
+            claims = self._verify(token)
+            # Stash the verified subject for write-tool attribution
+            # (created_by). ContextVar propagates into the tool handlers
+            # within this request. Defensive: injected test verifiers may
+            # not return a dict.
+            _authenticated_sub.set(
+                claims.get("sub") if isinstance(claims, dict) else None
+            )
         except jwt_verifier.VerifyError:
             # Don't leak which check failed — verifier logs the detail
             # server-side; client sees a generic 401.

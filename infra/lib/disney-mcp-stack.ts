@@ -173,6 +173,16 @@ export class DisneyMcpStack extends cdk.Stack {
     const allowedSubs: string =
       typeof allowedSubsRaw === "string" ? allowedSubsRaw : "";
 
+    // ─── Sub → friendly-id map (write-tool attribution, M5) ─────────
+    // "sub1:megan,sub2:jim" from CDK context. In the SHARED trip model
+    // this only labels who recorded a plan (created_by) — it does NOT
+    // route partitions. Public identifiers, so cdk.json is the right
+    // home. An allowlisted-but-unmapped sub still writes (labeled by raw
+    // sub); the gate is the allowlist, not this map.
+    const subUserMapRaw = this.node.tryGetContext("mcp_sub_user_map");
+    const subUserMap: string =
+      typeof subUserMapRaw === "string" ? subUserMapRaw : "";
+
     // ─── S3: analytics data bucket ─────────────────────────────────
     // Holds the snapshot + baselines uploaded nightly by the aggregator
     // action. Private, SSL-enforced; the Lambda reads, the GitHub
@@ -216,6 +226,8 @@ export class DisneyMcpStack extends cdk.Stack {
         COGNITO_REGION: this.region,
         COGNITO_DOMAIN_URL,
         MCP_ALLOWED_SUBS: allowedSubs,
+        // Write-tool attribution map (M5).
+        MCP_SUB_USER_MAP: subUserMap,
         // Analytics snapshot delivery (session 2.5). The Lambda fetches
         // these from S3 lazily on first analytics tool call.
         MCP_SNAPSHOT_BUCKET: MCP_DATA_BUCKET_NAME,
@@ -246,6 +258,38 @@ export class DisneyMcpStack extends cdk.Stack {
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${DDB_TABLE_NAME}`,
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${DDB_TABLE_NAME}/index/*`,
         ],
+      }),
+    );
+
+    // ─── IAM: scoped DDB write (plan/trip tools, M5) ───────────────
+    // PutItem/UpdateItem/DeleteItem constrained to USER#* / PARK#*
+    // leading keys — mirrors the web SSR computeRole grant in
+    // disney-stack.ts exactly. A shared compute role can't enforce
+    // PER-USER isolation in IAM (all requests use this one role), so the
+    // partition is enforced in code (writes go to the shared USER#megan
+    // space, identity is attribution only); LeadingKeys is defense-in-
+    // depth so a bug can't write RIDE#/STATE/HIST# rows. True per-user
+    // IAM isolation would need a Cognito Identity Pool + per-request
+    // AssumeRoleWithWebIdentity — overkill for a trusted-family app.
+    //
+    // ForAllValues:StringLike is the correct operator: dynamodb:LeadingKeys
+    // is multi-valued (BatchWriteItem can target many PKs) and we want
+    // every targeted PK to match a pattern.
+    mcpFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:DeleteItem",
+        ],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${DDB_TABLE_NAME}`,
+        ],
+        conditions: {
+          "ForAllValues:StringLike": {
+            "dynamodb:LeadingKeys": ["USER#*", "PARK#*"],
+          },
+        },
       }),
     );
 

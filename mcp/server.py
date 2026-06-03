@@ -3303,6 +3303,14 @@ _PLAN_RECORDED_TTL_SECS = 365 * 24 * 60 * 60
 # stale for the user to recall details; Claude should skip asking
 # about them rather than nag.
 _PLAN_STALENESS_DAYS = 14
+# Multi-day trip planner (M5). A not-yet-recorded plan expires this many
+# days past its trip day — so a FUTURE plan survives until just after the
+# day it's for, while a same-day plan still auto-cleans if no outcome is
+# ever recorded. Replaces the old fixed "now + 24h" pending TTL, which
+# would have deleted a future trip plan the day after it was built.
+_PLAN_PENDING_BUFFER_DAYS = 2
+# Trip header rows (TRIP#<trip_id>) outlive their last day by this much.
+_TRIP_BUFFER_DAYS = 3
 
 
 def _epoch_now() -> int:
@@ -3319,6 +3327,91 @@ def _coerce_plan_id_to_sk(plan_id: str) -> str:
     if plan_id.startswith("PLAN#"):
         return plan_id
     return f"PLAN#{plan_id}"
+
+
+def _today_et_date_iso() -> str:
+    """Calendar date in Eastern time, ISO (YYYY-MM-DD).
+
+    Matches the `planned_for_date` convention record_plan has always
+    used — the human "what day is the trip," a plain ET calendar date,
+    NOT the 4am park-day shift the heatmap/downtime tools apply.
+    """
+    return datetime.now(_EASTERN).date().isoformat()
+
+
+def _plan_pending_ttl(planned_for_date: str) -> int:
+    """TTL epoch for a not-yet-recorded plan: a couple days past its trip
+    day. Future plans survive until just after the day; same-day plans
+    still auto-clean if never outcomed. Falls back to the old 24h window
+    if the date can't be parsed.
+    """
+    try:
+        d = datetime.fromisoformat(planned_for_date).date()
+    except ValueError:
+        return _epoch_now() + _PLAN_PENDING_TTL_SECS
+    # Expire at the park-day boundary (4am ET) `buffer + 1` days later.
+    expiry_et = datetime.combine(
+        d + timedelta(days=_PLAN_PENDING_BUFFER_DAYS + 1),
+        time(_PARK_DAY_BOUNDARY_HOUR),
+        tzinfo=_EASTERN,
+    )
+    return int(expiry_et.astimezone(timezone.utc).timestamp())
+
+
+def _build_plan_item(
+    *,
+    user_id: str,
+    park_key: str,
+    ride_sequence: list[dict[str, Any]],
+    planned_for_date: str,
+    plan_ts: str,
+    show_selections: list[dict[str, Any]] | None = None,
+    context: dict[str, Any] | None = None,
+    notes: str | None = None,
+    trip_id: str | None = None,
+    plan_window: dict[str, Any] | None = None,
+    active: bool = False,
+    activated_at: str | None = None,
+    created_by: str | None = None,
+) -> dict[str, Any]:
+    """Assemble a PLAN# row. Shared by record_plan (single day, often
+    same-day + active) and create_trip (one dormant row per trip day).
+
+    Multi-day fields (M5):
+      - `planned_for_date`: the day the plan is FOR (settable; future-capable).
+      - `trip_id`: groups day-plans into one trip (None for a standalone plan).
+      - `active`: gates poller disruption alerts. A dormant future plan
+        MUST stay active=false until activated on its day, or it would
+        fire alerts for rides weeks ahead.
+      - `plan_window`: optional {open, close} ET times; the poller only
+        alerts inside this window once set (resolved at activation).
+      - `created_by`: attribution label (friendly user id). Defaults to
+        user_id. In the shared-trip model multiple people write to one
+        partition, so we stamp who recorded each row.
+    """
+    return {
+        "PK": f"USER#{user_id}",
+        "SK": f"PLAN#{plan_ts}",
+        "park_key": park_key,
+        "planned_at": plan_ts,
+        "planned_for_date": planned_for_date,
+        "trip_id": trip_id,
+        "ride_sequence": ride_sequence,
+        # As rides get done / abandoned during execution they move OUT of
+        # ride_sequence and INTO one of these two arrays (poller only
+        # watches ride_sequence).
+        "completed_rides": [],
+        "dropped_rides": [],
+        "show_selections": show_selections or [],
+        "context": context or {},
+        "notes": notes,
+        "plan_window": plan_window,
+        "active": active,
+        "activated_at": activated_at,
+        "created_by": created_by or user_id,
+        "outcome_recorded": False,
+        "ttl": _plan_pending_ttl(planned_for_date),
+    }
 
 
 # Aggression rating numeric scale. Negative = plan didn't fit (too
@@ -3628,6 +3721,11 @@ def record_plan(
     show_selections: list[dict[str, Any]] | None = None,
     context: dict[str, Any] | None = None,
     notes: str | None = None,
+    planned_for_date: str | None = None,
+    trip_id: str | None = None,
+    plan_window: dict[str, Any] | None = None,
+    active: bool | None = None,
+    created_by: str | None = None,
     user_id: str = _DEFAULT_USER_ID,
 ) -> dict[str, Any]:
     """Persist a plan you just proposed and the user accepted.
@@ -3639,9 +3737,17 @@ def record_plan(
     the user is actually going to attempt so we can compare against
     actuals later.
 
-    The row is written with a 24h TTL initially — if no
-    record_plan_outcome call confirms it within a day, it
-    auto-cleans. Once outcome is recorded, TTL extends to 1 year.
+    **Same-day vs future (multi-day trips).** By default this records a
+    plan for TODAY, which auto-activates: the poller immediately watches
+    it for live disruption alerts. To pre-build a FUTURE day of a trip,
+    pass `planned_for_date` (and usually a `trip_id` to group the days) —
+    that row stays DORMANT (no alerts) until the user activates it on the
+    day via activate_plan. For building a whole multi-day trip at once,
+    prefer create_trip, which mints the trip + one dormant day per date.
+
+    The row's TTL is keyed to its trip day: a not-yet-recorded plan
+    survives a couple days past `planned_for_date`, then auto-cleans.
+    Once an outcome is recorded, TTL extends to 1 year.
 
     Args:
         park: Park key or human name.
@@ -3670,41 +3776,65 @@ def record_plan(
         notes: Optional free-text capturing user-stated constraints
             or preferences for this plan ("dining at 6pm", "skipping
             water rides because of rain"). Helps later calibration.
+        planned_for_date: ISO date (YYYY-MM-DD) the plan is FOR.
+            Defaults to today (ET). Pass a future date to pre-build a
+            day of an upcoming trip — that row stays dormant (no alerts)
+            until activated on the day.
+        trip_id: Optional. Groups this day into a multi-day trip (the
+            id minted by create_trip). Omit for a standalone plan.
+        plan_window: Optional {"open": iso_time, "close": iso_time} ET
+            window for the day. Once set + activated, disruption alerts
+            only fire inside this window. Usually filled in at activation.
+        active: Override the dormant/active default. Leave None for the
+            normal behavior: same-day plans auto-activate (poller starts
+            watching immediately), future-dated plans stay dormant.
+        created_by: Attribution label (friendly user id). Defaults to
+            user_id. In the shared-trip model this records who recorded
+            the plan.
         user_id: Single-user default is "megan". Pass another value
             only if planning for a different family member.
 
     Returns:
         Dict with plan_id (the SK suffix — pass back to
-        record_plan_outcome later), user_id, expires_at_epoch, and
-        a hint for what you should do next.
+        record_plan_outcome later), user_id, planned_for_date, trip_id,
+        active, expires_at_epoch, and a hint for what you should do next.
     """
     park_key = _normalize_park(park)
     now_utc = datetime.now(timezone.utc)
     plan_ts = (context or {}).get("planned_at") or now_utc.isoformat()
-    sk = f"PLAN#{plan_ts}"
-    ttl_epoch = _epoch_now() + _PLAN_PENDING_TTL_SECS
 
-    item: dict[str, Any] = {
-        "PK": f"USER#{user_id}",
-        "SK": sk,
-        "park_key": park_key,
-        "planned_at": plan_ts,
-        "planned_for_date": now_utc.astimezone(_EASTERN).date().isoformat(),
-        "ride_sequence": ride_sequence,
-        # As rides get done / abandoned during execution they move
-        # OUT of ride_sequence and INTO one of these two arrays.
-        # Poller only watches ride_sequence, so moved rides stop
-        # generating plan-disruption alerts immediately. Older plan
-        # rows that pre-date this schema have these absent; the
-        # tools that read them handle missing keys defensively.
-        "completed_rides": [],
-        "dropped_rides": [],
-        "show_selections": show_selections or [],
-        "context": context or {},
-        "notes": notes,
-        "outcome_recorded": False,
-        "ttl": ttl_epoch,
-    }
+    pfd = planned_for_date or _today_et_date_iso()
+    # Validate an explicitly-passed date so a typo fails loudly rather
+    # than writing a row that never matches a get_plan_for_day lookup.
+    try:
+        datetime.fromisoformat(pfd)
+    except ValueError:
+        return {
+            "error": "Invalid planned_for_date",
+            "error_message": f"Could not parse '{planned_for_date}'. Use YYYY-MM-DD.",
+        }
+
+    # Same-day plans auto-activate; future-dated plans stay dormant
+    # until activate_plan flips them on their day.
+    if active is None:
+        active = pfd == _today_et_date_iso()
+    activated_at = now_utc.isoformat() if active else None
+
+    item = _build_plan_item(
+        user_id=user_id,
+        park_key=park_key,
+        ride_sequence=ride_sequence,
+        planned_for_date=pfd,
+        plan_ts=plan_ts,
+        show_selections=show_selections,
+        context=context,
+        notes=notes,
+        trip_id=trip_id,
+        plan_window=plan_window,
+        active=active,
+        activated_at=activated_at,
+        created_by=created_by,
+    )
 
     try:
         table = _ddb_table()
@@ -3716,16 +3846,468 @@ def record_plan(
             "error_message": str(e),
         }
 
+    if active:
+        next_hint = (
+            "Plan saved and ACTIVE — Magic Monitor is now watching its "
+            "rides for live disruptions. When the user signals end-of-trip "
+            "(\"we're done\", \"that worked great\") OR reports outcomes, "
+            "call record_plan_outcome with this plan_id."
+        )
+    else:
+        next_hint = (
+            f"Future plan saved as DORMANT for {pfd} (no alerts yet). On "
+            f"that day, call activate_plan to re-evaluate it against live "
+            f"conditions and start disruption monitoring."
+        )
+
     return {
         "plan_id": plan_ts,
         "user_id": user_id,
         "park_key": park_key,
-        "expires_at_epoch": ttl_epoch,
+        "planned_for_date": pfd,
+        "trip_id": trip_id,
+        "active": active,
+        "expires_at_epoch": item["ttl"],
+        "next_step_hint": next_hint,
+    }
+
+
+@mcp.tool()
+def create_trip(
+    name: str,
+    days: list[dict[str, Any]],
+    user_id: str = _DEFAULT_USER_ID,
+    created_by: str | None = None,
+) -> dict[str, Any]:
+    """Pre-build a whole multi-day trip: a TRIP header + one dormant
+    day-plan per date.
+
+    Use this when the user wants to plan an upcoming trip ahead of time
+    ("plan our June 23-25 trip: MK, then EPCOT, then HS"). Each day is
+    written DORMANT — no disruption alerts — until the user activates it
+    on the day via activate_plan (which re-evaluates that day against
+    live conditions first). For a single same-day plan use record_plan.
+
+    Args:
+        name: Human label for the trip ("June 2026 family trip").
+        days: Ordered list, one per trip day. Each entry:
+            {"date": "YYYY-MM-DD" (required),
+             "park": park key/name (required),
+             "ride_sequence": [...] (optional — can be filled in later
+                 per day via record_plan with this trip_id, or
+                 add_ride_to_plan),
+             "show_selections": [...] (optional),
+             "plan_window": {"open","close"} (optional),
+             "notes": str (optional)}
+        user_id: Partition owner. Single-user default "megan" (the shared
+            trip space in the family-use model).
+        created_by: Attribution label; defaults to user_id.
+
+    Returns:
+        Dict with trip_id, name, start_date, end_date, and a per-day list
+        of {date, park_key, plan_id}. On error: an error payload — all
+        validation happens before any write, so no partial trip is left.
+    """
+    if not days:
+        return {
+            "error": "A trip needs at least one day",
+            "error_message": "days was empty.",
+        }
+
+    # Validate EVERYTHING before writing so we never leave a half-trip.
+    normalized: list[dict[str, Any]] = []
+    for i, day in enumerate(days):
+        date_str = (day or {}).get("date")
+        park = (day or {}).get("park")
+        if not date_str or not park:
+            return {
+                "error": "Each day needs 'date' and 'park'",
+                "error_message": f"day index {i} missing date/park: {day!r}",
+            }
+        try:
+            datetime.fromisoformat(date_str)
+        except ValueError:
+            return {
+                "error": "Invalid day date",
+                "error_message": f"day {i}: could not parse '{date_str}'. Use YYYY-MM-DD.",
+            }
+        try:
+            park_key = _normalize_park(park)
+        except ValueError as e:
+            return {"error": "Invalid day park", "error_message": f"day {i}: {e}"}
+        normalized.append({
+            "date": date_str,
+            "park_key": park_key,
+            "ride_sequence": day.get("ride_sequence") or [],
+            "show_selections": day.get("show_selections") or [],
+            "plan_window": day.get("plan_window"),
+            "notes": day.get("notes"),
+        })
+
+    normalized.sort(key=lambda d: d["date"])
+    start_date = normalized[0]["date"]
+    end_date = normalized[-1]["date"]
+    now_utc = datetime.now(timezone.utc)
+    trip_id = f"{start_date}_{int(now_utc.timestamp())}"
+
+    # Trip header outlives its last day by a few days.
+    try:
+        end_d = datetime.fromisoformat(end_date).date()
+        header_ttl = int(datetime.combine(
+            end_d + timedelta(days=_TRIP_BUFFER_DAYS + 1),
+            time(_PARK_DAY_BOUNDARY_HOUR), tzinfo=_EASTERN,
+        ).astimezone(timezone.utc).timestamp())
+    except ValueError:
+        header_ttl = _epoch_now() + _PLAN_RECORDED_TTL_SECS
+
+    header = {
+        "PK": f"USER#{user_id}",
+        "SK": f"TRIP#{trip_id}",
+        "name": name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "days": [{"date": d["date"], "park_key": d["park_key"]} for d in normalized],
+        "created_by": created_by or user_id,
+        "created_at": now_utc.isoformat(),
+        "ttl": header_ttl,
+    }
+
+    day_results: list[dict[str, Any]] = []
+    try:
+        table = _ddb_table()
+        with table.batch_writer() as batch:
+            batch.put_item(Item=_floats_to_decimals(header))
+            for i, d in enumerate(normalized):
+                # Unique plan_ts per day — microsecond offset guards
+                # against identical timestamps in a tight loop.
+                plan_ts = (now_utc + timedelta(microseconds=i + 1)).isoformat()
+                item = _build_plan_item(
+                    user_id=user_id,
+                    park_key=d["park_key"],
+                    ride_sequence=d["ride_sequence"],
+                    planned_for_date=d["date"],
+                    plan_ts=plan_ts,
+                    show_selections=d["show_selections"],
+                    notes=d["notes"],
+                    trip_id=trip_id,
+                    plan_window=d["plan_window"],
+                    active=False,
+                    created_by=created_by,
+                )
+                batch.put_item(Item=_floats_to_decimals(item))
+                day_results.append({
+                    "date": d["date"],
+                    "park_key": d["park_key"],
+                    "plan_id": plan_ts,
+                })
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Trip write failed",
+            "error_message": str(e),
+        }
+
+    return {
+        "trip_id": trip_id,
+        "name": name,
+        "start_date": start_date,
+        "end_date": end_date,
+        "days": day_results,
         "next_step_hint": (
-            "Plan saved as pending. When the user signals end-of-trip "
-            "(\"we're done\", \"heading out\", \"that worked great\") "
-            "OR explicitly reports outcomes, call record_plan_outcome "
-            "with this plan_id. Otherwise the row auto-expires in 24h."
+            "Trip created — all days are dormant (no alerts). Refine each "
+            "day's rides anytime with record_plan (same trip_id) or "
+            "add_ride_to_plan. On each trip day, call activate_plan to "
+            "re-evaluate against live conditions and start monitoring."
+        ),
+    }
+
+
+@mcp.tool()
+def get_plan_for_day(
+    date: str | None = None,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Return the plan recorded for a specific day (default today).
+
+    Use this on a trip day ("what's my plan today?") to pull up that
+    day's plan so you can re-evaluate + activate it, or mid-day to see
+    what's left. Picks the ACTIVE plan for the date if one exists, else
+    the most recently recorded plan for that date.
+
+    Args:
+        date: ISO date (YYYY-MM-DD). Defaults to today (ET).
+        user_id: Partition owner. Default "megan".
+
+    Returns:
+        Dict with date, found (bool), and when found the plan_id + full
+        plan body (park_key, trip_id, active, activated_at, plan_window,
+        ride_sequence, completed_rides, dropped_rides, show_selections,
+        notes, outcome_recorded). found=false when nothing's planned.
+    """
+    target = date or _today_et_date_iso()
+    try:
+        datetime.fromisoformat(target)
+    except ValueError:
+        return {
+            "error": "Invalid date",
+            "error_message": f"Could not parse '{date}'. Use YYYY-MM-DD.",
+        }
+
+    try:
+        table = _ddb_table()
+        items: list[dict] = []
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{user_id}", ":sk": "PLAN#"},
+        }
+        while True:
+            resp = table.query(**kwargs)
+            items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan read failed",
+            "error_message": str(e),
+        }
+
+    matches = [
+        _convert_decimals(it) for it in items
+        if it.get("planned_for_date") == target
+    ]
+    if not matches:
+        return {
+            "date": target,
+            "user_id": user_id,
+            "found": False,
+            "note": f"No plan recorded for {target}.",
+        }
+
+    # Prefer the active plan; else the most recently recorded.
+    matches.sort(key=lambda it: it.get("planned_at") or it["SK"], reverse=True)
+    chosen = next((m for m in matches if m.get("active")), matches[0])
+
+    return {
+        "date": target,
+        "user_id": user_id,
+        "found": True,
+        "plan_id": chosen["SK"][len("PLAN#"):],
+        "trip_id": chosen.get("trip_id"),
+        "park_key": chosen.get("park_key"),
+        "active": bool(chosen.get("active")),
+        "activated_at": chosen.get("activated_at"),
+        "plan_window": chosen.get("plan_window"),
+        "ride_sequence": chosen.get("ride_sequence", []),
+        "completed_rides": chosen.get("completed_rides", []),
+        "dropped_rides": chosen.get("dropped_rides", []),
+        "show_selections": chosen.get("show_selections", []),
+        "notes": chosen.get("notes"),
+        "outcome_recorded": bool(chosen.get("outcome_recorded")),
+        "other_plans_for_day": len(matches) - 1,
+    }
+
+
+@mcp.tool()
+def get_upcoming_trip(user_id: str = _DEFAULT_USER_ID) -> dict[str, Any]:
+    """Return the soonest upcoming (or in-progress) trip and its days.
+
+    Use this at the start of a session to see whether the user has a trip
+    coming up ("you've got your June 23-25 trip — want to keep building
+    it?"). Returns the nearest trip whose end_date >= today, with each
+    day's park + whether that day's plan is active or still dormant.
+
+    Args:
+        user_id: Partition owner. Default "megan".
+
+    Returns:
+        Dict with found (bool); when found: trip_id, name, start_date,
+        end_date, and days [{date, park_key, plan_id, active, ride_count,
+        outcome_recorded}]. found=false when there's no upcoming trip.
+    """
+    today = _today_et_date_iso()
+    try:
+        table = _ddb_table()
+        trip_items: list[dict] = []
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{user_id}", ":sk": "TRIP#"},
+        }
+        while True:
+            resp = table.query(**kwargs)
+            trip_items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Trip read failed",
+            "error_message": str(e),
+        }
+
+    trips = [
+        _convert_decimals(it) for it in trip_items
+        if (it.get("end_date") or "") >= today
+    ]
+    if not trips:
+        return {"user_id": user_id, "found": False, "note": "No upcoming trip."}
+    trips.sort(key=lambda t: t.get("start_date") or "")
+    trip = trips[0]
+    trip_id = trip["SK"][len("TRIP#"):]
+
+    # Roll up per-day status from the trip's PLAN# rows.
+    day_status: dict[str, dict[str, Any]] = {}
+    try:
+        plan_items: list[dict] = []
+        kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{user_id}", ":sk": "PLAN#"},
+        }
+        while True:
+            resp = table.query(**kwargs)
+            plan_items.extend(resp.get("Items", []))
+            if "LastEvaluatedKey" not in resp:
+                break
+            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        for it in plan_items:
+            it = _convert_decimals(it)
+            if it.get("trip_id") != trip_id:
+                continue
+            day_status[it.get("planned_for_date")] = {
+                "plan_id": it["SK"][len("PLAN#"):],
+                "active": bool(it.get("active")),
+                "ride_count": len(it.get("ride_sequence") or []),
+                "outcome_recorded": bool(it.get("outcome_recorded")),
+            }
+    except Exception:
+        pass  # header is still useful even if the day rollup fails
+
+    days_out = []
+    for d in trip.get("days", []):
+        st = day_status.get(d.get("date"), {})
+        days_out.append({
+            "date": d.get("date"),
+            "park_key": d.get("park_key"),
+            "plan_id": st.get("plan_id"),
+            "active": st.get("active", False),
+            "ride_count": st.get("ride_count", 0),
+            "outcome_recorded": st.get("outcome_recorded", False),
+        })
+
+    return {
+        "user_id": user_id,
+        "found": True,
+        "trip_id": trip_id,
+        "name": trip.get("name"),
+        "start_date": trip.get("start_date"),
+        "end_date": trip.get("end_date"),
+        "days": days_out,
+    }
+
+
+@mcp.tool()
+def activate_plan(
+    plan_id: str | None = None,
+    date: str | None = None,
+    ride_sequence: list[dict[str, Any]] | None = None,
+    plan_window: dict[str, Any] | None = None,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Activate a day's plan: turn on live disruption monitoring after
+    re-evaluating it against live conditions.
+
+    The activation step in the multi-day trip flow. On the trip day,
+    AFTER you pull the plan up (get_plan_for_day) and re-check it against
+    get_planning_context (what's DOWN now, today's actual forecast,
+    weather, confirmed hours) and the user accepts the adjusted plan,
+    call this to:
+      - flip the plan ACTIVE — the poller then fires disruption alerts
+        for its rides. A dormant future plan fires NOTHING until activated.
+      - store the re-evaluated `ride_sequence` and resolved `plan_window`
+        so the active plan matches what you and the user just agreed to.
+
+    Same-day plans recorded via record_plan are already active; use this
+    for future/dormant plans on their day (or to re-activate after edits).
+
+    Args:
+        plan_id: The plan to activate. If omitted, the plan for `date`
+            (default today) is looked up.
+        date: ISO date to look the plan up by, if plan_id isn't given.
+            Defaults to today (ET).
+        ride_sequence: Optional. The accepted, live-re-evaluated ride
+            order — replaces the stored sequence so monitoring + the
+            user's view reflect the adjusted plan.
+        plan_window: Optional {"open","close"} ET window resolved to
+            concrete times (e.g. "close" -> the park's actual close from
+            get_planning_context). Once set, alerts fire only inside it.
+        user_id: Partition owner. Default "megan".
+
+    Returns:
+        Dict with plan_id, active=true, activated_at, planned_for_date,
+        plan_window, ride_count. Error payload if the plan isn't found.
+    """
+    # Resolve plan_id from the date if not given explicitly.
+    if not plan_id:
+        lookup = get_plan_for_day(date=date, user_id=user_id)
+        if lookup.get("error"):
+            return lookup
+        if not lookup.get("found"):
+            return {
+                "error": "No plan to activate",
+                "error_message": lookup.get("note") or f"No plan for {date or 'today'}.",
+            }
+        plan_id = lookup["plan_id"]
+
+    sk = _coerce_plan_id_to_sk(plan_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    set_parts = ["active = :a", "activated_at = :at"]
+    expr_values: dict[str, Any] = {":a": True, ":at": now_iso}
+    if ride_sequence is not None:
+        set_parts.append("ride_sequence = :seq")
+        expr_values[":seq"] = ride_sequence
+    if plan_window is not None:
+        set_parts.append("plan_window = :win")
+        expr_values[":win"] = plan_window
+    update_expr = "SET " + ", ".join(set_parts)
+
+    try:
+        table = _ddb_table()
+        resp = table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": sk},
+            UpdateExpression=update_expr,
+            ExpressionAttributeValues=_floats_to_decimals(expr_values),
+            ConditionExpression="attribute_exists(PK)",
+            ReturnValues="ALL_NEW",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        if err is not None:
+            return err
+        msg = str(e)
+        if "ConditionalCheckFailedException" in msg:
+            return {
+                "error": "Plan not found",
+                "error_message": f"No plan with id '{plan_id}' for user '{user_id}'.",
+                "plan_id": plan_id,
+            }
+        return {"error": "Plan activation failed", "error_message": msg}
+
+    attrs = _convert_decimals(resp.get("Attributes", {}))
+    return {
+        "plan_id": plan_id,
+        "user_id": user_id,
+        "active": True,
+        "activated_at": now_iso,
+        "planned_for_date": attrs.get("planned_for_date"),
+        "plan_window": attrs.get("plan_window"),
+        "ride_count": len(attrs.get("ride_sequence") or []),
+        "note": (
+            "Plan activated — Magic Monitor is now watching its rides for "
+            "live disruptions"
+            + (" within the plan window." if attrs.get("plan_window") else ".")
         ),
     }
 
@@ -4426,6 +5008,10 @@ def get_user_plan_history(
             "plan_id": it["SK"][len("PLAN#"):],
             "planned_at": plan_ts,
             "planned_for_date": it.get("planned_for_date"),
+            "trip_id": it.get("trip_id"),
+            "active": bool(it.get("active")),
+            "activated_at": it.get("activated_at"),
+            "plan_window": it.get("plan_window"),
             "park_key": it.get("park_key"),
             "ride_sequence": it.get("ride_sequence", []),
             # Per-ride state arrays — populated by mark_ride_complete /
