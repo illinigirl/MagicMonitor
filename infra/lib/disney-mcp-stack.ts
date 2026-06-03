@@ -289,6 +289,12 @@ export class DisneyMcpStack extends cdk.Stack {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:DeleteItem",
+          // create_trip writes the trip header + dormant day-plans in one
+          // all-or-nothing batch. The LeadingKeys condition below already
+          // covers the multi-PK case (see the note above); the action was
+          // just missing — create_trip got AccessDenied in prod until this
+          // was added.
+          "dynamodb:BatchWriteItem",
         ],
         resources: [
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${DDB_TABLE_NAME}`,
