@@ -47,6 +47,29 @@ class _StubTable:
         # that exercise scan are restricted to known fixture data.
         return {"Items": list(self.items.values())}
 
+    def query(self, **kwargs):
+        # Minimal GSI query stub. Ignores IndexName / KeyConditionExpression
+        # / FilterExpression — the production code re-applies every gate
+        # (date, active, outcome_recorded, window) in Python, so the tests
+        # exercise that logic against known fixtures. Optionally paginates
+        # via self.page_size so a test can drive the ExclusiveStartKey loop.
+        all_items = list(self.items.values())
+        start = 0
+        esk = kwargs.get("ExclusiveStartKey")
+        if esk is not None:
+            keys = [(it["PK"], it["SK"]) for it in all_items]
+            marker = (esk["PK"], esk["SK"])
+            start = keys.index(marker) + 1 if marker in keys else 0
+        page_size = getattr(self, "page_size", None)
+        if page_size is None:
+            return {"Items": all_items[start:]}
+        end = start + page_size
+        resp = {"Items": all_items[start:end]}
+        if end < len(all_items):
+            last = all_items[end - 1]
+            resp["LastEvaluatedKey"] = {"PK": last["PK"], "SK": last["SK"]}
+        return resp
+
 
 def _swap_in_stub(stub):
     """Replace db._table with the provided stub for the test's scope."""
@@ -226,22 +249,24 @@ class TestLowWaitCooldown:
 # ── M5 activation + plan-window gating in build_active_plan_ride_index ──
 
 class TestActivePlanGating:
-    """The activation + plan-window gates. The stub scan returns all
-    items without parsing the FilterExpression, so these fixtures use
-    only USER#/PLAN# rows and rely on the in-Python guards (which mirror
-    the DDB FilterExpression) for the active/window behavior."""
+    """The activation + plan-window gates, plus the date / outcome filters
+    the GSI query relies on. The stub query() returns all items without
+    parsing the Key/Filter expressions, so these fixtures rely on the
+    in-Python guards (which mirror the DDB Key + FilterExpression) for the
+    date / active / outcome / window behavior."""
 
     def setup_method(self):
         self.stub = _StubTable()
         _swap_in_stub(self.stub)
 
     def _put_plan(self, plan_id, *, active=None, plan_window=None,
-                  ride_id="r1", ride_name="Space Mountain", pfd="2026-06-23"):
+                  ride_id="r1", ride_name="Space Mountain", pfd="2026-06-23",
+                  outcome_recorded=False):
         item = {
             "PK": "USER#megan",
             "SK": f"PLAN#{plan_id}",
             "planned_for_date": pfd,
-            "outcome_recorded": False,
+            "outcome_recorded": outcome_recorded,
             "park_key": "magic_kingdom",
             "ride_sequence": [{"ride_id": ride_id, "ride_name": ride_name}],
         }
@@ -300,3 +325,32 @@ class TestActivePlanGating:
                        plan_window={"open": "morning", "close": "night"})
         index, _ = db.build_active_plan_ride_index("2026-06-23", now_et=now)
         assert ("megan", "p1") in index.get("r1", [])  # fail-open
+
+    def test_plan_for_other_date_excluded(self):
+        # A plan for a different day must not surface in today's index.
+        # The GSI key condition handles this in prod; the Python date
+        # guard covers it under the stub (which returns all items).
+        self._put_plan("p1", active=True, pfd="2026-06-24")
+        index, active_plans = db.build_active_plan_ride_index("2026-06-23")
+        assert index == {}
+        assert active_plans == []
+
+    def test_outcome_recorded_plan_excluded(self):
+        # A plan whose outcome is already recorded is done — no alerts.
+        self._put_plan("p1", active=True, outcome_recorded=True)
+        index, active_plans = db.build_active_plan_ride_index("2026-06-23")
+        assert index == {}
+        assert active_plans == []
+
+    def test_many_plans_paginated(self):
+        # Larger fixture that drives the ExclusiveStartKey loop (page_size
+        # forces multi-page results). Guards the pagination path CLAUDE.md
+        # calls for in the data-growth category: every active plan must be
+        # found across pages, not just the first page's worth.
+        self.stub.page_size = 2
+        for i in range(5):
+            self._put_plan(f"p{i}", active=True, ride_id=f"r{i}")
+        index, active_plans = db.build_active_plan_ride_index("2026-06-23")
+        assert len(active_plans) == 5
+        for i in range(5):
+            assert ("megan", f"p{i}") in index.get(f"r{i}", [])

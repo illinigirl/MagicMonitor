@@ -357,13 +357,16 @@ def get_user_favorites_for_park(user_id: str, park_key: str) -> set[str]:
 # plans are active TODAY so it can ping users when a ride in their
 # plan transitions DOWN or BACK UP.
 #
-# Implementation note: this is a scan with FilterExpression. At
-# single-digit-user scale, the DisneyData table is small enough that
-# a full scan reads only a few hundred items (~125 RCU, well under
-# free tier). Cost: ~$0.025/day at current poll cadence. If the user
-# count grows past ~100, this should move to a GSI on
-# `(planned_for_date, outcome_recorded)` so we don't scan inactive
-# plans + historical USER#* / RIDE#* partitions to find a few rows.
+# Implementation note: this Queries the sparse `planned_for_date-index`
+# GSI (see disney-stack.ts) — one small partition (today's date), not a
+# table scan. It used to be a full-table Scan + FilterExpression; that
+# walked the whole table (~632MB / ~3M WAIT# rows by 2026-06-03) to find
+# a handful of PLAN# rows and hit its 50-page cap at ~8% coverage, so an
+# activated plan's row likely sat beyond the cap and never fired alerts.
+# The GSI is sparse (planned_for_date lives only on PLAN# rows), so the
+# Query returns just today's plans regardless of how large WAIT# grows.
+# active / outcome_recorded / window filtering is applied below (and in
+# Python too, so the stub-table tests cover it).
 
 def _plan_window_contains(plan_window, now_et) -> bool:
     """True if `now_et` is inside the plan's [open, close] window.
@@ -400,8 +403,8 @@ def _plan_window_contains(plan_window, now_et) -> bool:
 def build_active_plan_ride_index(
     today_date_iso: str, now_et=None
 ) -> tuple[dict, list[dict]]:
-    """Scan today's active (outcome_recorded=false) plans and return two
-    derived views from a single scan:
+    """Query today's active (outcome_recorded=false) plans via the sparse
+    planned_for_date GSI and return two derived views from a single query:
 
       ride_index: {ride_identifier: [(user_id, plan_id), ...]}
         Used by the per-ride DOWN/UP plan-aware fanout. `ride_identifier`
@@ -413,26 +416,29 @@ def build_active_plan_ride_index(
       active_plans: list of {user_id, plan_id, park_key, park_name}
         Used by the plan-weather-shift fanout, which is plan-scoped
         rather than ride-scoped. We need park info to compose the
-        alert body — extracted from the same scan so we don't pay for
+        alert body — extracted from the same query so we don't pay for
         a second DDB pass.
 
     Called once per poll invocation, cached in the local handler
     scope. Returns ({}, []) on failure rather than raising — plan
     alerts are bonus, not load-bearing for the M1 alert path.
     """
-    # Paginate the scan — DDB returns 1MB pages max, and on a table
-    # with many RIDE# rows the PLAN# rows may not land in the first
-    # page (DDB scans don't guarantee any partition ordering). Without
-    # pagination this silently returns zero matches.
+    # Query the sparse planned_for_date GSI — one partition (today),
+    # not a table scan. Server-side FilterExpression narrows to active +
+    # not-yet-recorded; the same gates are re-applied in Python below so
+    # the stub-table tests (which don't parse FilterExpression) cover
+    # them. Paginate defensively, though a single date partition holds
+    # only a handful of plans.
     index: dict = {}
     active_plans: list[dict] = []
     last_evaluated_key = None
     page_count = 0
     while True:
         kwargs = {
+            "IndexName": "planned_for_date-index",
+            "KeyConditionExpression": "planned_for_date = :d",
             "FilterExpression": (
-                "planned_for_date = :d AND outcome_recorded = :false "
-                "AND begins_with(SK, :plan_prefix) AND begins_with(PK, :user_prefix) "
+                "outcome_recorded = :false "
                 # Activation gate (M5): a future trip day is written DORMANT
                 # (active=false) and fires no alerts until activate_plan flips
                 # it on its day. Legacy rows predate the field, so missing
@@ -445,17 +451,17 @@ def build_active_plan_ride_index(
                 ":d": today_date_iso,
                 ":false": False,
                 ":true": True,
-                ":plan_prefix": "PLAN#",
-                ":user_prefix": "USER#",
             },
         }
         if last_evaluated_key:
             kwargs["ExclusiveStartKey"] = last_evaluated_key
         try:
-            resp = _table.scan(**kwargs)
+            resp = _table.query(**kwargs)
         except Exception as e:
-            print(f"[poller] build_active_plan_ride_index scan failed (page {page_count}): {e}")
-            # Whatever we built so far is better than nothing.
+            print(f"[poller] build_active_plan_ride_index query failed (page {page_count}): {e}")
+            # Whatever we built so far is better than nothing. This also
+            # covers the brief GSI-backfill window right after the index
+            # is first created (query 4xx until it goes ACTIVE).
             return index, active_plans
         page_count += 1
         for item in resp.get("Items", []):
@@ -463,11 +469,19 @@ def build_active_plan_ride_index(
             plan_id = item.get("SK", "").removeprefix("PLAN#")
             if not user_id or not plan_id:
                 continue
-            # Activation + window gates (M5), enforced in Python too so the
-            # stub-table tests (which don't parse FilterExpression) cover
-            # them. active=False → dormant, no alerts until activated.
-            # Outside the plan's window → skip (fail-open if no/unparseable
-            # window). Missing `active` (legacy rows) counts as active.
+            # Defensive guards re-applied in Python (the stub query()
+            # doesn't parse Key/Filter expressions): the GSI is sparse to
+            # PLAN# rows, but enforce the row shape + date + gates here too.
+            if not item.get("SK", "").startswith("PLAN#"):
+                continue
+            if item.get("planned_for_date") != today_date_iso:
+                continue
+            if item.get("outcome_recorded"):
+                continue
+            # Activation + window gates (M5). active=False → dormant, no
+            # alerts until activated. Outside the plan's window → skip
+            # (fail-open if no/unparseable window). Missing `active`
+            # (legacy rows) counts as active.
             if item.get("active") is False:
                 continue
             if now_et is not None and not _plan_window_contains(
@@ -491,12 +505,14 @@ def build_active_plan_ride_index(
         last_evaluated_key = resp.get("LastEvaluatedKey")
         if not last_evaluated_key:
             break
-        # Belt-and-braces guard against runaway pagination if the table
-        # grows unexpectedly. At ~2K rows + ~1MB pages we expect 2-3
-        # pages today; 50 pages = ~50MB of scan, well beyond any
-        # realistic state of the table.
-        if page_count >= 50:
-            print(f"[poller] build_active_plan_ride_index hit page cap (50), stopping early")
+        # Belt-and-braces cap. We Query one date partition now (sparse
+        # index → at most a handful of plans for a single day), so this
+        # should never trigger — it's pure defense-in-depth against an
+        # unexpected explosion of same-day plans. A cap hit here would be
+        # a real anomaly worth investigating, unlike the old 50-page Scan
+        # cap that data growth made routine.
+        if page_count >= 10:
+            print(f"[poller] build_active_plan_ride_index hit page cap (10) — unexpected for a single-day query, stopping early")
             break
     return index, active_plans
 

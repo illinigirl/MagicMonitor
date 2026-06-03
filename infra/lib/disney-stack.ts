@@ -232,6 +232,34 @@ export class DisneyStack extends cdk.Stack {
       projectionType: dynamodb.ProjectionType.ALL,
     });
 
+    // GSI: planned_for_date + SK — the SPARSE active-plan index.
+    //
+    // Replaces the full-table Scan + FilterExpression that powered the
+    // poller's `build_active_plan_ride_index`. That scan walked the
+    // whole table (now ~632MB / ~3M WAIT# rows) to find a handful of
+    // PLAN# rows and hit its 50-page cap at ~8% coverage — so an
+    // activated plan's row likely sat beyond the cap and never fired
+    // disruption alerts. Same category as the 2026-05-24 getParkRides
+    // regression; same cure as the park_key index above.
+    //
+    // This index is SPARSE: `planned_for_date` is written ONLY on PLAN#
+    // rows (every one of them, since record_plan's first version) and on
+    // no other row type — so DynamoDB indexes only plan rows here, not
+    // the WAIT#/STATE/HIST# bulk. Tiny + cheap, unlike park_key-SK-index
+    // (which is projection-ALL but non-sparse). The poller Queries one
+    // partition (today's date) instead of scanning 50MB+ every 2 min.
+    //
+    // No new attribute and no migration code: AWS backfills existing
+    // PLAN# rows automatically on GSI creation, and they all already
+    // carry planned_for_date. Sort key is `SK` (PLAN#<iso_ts>) for
+    // uniqueness.
+    dataTable.addGlobalSecondaryIndex({
+      indexName: "planned_for_date-index",
+      partitionKey: { name: "planned_for_date", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "SK", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     this.tableName = dataTable.tableName;
 
     // ─── Compute: poller Lambda ─────────────────────────────────────
