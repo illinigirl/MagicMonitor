@@ -1017,7 +1017,11 @@ def get_planning_context(
          with it: "You've got your <name> trip, <start>–<end> — want to
          keep building it, or is today one of its days?" Skip the prompt
          only when the user's message already makes the day's intent
-         obvious.
+         obvious. And when the user just wants to SEE a specific day —
+         "what's the plan for the 14th?" — call get_plan_for_day(date=...)
+         and show the stored plan. That's a read-only lookup, NOT the
+         on-the-day activation flow below: don't activate a future day,
+         and don't narrate this call's live waits as that date's.
        - **Building ahead (a date that isn't today).** When the user
          wants a day they're not at yet ("plan our June 23–25 trip",
          "rough out next Saturday's MK day"), PERSIST it dormant instead

@@ -60,6 +60,15 @@ class _StubTable:
             return {"Attributes": dict(item)}
         return {}
 
+    def delete_item(self, Key, ConditionExpression=None):
+        key = (Key["PK"], Key["SK"])
+        if (ConditionExpression and "attribute_exists(PK)" in ConditionExpression
+                and key not in self.items):
+            from botocore.exceptions import ClientError
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "c"}}, "DeleteItem")
+        self.items.pop(key, None)
+
     def batch_writer(self):
         table = self
 
@@ -67,6 +76,7 @@ class _StubTable:
             def __enter__(self_): return self_
             def __exit__(self_, *a): return False
             def put_item(self_, Item): table.put_item(Item=Item)
+            def delete_item(self_, Key): table.delete_item(Key=Key)
         return _BW()
 
 
@@ -125,7 +135,8 @@ class TestSharedWrites:
         # Security: HTTP write tools must NOT accept a client user_id.
         import inspect
         for name in ["record_plan", "create_trip", "activate_plan",
-                     "mark_ride_complete", "record_plan_outcome"]:
+                     "mark_ride_complete", "record_plan_outcome",
+                     "delete_trip", "delete_plan", "update_trip"]:
             params = inspect.signature(getattr(s, name)).parameters
             assert "user_id" not in params, f"{name} must not expose user_id"
 
@@ -193,3 +204,54 @@ class TestPlanHistory:
         s.record_plan("MK", [])
         out = s.get_user_plan_history(include_calibration=False)
         assert "calibration_summary" not in out
+
+
+# ─── trip CRUD (delete_trip / delete_plan / update_trip) ────────────
+
+
+class TestTripCrudHttp:
+    def _trip(self, as_user):
+        as_user("sub-megan")
+        out = s.create_trip("June trip", [
+            {"date": "2099-06-23", "park": "MK",
+             "ride_sequence": [{"ride_name": "Space", "ride_id": "sm"}]},
+            {"date": "2099-06-24", "park": "EPCOT"},
+        ])
+        return out["trip_id"]
+
+    def test_delete_trip_cascades(self, stub, as_user):
+        trip_id = self._trip(as_user)
+        out = s.delete_trip(trip_id)
+        assert out["ok"] is True and out["deleted_days"] == 2 and out["deleted_header"]
+        assert not [v for v in stub.items.values() if v.get("trip_id") == trip_id]
+        assert ("USER#megan", f"TRIP#{trip_id}") not in stub.items
+
+    def test_delete_trip_refuses_on_outcome(self, stub, as_user):
+        trip_id = self._trip(as_user)
+        day = next(v for v in stub.items.values() if v.get("trip_id") == trip_id)
+        day["outcome_recorded"] = True
+        out = s.delete_trip(trip_id)
+        assert out["error"] == "Trip has recorded outcomes"
+        assert ("USER#megan", f"TRIP#{trip_id}") in stub.items  # untouched
+
+    def test_delete_plan(self, stub, as_user):
+        as_user("sub-megan")
+        rec = s.record_plan("MK", [], planned_for_date="2099-06-23", active=False)
+        out = s.delete_plan(rec["plan_id"])
+        assert out["ok"] is True
+        assert ("USER#megan", f"PLAN#{rec['plan_id']}") not in stub.items
+
+    def test_update_trip_rename(self, stub, as_user):
+        trip_id = self._trip(as_user)
+        out = s.update_trip(trip_id, "Renamed trip")
+        assert out["ok"] is True
+        assert stub.items[("USER#megan", f"TRIP#{trip_id}")]["name"] == "Renamed trip"
+
+    def test_upcoming_trip_derives_added_day(self, stub, as_user):
+        trip_id = self._trip(as_user)
+        s.record_plan("HS", [], planned_for_date="2099-06-25",
+                      trip_id=trip_id, active=False)
+        out = s.get_upcoming_trip()
+        assert out["found"] is True
+        assert "2099-06-25" in [d["date"] for d in out["days"]]
+        assert out["end_date"] == "2099-06-25"

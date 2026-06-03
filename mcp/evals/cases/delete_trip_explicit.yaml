@@ -1,0 +1,44 @@
+# Ninth eval case — delete a trip on an explicit, unambiguous request.
+#
+# delete_trip is destructive (cascades the header + every day). The right
+# default is to confirm before deleting — but when the user is explicit
+# and says not to check back, Claude should call delete_trip with the
+# given trip_id. Mirror of basic_mk_plan's "no need to check back"
+# acceptance pattern, applied to a destructive op. Also guards against
+# Claude reaching for the wrong tool (e.g. update_trip / record_plan).
+
+name: delete_trip_explicit
+description: >
+  Verifies Claude calls delete_trip for an explicit "scrap the whole
+  trip, don't check back" request, passing the given trip_id — and
+  doesn't mistake it for an edit.
+
+prompt: >
+  Delete my June 2026 trip — trip_id 2026-06-13_1790000000. I'm sure,
+  scrap the whole thing, no need to check back with me.
+
+tool_responses:
+  delete_trip:
+    response:
+      ok: true
+      trip_id: "2026-06-13_1790000000"
+      deleted_days: 3
+      deleted_header: true
+
+assertions:
+  - tool_called: delete_trip
+  - tool_called_with:
+      tool: delete_trip
+      args_equal:
+        trip_id: "2026-06-13_1790000000"
+  # Not an edit, not a rebuild.
+  - tool_not_called: update_trip
+  - tool_not_called: create_trip
+  - tool_not_called: record_plan
+  - response_mentions_any:
+      - deleted
+      - removed
+      - scrapped
+      - gone
+      - cleared
+  - stop_reason: end_turn

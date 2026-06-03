@@ -344,6 +344,66 @@ TOOLS: list[dict[str, Any]] = [
             "required": [],
         },
     },
+    {
+        "name": "delete_trip",
+        "description": (
+            "Delete a whole trip — its header AND every day plan under it, "
+            "in one cascade. Use when the user cancels/scraps a trip. To "
+            "drop just one day, use delete_plan. Guardrail: REFUSES if any "
+            "day has a recorded outcome (calibration history) unless "
+            "force=True — surface the refusal and confirm with the user "
+            "before retrying with force. Destructive: only call when the "
+            "user clearly wants the trip gone."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trip_id": {"type": "string"},
+                "force": {
+                    "type": "boolean",
+                    "description": "Delete even if some days have recorded outcomes.",
+                },
+                "user_id": {"type": "string"},
+            },
+            "required": ["trip_id"],
+        },
+    },
+    {
+        "name": "delete_plan",
+        "description": (
+            "Delete a single day's plan (drop one day from a trip, or "
+            "remove a standalone plan). For a whole trip use delete_trip. "
+            "Guardrail: refuses if the plan has a recorded outcome unless "
+            "force=True. Destructive: only when the user wants the day gone."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "plan_id": {"type": "string"},
+                "force": {"type": "boolean"},
+                "user_id": {"type": "string"},
+            },
+            "required": ["plan_id"],
+        },
+    },
+    {
+        "name": "update_trip",
+        "description": (
+            "Rename a trip (sets the trip header's name). A trip's days + "
+            "dates are derived from its day plans, so change those by "
+            "adding/removing days (record_plan / delete_plan), not here — "
+            "this only updates the human label."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trip_id": {"type": "string"},
+                "name": {"type": "string"},
+                "user_id": {"type": "string"},
+            },
+            "required": ["trip_id", "name"],
+        },
+    },
 ]
 
 

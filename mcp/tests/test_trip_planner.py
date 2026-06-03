@@ -73,6 +73,17 @@ class _StubTable:
             return {"Attributes": dict(item)}
         return {}
 
+    def delete_item(self, Key, ConditionExpression=None):
+        key = (Key["PK"], Key["SK"])
+        if (ConditionExpression and "attribute_exists(PK)" in ConditionExpression
+                and key not in self.items):
+            from botocore.exceptions import ClientError
+            raise ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "cond"}},
+                "DeleteItem",
+            )
+        self.items.pop(key, None)
+
     def batch_writer(self):
         table = self
 
@@ -85,6 +96,9 @@ class _StubTable:
 
             def put_item(self_, Item):
                 table.put_item(Item=Item)
+
+            def delete_item(self_, Key):
+                table.delete_item(Key=Key)
 
         return _BW()
 
@@ -293,3 +307,110 @@ class TestPendingTtl:
         ttl = server._plan_pending_ttl("not-a-date")
         now = int(datetime.now(timezone.utc).timestamp())
         assert now < ttl <= now + server._PLAN_PENDING_TTL_SECS + 5
+
+
+# ─── delete_trip / delete_plan / update_trip (trip CRUD) ────────────
+
+
+def _make_trip(stub, name="June trip"):
+    """Build a 2-day trip via create_trip and return its trip_id."""
+    out = server.create_trip(name, [
+        {"date": _future(20), "park": "MK", "ride_sequence": [{"ride_name": "Space", "ride_id": "sm"}]},
+        {"date": _future(21), "park": "EPCOT"},
+    ])
+    return out["trip_id"]
+
+
+class TestDeleteTrip:
+    def test_cascade_deletes_header_and_days(self, stub):
+        trip_id = _make_trip(stub)
+        out = server.delete_trip(trip_id)
+        assert out["ok"] is True
+        assert out["deleted_days"] == 2
+        assert out["deleted_header"] is True
+        # nothing left under this trip
+        assert ("USER#megan", f"TRIP#{trip_id}") not in stub.items
+        assert not [k for k, v in stub.items.items()
+                    if v.get("trip_id") == trip_id]
+
+    def test_not_found(self, stub):
+        out = server.delete_trip("nope_123")
+        assert out["error"] == "Trip not found"
+
+    def test_refuses_when_a_day_has_outcome(self, stub):
+        trip_id = _make_trip(stub)
+        # mark one day's outcome recorded
+        day = next(v for v in stub.items.values()
+                   if v.get("trip_id") == trip_id)
+        day["outcome_recorded"] = True
+        out = server.delete_trip(trip_id)
+        assert out["error"] == "Trip has recorded outcomes"
+        assert day["planned_for_date"] in out["days_with_outcomes"]
+        # nothing deleted
+        assert ("USER#megan", f"TRIP#{trip_id}") in stub.items
+
+    def test_force_deletes_despite_outcome(self, stub):
+        trip_id = _make_trip(stub)
+        day = next(v for v in stub.items.values() if v.get("trip_id") == trip_id)
+        day["outcome_recorded"] = True
+        out = server.delete_trip(trip_id, force=True)
+        assert out["ok"] is True
+        assert ("USER#megan", f"TRIP#{trip_id}") not in stub.items
+
+
+class TestDeletePlan:
+    def test_deletes_one_day(self, stub):
+        rec = server.record_plan("MK", [], planned_for_date=_future(5), active=False)
+        out = server.delete_plan(rec["plan_id"])
+        assert out["ok"] is True
+        assert ("USER#megan", f"PLAN#{rec['plan_id']}") not in stub.items
+
+    def test_not_found(self, stub):
+        out = server.delete_plan("2026-01-01T00:00:00+00:00")
+        assert out["error"] == "Plan not found"
+
+    def test_refuses_when_outcome_recorded(self, stub):
+        rec = server.record_plan("MK", [], planned_for_date=_future(5), active=False)
+        stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]["outcome_recorded"] = True
+        out = server.delete_plan(rec["plan_id"])
+        assert out["error"] == "Plan has a recorded outcome"
+        assert ("USER#megan", f"PLAN#{rec['plan_id']}") in stub.items  # not deleted
+
+
+class TestUpdateTrip:
+    def test_rename(self, stub):
+        trip_id = _make_trip(stub, name="old name")
+        out = server.update_trip(trip_id, "June 2026 family trip")
+        assert out["ok"] is True
+        assert stub.items[("USER#megan", f"TRIP#{trip_id}")]["name"] == "June 2026 family trip"
+
+    def test_not_found(self, stub):
+        out = server.update_trip("nope_123", "x")
+        assert out["error"] == "Trip not found"
+
+
+# ─── get_upcoming_trip derives days from PLAN# rows (header-sync fix) ─
+
+
+class TestUpcomingTripDerivation:
+    def test_day_added_after_create_shows_up(self, stub):
+        # The header-sync bug: a day added via record_plan(trip_id=...) for
+        # a date NOT in the create_trip header must still appear, because
+        # the day list is derived from PLAN# rows, not the header.
+        trip_id = _make_trip(stub)  # days at +20, +21
+        added = _future(22)
+        server.record_plan("HS", [], planned_for_date=added,
+                           trip_id=trip_id, active=False)
+        out = server.get_upcoming_trip()
+        assert out["found"] is True
+        dates = [d["date"] for d in out["days"]]
+        assert added in dates                       # the new day surfaced
+        assert out["end_date"] == added             # date range derived from rows
+        assert len(out["days"]) == 3
+
+    def test_no_upcoming_when_all_days_past(self, stub):
+        # A trip whose days are all in the past is not "upcoming" even if a
+        # stale header end_date might once have suggested otherwise.
+        out = server.create_trip("old", [{"date": "2020-01-01", "park": "MK"}])
+        res = server.get_upcoming_trip()
+        assert res["found"] is False

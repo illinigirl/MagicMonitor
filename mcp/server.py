@@ -177,12 +177,12 @@ def hello_magic_monitor() -> str:
     """
     return (
         "Hello from Magic Monitor — MCP wiring works. "
-        "Available tools: get_park_heatmap, get_ride_analytics, "
-        "get_ride_dow_pattern, get_ride_down_clusters, "
-        "get_ride_ll_drops, get_short_wait_baseline, "
-        "get_ride_forecast, get_live_ride_status, "
-        "get_park_live_status, get_ride_downtime_today, "
-        "get_planning_context, find_rides_matching."
+        "Live-status + analytics reads, get_planning_context (one-shot "
+        "planner context), and the multi-day trip-planner tools "
+        "(record_plan, create_trip, activate_plan, plan-edit + outcome "
+        "tools, get_plan_for_day / get_upcoming_trip / get_user_plan_history) "
+        "are all available. Call tools/list for the authoritative set — "
+        "don't infer tool availability from this message."
     )
 
 
@@ -1726,10 +1726,19 @@ def get_plan_for_day(
 ) -> dict[str, Any]:
     """Return the plan recorded for a specific day (default today).
 
-    Use this on a trip day ("what's my plan today?") to pull up that
-    day's plan so you can re-evaluate + activate it, or mid-day to see
-    what's left. Picks the ACTIVE plan for the date if one exists, else
-    the most recently recorded plan for that date.
+    Works for ANY date — pass `date` to answer "what's the plan for
+    June 14?". Picks the ACTIVE plan for the date if one exists, else
+    the most recently recorded plan for that date. Two ways it's used:
+
+    - **Read-only lookup of a FUTURE day.** "What's our June 14 plan?" —
+      just pull it up and show the pre-built ride list. Do NOT activate
+      it (activation happens on the day, after a live re-eval — see
+      get_planning_context section 0d), and do NOT present today's live
+      waits as that date's reality; the stored predictions are typical
+      patterns for a day that hasn't happened yet.
+    - **On the trip day.** "What's my plan today?" — pull it up, re-check
+      against live conditions (get_planning_context), then activate. Also
+      use mid-day to see what's left.
 
     Args:
         date: ISO date (YYYY-MM-DD). Defaults to today (ET).
@@ -1806,6 +1815,23 @@ def get_plan_for_day(
     }
 
 
+def _query_user_prefix(table, user_id: str, sk_prefix: str) -> list[dict]:
+    """All items under USER#<user_id> whose SK begins_with sk_prefix,
+    fully paginated. Used by the trip read/delete tools."""
+    items: list[dict] = []
+    kwargs = {
+        "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+        "ExpressionAttributeValues": {":pk": f"USER#{user_id}", ":sk": sk_prefix},
+    }
+    while True:
+        resp = table.query(**kwargs)
+        items.extend(resp.get("Items", []))
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    return items
+
+
 @mcp.tool()
 def get_upcoming_trip(user_id: str = _DEFAULT_USER_ID) -> dict[str, Any]:
     """Return the soonest upcoming (or in-progress) trip and its days.
@@ -1826,17 +1852,8 @@ def get_upcoming_trip(user_id: str = _DEFAULT_USER_ID) -> dict[str, Any]:
     today = _today_et_date_iso()
     try:
         table = _ddb_table()
-        trip_items: list[dict] = []
-        kwargs = {
-            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
-            "ExpressionAttributeValues": {":pk": f"USER#{user_id}", ":sk": "TRIP#"},
-        }
-        while True:
-            resp = table.query(**kwargs)
-            trip_items.extend(resp.get("Items", []))
-            if "LastEvaluatedKey" not in resp:
-                break
-            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        trip_items = _query_user_prefix(table, user_id, "TRIP#")
+        plan_items = _query_user_prefix(table, user_id, "PLAN#")
     except Exception as e:
         err = _aws_error_payload(e)
         return err if err is not None else {
@@ -1844,64 +1861,247 @@ def get_upcoming_trip(user_id: str = _DEFAULT_USER_ID) -> dict[str, Any]:
             "error_message": str(e),
         }
 
-    trips = [
-        _convert_decimals(it) for it in trip_items
-        if (it.get("end_date") or "") >= today
-    ]
-    if not trips:
+    # PLAN# rows are the source of truth for trip membership + date range
+    # (the TRIP# header's `days`/start/end are a creation-time snapshot that
+    # can drift as days are added/removed — so we derive, not trust it).
+    by_trip: dict[str, list[dict]] = {}
+    for it in plan_items:
+        it = _convert_decimals(it)
+        tid = it.get("trip_id")
+        if tid:
+            by_trip.setdefault(tid, []).append(it)
+
+    candidates = []
+    for hdr in trip_items:
+        hdr = _convert_decimals(hdr)
+        trip_id = hdr["SK"][len("TRIP#"):]
+        rows = by_trip.get(trip_id, [])
+        dates = sorted(r["planned_for_date"] for r in rows if r.get("planned_for_date"))
+        if not dates or dates[-1] < today:
+            continue  # no live days, or the whole trip is already past
+        candidates.append((dates[0], trip_id, hdr, rows))
+
+    if not candidates:
         return {"user_id": user_id, "found": False, "note": "No upcoming trip."}
-    trips.sort(key=lambda t: t.get("start_date") or "")
-    trip = trips[0]
-    trip_id = trip["SK"][len("TRIP#"):]
+    candidates.sort(key=lambda c: c[0])  # soonest start_date first
+    _start, trip_id, hdr, rows = candidates[0]
+    rows.sort(key=lambda r: r.get("planned_for_date") or "")
 
-    # Roll up per-day status from the trip's PLAN# rows.
-    day_status: dict[str, dict[str, Any]] = {}
-    try:
-        plan_items: list[dict] = []
-        kwargs = {
-            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
-            "ExpressionAttributeValues": {":pk": f"USER#{user_id}", ":sk": "PLAN#"},
-        }
-        while True:
-            resp = table.query(**kwargs)
-            plan_items.extend(resp.get("Items", []))
-            if "LastEvaluatedKey" not in resp:
-                break
-            kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
-        for it in plan_items:
-            it = _convert_decimals(it)
-            if it.get("trip_id") != trip_id:
-                continue
-            day_status[it.get("planned_for_date")] = {
-                "plan_id": it["SK"][len("PLAN#"):],
-                "active": bool(it.get("active")),
-                "ride_count": len(it.get("ride_sequence") or []),
-                "outcome_recorded": bool(it.get("outcome_recorded")),
-            }
-    except Exception:
-        pass  # header is still useful even if the day rollup fails
-
-    days_out = []
-    for d in trip.get("days", []):
-        st = day_status.get(d.get("date"), {})
-        days_out.append({
-            "date": d.get("date"),
-            "park_key": d.get("park_key"),
-            "plan_id": st.get("plan_id"),
-            "active": st.get("active", False),
-            "ride_count": st.get("ride_count", 0),
-            "outcome_recorded": st.get("outcome_recorded", False),
-        })
+    days_out = [{
+        "date": r.get("planned_for_date"),
+        "park_key": r.get("park_key"),
+        "plan_id": r["SK"][len("PLAN#"):],
+        "active": bool(r.get("active")),
+        "ride_count": len(r.get("ride_sequence") or []),
+        "outcome_recorded": bool(r.get("outcome_recorded")),
+    } for r in rows]
 
     return {
         "user_id": user_id,
         "found": True,
         "trip_id": trip_id,
-        "name": trip.get("name"),
-        "start_date": trip.get("start_date"),
-        "end_date": trip.get("end_date"),
+        "name": hdr.get("name"),
+        "start_date": days_out[0]["date"],
+        "end_date": days_out[-1]["date"],
         "days": days_out,
     }
+
+
+@mcp.tool()
+def delete_trip(
+    trip_id: str,
+    force: bool = False,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Delete a whole trip — its TRIP# header AND every PLAN# day row
+    grouped under it, in one cascade.
+
+    Use when the user cancels or scraps a trip ("delete my June trip",
+    "clear out that test trip"). To drop just one day, use delete_plan.
+
+    Guardrail: if any day already has a recorded outcome (real history
+    that feeds calibration), this REFUSES unless force=True — so feedback
+    data isn't silently destroyed. Surface the refusal and confirm with
+    the user before retrying with force=True.
+
+    Args:
+        trip_id: The trip to delete (from create_trip / get_upcoming_trip).
+        force: Delete even if some days have recorded outcomes. Default False.
+        user_id: Partition owner. Default "megan".
+
+    Returns:
+        Dict with ok, trip_id, deleted_days, deleted_header. On the
+        guardrail trip: error + days_with_outcomes.
+    """
+    try:
+        table = _ddb_table()
+        plan_rows = [
+            it for it in (
+                _convert_decimals(x)
+                for x in _query_user_prefix(table, user_id, "PLAN#")
+            )
+            if it.get("trip_id") == trip_id
+        ]
+        header = table.get_item(
+            Key={"PK": f"USER#{user_id}", "SK": f"TRIP#{trip_id}"}
+        ).get("Item")
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Trip read failed", "error_message": str(e),
+        }
+
+    if header is None and not plan_rows:
+        return {
+            "error": "Trip not found",
+            "error_message": f"No trip '{trip_id}' for user '{user_id}'.",
+            "trip_id": trip_id,
+        }
+
+    recorded = sorted(
+        d for d in (r.get("planned_for_date") for r in plan_rows
+                    if r.get("outcome_recorded")) if d
+    )
+    if recorded and not force:
+        return {
+            "error": "Trip has recorded outcomes",
+            "error_message": (
+                f"{len(recorded)} day(s) of this trip have recorded outcomes "
+                f"({', '.join(recorded)}) — deleting would lose calibration "
+                f"history. Confirm with the user, then call again with force=True."
+            ),
+            "trip_id": trip_id,
+            "days_with_outcomes": recorded,
+        }
+
+    try:
+        with table.batch_writer() as batch:
+            for r in plan_rows:
+                batch.delete_item(Key={"PK": r["PK"], "SK": r["SK"]})
+            if header is not None:
+                batch.delete_item(
+                    Key={"PK": f"USER#{user_id}", "SK": f"TRIP#{trip_id}"}
+                )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Trip delete failed", "error_message": str(e),
+        }
+
+    return {
+        "ok": True,
+        "trip_id": trip_id,
+        "deleted_days": len(plan_rows),
+        "deleted_header": header is not None,
+    }
+
+
+@mcp.tool()
+def delete_plan(
+    plan_id: str,
+    force: bool = False,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Delete a single day's plan (one PLAN# row).
+
+    Use to drop one day from a trip ("scrap the EPCOT day") or remove a
+    standalone plan. To delete an entire trip at once, use delete_trip.
+
+    Guardrail: refuses if the plan has a recorded outcome unless
+    force=True (don't destroy calibration history silently).
+
+    Args:
+        plan_id: The plan to delete (the PLAN# suffix — from
+            get_plan_for_day / get_upcoming_trip / record_plan).
+        force: Delete even if an outcome is recorded. Default False.
+        user_id: Partition owner. Default "megan".
+
+    Returns:
+        Dict with ok, plan_id, planned_for_date, trip_id. Error payload if
+        not found or blocked by the outcome guardrail.
+    """
+    sk = _coerce_plan_id_to_sk(plan_id)
+    try:
+        table = _ddb_table()
+        item = table.get_item(Key={"PK": f"USER#{user_id}", "SK": sk}).get("Item")
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan read failed", "error_message": str(e),
+        }
+    if item is None:
+        return {
+            "error": "Plan not found",
+            "error_message": f"No plan with id '{plan_id}' for user '{user_id}'.",
+            "plan_id": plan_id,
+        }
+    item = _convert_decimals(item)
+    if item.get("outcome_recorded") and not force:
+        return {
+            "error": "Plan has a recorded outcome",
+            "error_message": (
+                f"Plan '{plan_id}' ({item.get('planned_for_date')}) has a "
+                f"recorded outcome — deleting loses calibration history. "
+                f"Confirm with the user, then call again with force=True."
+            ),
+            "plan_id": plan_id,
+        }
+    try:
+        table.delete_item(Key={"PK": f"USER#{user_id}", "SK": sk})
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan delete failed", "error_message": str(e),
+        }
+    return {
+        "ok": True,
+        "plan_id": plan_id,
+        "planned_for_date": item.get("planned_for_date"),
+        "trip_id": item.get("trip_id"),
+    }
+
+
+@mcp.tool()
+def update_trip(
+    trip_id: str,
+    name: str,
+    user_id: str = _DEFAULT_USER_ID,
+) -> dict[str, Any]:
+    """Rename a trip (sets the TRIP# header's name).
+
+    A trip's days + dates are DERIVED from its day plans, so they change
+    by adding/removing days (record_plan with the trip_id / delete_plan),
+    not here — this only updates the human label.
+
+    Args:
+        trip_id: The trip to rename.
+        name: New label ("June 2026 family trip").
+        user_id: Partition owner. Default "megan".
+
+    Returns:
+        Dict with ok, trip_id, name. Error payload if the trip isn't found.
+    """
+    try:
+        table = _ddb_table()
+        table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": f"TRIP#{trip_id}"},
+            UpdateExpression="SET #n = :n",
+            ExpressionAttributeNames={"#n": "name"},
+            ExpressionAttributeValues={":n": name},
+            ConditionExpression="attribute_exists(PK)",
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        if err is not None:
+            return err
+        if "ConditionalCheckFailedException" in str(e):
+            return {
+                "error": "Trip not found",
+                "error_message": f"No trip '{trip_id}' for user '{user_id}'.",
+                "trip_id": trip_id,
+            }
+        return {"error": "Trip update failed", "error_message": str(e)}
+    return {"ok": True, "trip_id": trip_id, "name": name}
 
 
 @mcp.tool()

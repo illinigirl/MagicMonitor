@@ -1,0 +1,72 @@
+# Eighth eval case — read a FUTURE day's plan (the "what's the plan for
+# June 14?" capability).
+#
+# get_plan_for_day takes a `date`, so a user can ask about any future
+# trip day. The behavior under test: Claude pulls that day up as a
+# READ-ONLY lookup and shows the stored plan — it must NOT activate the
+# day (activation is for the trip day, after a live re-eval) and must NOT
+# treat it as a fresh build (create_trip). Guards the docstring sharpening
+# that made future-day lookups first-class.
+
+name: future_day_plan_lookup
+description: >
+  Verifies Claude answers "what's the plan for <future date>?" by calling
+  get_plan_for_day with that date as a read-only lookup — not activating
+  the day, not rebuilding it.
+
+prompt: >
+  We've got a Magic Kingdom day on our trip — what's the plan for
+  June 14, 2026? Just want to see what we lined up, not change anything.
+
+tool_responses:
+  get_upcoming_trip:
+    response:
+      found: true
+      trip_id: "2026-06-13_1790000000"
+      name: "June 2026 trip"
+      start_date: "2026-06-13"
+      end_date: "2026-06-15"
+      days:
+        - {date: "2026-06-13", park_key: epcot, plan_id: "p1", active: false, ride_count: 4, outcome_recorded: false}
+        - {date: "2026-06-14", park_key: mk, plan_id: "p2", active: false, ride_count: 5, outcome_recorded: false}
+        - {date: "2026-06-15", park_key: hollywood_studios, plan_id: "p3", active: false, ride_count: 4, outcome_recorded: false}
+
+  get_plan_for_day:
+    response:
+      date: "2026-06-14"
+      found: true
+      plan_id: "p2"
+      trip_id: "2026-06-13_1790000000"
+      park_key: mk
+      active: false
+      activated_at: null
+      plan_window: null
+      ride_sequence:
+        - {ride_name: "Seven Dwarfs Mine Train", ride_id: seven-dwarfs, predicted_wait_min: 55, position: 1}
+        - {ride_name: "Space Mountain", ride_id: space-mountain, predicted_wait_min: 40, position: 2}
+        - {ride_name: "TRON Lightcycle / Run", ride_id: tron-lightcycle, predicted_wait_min: 70, position: 3}
+        - {ride_name: "Haunted Mansion", ride_id: haunted-mansion, predicted_wait_min: 25, position: 4}
+        - {ride_name: "Pirates of the Caribbean", ride_id: pirates-of-the-caribbean, predicted_wait_min: 20, position: 5}
+      completed_rides: []
+      dropped_rides: []
+      show_selections: []
+      notes: null
+      outcome_recorded: false
+
+assertions:
+  - tool_called: get_plan_for_day
+  - tool_called_with:
+      tool: get_plan_for_day
+      args_equal:
+        date: "2026-06-14"
+  # Read-only: a future-day lookup must not activate or rebuild.
+  - tool_not_called: activate_plan
+  - tool_not_called: create_trip
+  - tool_not_called: record_plan
+  # It surfaced the actual stored plan (a ride from the sequence).
+  - response_mentions_any:
+      - Seven Dwarfs
+      - Space Mountain
+      - TRON
+      - Haunted Mansion
+  - stop_reason: end_turn
