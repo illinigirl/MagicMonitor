@@ -70,7 +70,12 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          # Pinned to match web/package.json's `packageManager` field so
+          # CI and dev run byte-identical pnpm — prevents the version
+          # drift that broke this job in June 2026 (a pnpm-11 dev wrote a
+          # workspace file CI's floating pnpm 9 rejected). Bump both
+          # together.
+          version: 9.15.9
 
       - name: Set up Node
         uses: actions/setup-node@v4
