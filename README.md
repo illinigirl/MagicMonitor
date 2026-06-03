@@ -38,6 +38,9 @@ downtime rankings drawn from millions of historical poll rows.
 | Write API | Next.js Route Handlers under `/api/me/*` | Same Amplify Lambda, scoped IAM grants on USER#/PARK# partitions |
 | Auth | Amazon Cognito + Google IdP | Sibling Watchtower stack owns the pool; MM imports it via a second app client |
 | Notifications | Pushover HTTPS API | Family already uses it; ~$0/mo recurring |
+| Agentic / MCP | stdio MCP (Claude Desktop) + HTTPS MCP (API Gateway → Lambda, FastMCP + Mangum) | Same tool surface over two transports; remote one lets Claude mobile hit the live data plane |
+| MCP auth | Cognito OAuth (access-token JWT, JWKS verify) + custom RFC 7591 DCR proxy + sub allowlist | Standards-based remote-MCP auth without standing secrets; reuses the shared pool |
+| Analytics delivery | Nightly GitHub Action regenerates the snapshot from DDB → commits (web) + uploads to S3 (MCP Lambda) | Data refresh decoupled from code deploys; Lambda fetches fresh on cold start |
 | Frontend | Next.js 16 + Tailwind 4 + React 19 (Turbopack) | Modern SSR; Server Components let us drop the API tier |
 | IaC | AWS CDK (TypeScript) | One stack, custom domain, GitHub OIDC role, Cognito client, Amplify app |
 | Hosting | AWS Amplify Hosting | SSR Next.js with custom domain; CloudFront-fronted |
@@ -59,16 +62,30 @@ flowchart TD
     Poll -->|read + write| DDB
     Poll -->|fanout alerts| PO[Pushover API]
 
+    Claude([Claude mobile /<br/>Desktop Connector]) -->|MCP over HTTPS + OAuth| APIGW[API Gateway<br/>HTTP API]
+    APIGW --> MCP[MCP Lambda<br/>Python 3.12<br/>FastMCP + Mangum]
+    MCP -.->|reads| DDB
+    MCP -.->|fetch snapshot<br/>on cold start| S3[(S3<br/>analytics snapshot<br/>+ baselines)]
+    Cog -.->|access-token JWT verify (JWKS)<br/>+ RFC 7591 DCR proxy| MCP
+
     SSR -.reads.-> Snapshot[analytics-snapshot.ts<br/>shipped in repo<br/>millions of historical rows]
     Poll -.reads.-> Baselines[baselines.json<br/>per-ride-hour wait thresholds]
+    Agg[Nightly aggregator<br/>GitHub Action] -.->|regen from DDB| Snapshot
+    Agg -.->|upload| S3
 
     classDef aws fill:#232f3e,stroke:#ff9900,color:#fff
     classDef ext fill:#444,stroke:#888,color:#fff
     classDef data fill:#1a3a52,stroke:#4a8fc7,color:#fff
-    class CF,SSR,EB,Poll,Cog,DDB aws
-    class TPW,PO ext
-    class Snapshot,Baselines data
+    class CF,SSR,EB,Poll,Cog,DDB,APIGW,MCP aws
+    class TPW,PO,Claude ext
+    class Snapshot,Baselines,S3,Agg data
 ```
+
+The **stdio MCP server** (`mcp/server.py`) runs locally as a Claude
+Desktop subprocess; the **HTTPS MCP server** (`mcp/server_http.py`,
+deployed as the MCP Lambda above) is the same data plane reached
+remotely by Claude mobile and the Desktop Custom Connector, gated by
+Cognito OAuth. See [the HTTPS MCP transport](#https-mcp-transport-oauth-on-a-remote-data-plane) below.
 
 **Single-tier read pattern** is deliberate. Next.js Server Components
 talk to DynamoDB through the SSR compute role. Writes (per-user
@@ -184,9 +201,12 @@ is already short, alerting "this is a short wait" is meaningless.
 
 ### Agentic planner with cross-session feedback loop
 
-MM is exposed as 22 MCP tools that any MCP client (Claude Desktop,
-agentic frameworks) can call conversationally. The interesting one
-is `get_planning_context` — a single tool call that returns
+MM is exposed as a set of MCP tools over two transports — a stdio
+server for Claude Desktop and a deployed HTTPS server (see
+[below](#https-mcp-transport-oauth-on-a-remote-data-plane)) that Claude
+mobile and the Desktop Custom Connector reach over OAuth. The
+interesting one is `get_planning_context` — a single tool call that
+returns
 per-ride live status + forecast + DOWN history + lat/lon + park
 hours + weather + today-vs-forecast correction + park-wide DOWN
 list + LL drop patterns + headliner showtimes for an arbitrary
@@ -232,10 +252,43 @@ like:
 
 Then it weaves that into today's plan ("your last 3 plans
 finished with extra time, so I'm being more aggressive today")
-without restating the calibration per ride. Single-user-by-design
-for the family-use case (`user_id` defaults to `"megan"`);
-multi-user-via-MCP is out of scope until MCP carries the calling
-client's auth subject.
+without restating the calibration per ride. Over the stdio transport
+this runs single-user for the family-use case (`user_id` defaults to
+`"megan"`); over the HTTPS transport the calling user's identity now
+arrives as the verified Cognito `sub` (see below), so writes can be
+attributed per family member.
+
+### HTTPS MCP transport: OAuth on a remote data plane
+
+The stdio MCP server only reaches clients that can launch a local
+subprocess (Claude Desktop). To bring the same tools to Claude mobile —
+which only speaks to *remote* MCP servers — MM runs a second,
+deployed copy of the server behind API Gateway, as a separable CDK
+stack (`DisneyMcpStack`) that reads `DisneyData` by name and owns
+nothing the main stack owns (rollback is `cdk destroy DisneyMcpStack`).
+
+The auth is the interesting part. There's no standing secret; it's
+Cognito OAuth end to end:
+
+- **Access-token JWTs, verified per request** against the user pool's
+  JWKS (RS256), checking issuer + expiry + `token_use`, then a
+  hard-coded `sub` allowlist as the real gate — even a validly-signed
+  token from a non-family user is rejected.
+- **A custom RFC 7591 Dynamic Client Registration proxy.** MCP clients
+  expect to self-register; Cognito doesn't expose DCR. A `/register`
+  endpoint translates the RFC 7591 call into a scoped Cognito
+  `CreateUserPoolClient` on the shared pool, and the RFC 8414 / 9728
+  discovery endpoints advertise where to go. So a fresh client walks
+  discovery → registration → authorize → token → `/mcp` with no manual
+  setup.
+- **Stateless by necessity.** Lambda doesn't preserve session state
+  across invocations, so the streamable-HTTP transport runs in
+  stateless mode — each request is self-contained.
+
+The Lambda is read-only on DynamoDB and pulls the 1.2 MB analytics
+snapshot from **S3 on cold start** (rather than bundling it into the
+deploy artifact) so the nightly regeneration reaches it without a
+redeploy — data freshness decoupled from code-deploy cadence.
 
 ### Plan-aware alerts on two axes
 
@@ -320,7 +373,7 @@ at our scale. RUNBOOK Lesson 3 has the long form.
 | Lambda invocations (~22k poller + a few hundred SSR) | $0 (free tier) |
 | DynamoDB on-demand (~50k req, ~50MB storage) | <$0.10 |
 | EventBridge | $0 |
-| Amplify Hosting (SSR + bandwidth at portfolio traffic) | <$0.20 |
+| Amplify Hosting (SSR + bandwidth at family traffic) | <$0.20 |
 | CloudFront / data transfer | <$0.05 |
 | Cognito (sibling Watchtower stack) | $0 |
 | Pushover | $5 one-time (already paid) |
@@ -393,23 +446,27 @@ deploy hygiene, common debug commands, and known follow-ups.
 Captured in [`PROJECT.md` → Roadmap](PROJECT.md) and
 [`RUNBOOK.md` → Known follow-ups](RUNBOOK.md#known-follow-ups-low-priority):
 
-- **M6-B: live AWS data plane (~1.5-2 days)** — the analytics
-  layer is currently a frozen JSON snapshot from a sibling Pi
-  SQLite. Upgrade path is hourly-bucketed wait writes from the
-  poller into a `RIDE#<id>/AGG#<hour>` partition + a nightly
-  re-aggregation Lambda. Consumer interface unchanged, data
-  source swapped. Unblocks M8 (Calendar Intelligence).
-- **Trip planning (M5)** — trip CRUD, auto-toggle subscriptions
-  by trip dates, "mark as ridden" suppression.
+- **Trip planning (M5) — in progress** — multi-day, shared,
+  future-dated trip planning over the MCP layer: build a trip ahead
+  of time (a park + ride list per day), then on each day pull it up,
+  re-evaluate against live conditions, and activate it (which is what
+  turns on that day's plan-disruption alerts). The write tools are
+  built across both MCP transports; the live re-evaluation engine
+  (`get_planning_context` over HTTPS) and the poller activation gate
+  are the remaining pieces.
 - **Per-type alert toggles on `/me`** — currently every alert
   recipient gets DOWN, BACK UP, STILL DOWN, and LOW WAIT.
   PROJECT.md M7+ has the natural opt-in shape.
-- **M9: embedded agentic chat (~2-3 days)** —
-  bring the MCP planner into the web app for users who don't run
-  Claude Desktop. Refactor tool implementations so a shared module
-  powers both the stdio MCP server and a new HTTP transport the
-  web app calls via Anthropic API tool-use. Allowlist-gated, with
-  prompt caching and per-user token budgets.
+- **M9 Phase 2: embedded agentic chat (~2-3 days)** — Phase 1 (the
+  remote OAuth MCP server above) is live; Phase 2 brings the planner
+  *into the web app* for users who don't run Claude Desktop, calling a
+  shared tool layer via Anthropic API tool-use with prompt caching and
+  per-user token budgets.
+
+Recently shipped: **M6-B** (analytics now regenerate nightly from
+DynamoDB rather than a frozen Pi snapshot) and **M9 Phase 1** (the
+[HTTPS MCP transport with Cognito OAuth](#https-mcp-transport-oauth-on-a-remote-data-plane),
+live on Claude mobile + the Desktop Custom Connector).
 
 ## Deliberately skipped
 
