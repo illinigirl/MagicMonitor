@@ -1,0 +1,165 @@
+# Sixth eval case — M5 multi-day: build a future trip ahead of time.
+#
+# The first multi-day eval. The user wants to lay out a 3-day trip that
+# starts WEEKS from now (June 23-25; "today" in the narrative is early
+# June). The correct behavior is the build-ahead half of the multi-day
+# flow taught in the get_planning_context docstring section 0d:
+#
+#   1. Recognize this is a future trip, not a same-day plan.
+#   2. Persist it with create_trip — one call that mints a trip header
+#      plus one DORMANT day-plan per date. (record_plan with
+#      planned_for_date per day is a defensible alternative, but the
+#      "set up the trip" framing + the create_trip description push
+#      hard toward the single-call path.)
+#   3. Do NOT activate any day. Dormant means no disruption alerts;
+#      activation happens on each day, after live re-evaluation.
+#
+# The "plausible-but-wrong" outputs this case guards against:
+#   - Activating the future days now (would fire alerts for rides
+#     nobody is near for three weeks).
+#   - Narrating this session's live waits as if they were the trip
+#     dates' reality (the future-data trap from the CRITICAL DATA
+#     CAVEAT). We don't assert this directly — it's hard to pin without
+#     over-fitting — but the prompt's "we'll fine-tune when each day
+#     comes" gives Claude the out to keep ride seeds rough.
+#
+# What we assert (structural + one behavioral):
+#   - create_trip is called with >= 3 days.
+#   - activate_plan is NEVER called.
+#   - The response surfaces the dormant -> activate-on-the-day model
+#     (any one of several phrasings) so we know Claude understood that
+#     monitoring isn't on yet.
+#
+# What we deliberately do NOT assert:
+#   - That record_plan is not called. Claude might reasonably seed
+#     individual days; forcing the single-call path would be brittle.
+#   - Exact ride counts per day (rides are optional on create_trip and
+#     the user explicitly deferred the fine-tuning).
+
+name: build_future_multiday_trip
+description: >
+  Verifies Claude pre-builds a future multi-day trip via create_trip
+  with dormant days, and does NOT activate any day early. Exercises the
+  build-ahead half of the M5 multi-day flow.
+
+prompt: >
+  We're doing a Disney trip June 23-25 — Magic Kingdom on the 23rd,
+  EPCOT on the 24th, Hollywood Studios on the 25th. Set the trip up
+  now so it's saved, and rough in a few headliner rides for each day.
+  We'll fine-tune the exact order when each day actually comes.
+
+tool_responses:
+  # Session-start check — no trip on file yet, so this is a fresh build.
+  get_upcoming_trip:
+    response:
+      user_id: megan
+      found: false
+      note: "No upcoming trip."
+
+  get_user_plan_history:
+    response:
+      plans: []
+      calibration_summary: null
+
+  # If Claude reaches for live context to seed rough orders, it gets a
+  # sensible snapshot. The runner is parameter-blind (same response for
+  # any park), which is fine here — we're testing the build path, not
+  # per-park ride accuracy, and the user deferred the fine-tuning.
+  get_planning_context:
+    response:
+      park_key: mk
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "22:00"
+        extra_evening_hours: null
+      weather_summary:
+        forecast_high_f: 91
+        forecast_low_f: 75
+        rain_chance_pct: 40
+      rides:
+        - ride_id: tron-lightcycle
+          ride_name: TRON Lightcycle / Run
+          status: OPERATING
+          wait_mins: 75
+          forecast:
+            typical_wait_now: 80
+            confidence: high
+        - ride_id: seven-dwarfs
+          ride_name: Seven Dwarfs Mine Train
+          status: OPERATING
+          wait_mins: 60
+          forecast:
+            typical_wait_now: 65
+            confidence: high
+        - ride_id: space-mountain
+          ride_name: Space Mountain
+          status: OPERATING
+          wait_mins: 40
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+      currently_down_in_park: []
+
+  create_trip:
+    response:
+      trip_id: "2026-06-23_1750000000"
+      name: "June 2026 Disney trip"
+      start_date: "2026-06-23"
+      end_date: "2026-06-25"
+      days:
+        - date: "2026-06-23"
+          park_key: mk
+          plan_id: "2026-06-03T14:00:00.000001+00:00"
+        - date: "2026-06-24"
+          park_key: epcot
+          plan_id: "2026-06-03T14:00:00.000002+00:00"
+        - date: "2026-06-25"
+          park_key: hs
+          plan_id: "2026-06-03T14:00:00.000003+00:00"
+      next_step_hint: >
+        Trip created — all days are dormant (no alerts). Refine each
+        day's rides anytime with record_plan (same trip_id) or
+        add_ride_to_plan. On each trip day, call activate_plan to
+        re-evaluate against live conditions and start monitoring.
+
+  # Defined so a per-day seed attempt resolves cleanly rather than
+  # returning the sentinel error payload. Not asserted on.
+  record_plan:
+    response:
+      ok: true
+      plan_id: "2026-06-03T14:05:00+00:00"
+      user_id: megan
+      park_key: mk
+      planned_for_date: "2026-06-23"
+      trip_id: "2026-06-23_1750000000"
+      active: false
+      expires_at_epoch: 1750982400
+
+assertions:
+  - tool_called: create_trip
+
+  # The core structural lock: a 3-day request produces a 3-day trip.
+  - tool_called_with:
+      tool: create_trip
+      args_min_length:
+        days: 3
+
+  # The core guardrail: future days are NOT activated now. Activation
+  # is a per-day, on-the-day action after live re-evaluation.
+  - tool_not_called: activate_plan
+
+  # Behavioral: Claude communicates that monitoring isn't live yet and
+  # gets switched on per day. Any one phrasing counts.
+  - response_mentions_any:
+      - dormant
+      - activate
+      - "on the day"
+      - "each day"
+      - "when you arrive"
+      - "when each day"
+      - "start monitoring"
+      - "no alerts yet"
+      - "not watching yet"
+
+  - stop_reason: end_turn

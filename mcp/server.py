@@ -1738,7 +1738,9 @@ def get_planning_context(
     treat live values as predictions for that date — and DO NOT
     suggest specific actions that depend on availability data we
     don't have for that date (see the LL section below for the most
-    common version of this trap).
+    common version of this trap). Building a future day or whole trip
+    ahead of time IS supported, though — persist it dormant and
+    activate it on the day; see section 0d.
 
     0a. **Before planning, check for unrecorded prior plans + calibrate
        against the user's track record.** Call get_user_plan_history
@@ -1911,6 +1913,40 @@ def get_planning_context(
        go with the higher-authority source and briefly mention the
        conflict you noticed so the user can confirm. Don't silently
        drop either signal.
+
+    0d. **Multi-day trips: build the days ahead, activate each on its
+       day.** Magic Monitor supports laying out a FUTURE trip in advance
+       and only switching on live monitoring once each day arrives.
+       Three moments to recognize:
+
+       - **Session start — is a trip already in flight?** Alongside the
+         get_user_plan_history check in 0a, call get_upcoming_trip once.
+         If it returns a trip (today is on or before its end_date), lead
+         with it: "You've got your <name> trip, <start>–<end> — want to
+         keep building it, or is today one of its days?" Skip the prompt
+         only when the user's message already makes the day's intent
+         obvious.
+       - **Building ahead (a date that isn't today).** When the user
+         wants a day they're not at yet ("plan our June 23–25 trip",
+         "rough out next Saturday's MK day"), PERSIST it dormant instead
+         of narrating this call's live data as that date's reality: use
+         create_trip for several days at once, or record_plan with
+         planned_for_date for a single future day. Dormant plans fire NO
+         disruption alerts (see section 7). Lean on this call's data only
+         for typical-pattern reasoning (analytics, drop patterns,
+         baselines), and say so — "waits below are typical for that day,
+         not a live read."
+       - **On the trip day — re-evaluate, THEN activate.** When the user
+         asks "what's my plan today?" on a day that was pre-built, pull
+         the stored plan with get_plan_for_day, then re-check it against
+         THIS call's live data for that park (what's DOWN now, today's
+         real forecast + weather, confirmed hours). Walk the user through
+         any changes; once they accept, call activate_plan with the
+         re-evaluated ride_sequence + a resolved plan_window. That flip is
+         what starts disruption monitoring — a dormant plan stays silent
+         until you activate it. Don't activate a future day early (it
+         would fire alerts for rides nobody's near yet) — activate on the
+         day, after re-evaluation.
 
     0. **Discover hard constraints first.** If the user gives you a
        multi-ride list without mentioning any of these, ASK ONCE
@@ -2715,6 +2751,18 @@ def get_planning_context(
        if" planning, or pure information queries with no commitment).
        The point is to capture plans the user actually intends to
        follow.
+
+       **Future days + multi-day trips.** Everything above is the
+       same-day path — record_plan defaults to today and auto-activates,
+       so the poller watches it immediately. To build a day the user
+       ISN'T at yet, pass planned_for_date to record_plan, or use
+       create_trip to mint a whole trip (one dormant day per date) in a
+       single call. Dormant rows fire no alerts and survive until just
+       past their trip day. On the trip day, after you re-evaluate
+       against fresh live conditions (section 0d) and the user accepts,
+       call activate_plan to turn on monitoring. Don't pre-activate
+       future days, and don't record this session's live waits as if
+       they were a future date's.
 
        Then LATER in the same conversation, if the user signals
        end-of-trip ("we're heading out", "thanks, that worked",

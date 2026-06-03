@@ -147,5 +147,12 @@ assertions:
       - midday
       - afternoon sun
 
-  - response_mentions: "Magic Kingdom"
+  # Accept either form — the user's prompt used "Magic Kingdom" but
+  # Claude mirroring the "MK" shorthand back is correct, not a failure
+  # (same convention as calibration_aware_planning). The behavior under
+  # test here is weather awareness, asserted above; the park reference
+  # just confirms Claude engaged with the right park.
+  - response_mentions_any:
+      - Magic Kingdom
+      - MK
   - stop_reason: end_turn

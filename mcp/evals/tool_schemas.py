@@ -20,7 +20,12 @@ When server.py changes a tool signature, this file may need updating.
 That's intentional friction: a tool-shape change deserves an explicit
 eval-surface review.
 
-v1 surface: the planning-flow tools. Add more as eval cases need them.
+v1 surface: the planning-flow tools (get_user_plan_history,
+get_planning_context, find_rides_matching, record_plan). Extended for
+the M5 multi-day trip planner with create_trip, get_plan_for_day,
+get_upcoming_trip, activate_plan, and the future-dated record_plan
+params (planned_for_date / trip_id / plan_window / active). Add more as
+eval cases need them.
 """
 
 from __future__ import annotations
@@ -122,7 +127,12 @@ TOOLS: list[dict[str, Any]] = [
             "user signals acceptance (e.g. 'let's do that', 'sounds "
             "good'). Don't call for hypothetical plans or one-off "
             "questions. The poller uses the recorded plan to fire "
-            "plan-aware disruption alerts."
+            "plan-aware disruption alerts. By default the plan is for "
+            "TODAY and auto-activates (monitoring starts immediately). "
+            "To pre-build a day the user isn't at yet, pass "
+            "planned_for_date — that row stays DORMANT (no alerts) until "
+            "activate_plan flips it on its day. For a whole multi-day "
+            "trip at once, prefer create_trip."
         ),
         "input_schema": {
             "type": "object",
@@ -155,9 +165,183 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "context": {"type": "object"},
                 "notes": {"type": "string"},
+                "planned_for_date": {
+                    "type": "string",
+                    "description": (
+                        "ISO date (YYYY-MM-DD) the plan is FOR. Defaults "
+                        "to today. Pass a future date to pre-build a day "
+                        "of an upcoming trip — that row stays dormant "
+                        "(no alerts) until activated on the day."
+                    ),
+                },
+                "trip_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional. Groups this day into a multi-day trip "
+                        "(the id create_trip minted). Omit for a "
+                        "standalone plan."
+                    ),
+                },
+                "plan_window": {
+                    "type": "object",
+                    "description": (
+                        "Optional {open, close} ET window. Once set + "
+                        "activated, alerts only fire inside it. Usually "
+                        "resolved at activation."
+                    ),
+                },
+                "active": {
+                    "type": "boolean",
+                    "description": (
+                        "Override the dormant/active default. Leave unset "
+                        "for normal behavior: same-day plans auto-activate, "
+                        "future-dated plans stay dormant."
+                    ),
+                },
                 "user_id": {"type": "string"},
             },
             "required": ["park", "ride_sequence"],
+        },
+    },
+    {
+        "name": "create_trip",
+        "description": (
+            "Pre-build a whole multi-day trip in one call: a trip header "
+            "plus one DORMANT day-plan per date. Use this when the user "
+            "wants to lay out an upcoming trip ahead of time ('plan our "
+            "June 23-25 trip: MK, then EPCOT, then HS'). Each day is "
+            "written dormant — NO disruption alerts — until the user "
+            "activates it on the day via activate_plan (which "
+            "re-evaluates that day against live conditions first). For a "
+            "single same-day plan use record_plan instead. Do NOT "
+            "activate days here and do NOT treat any live data as a "
+            "prediction for the future dates."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Human label for the trip ('June 2026 family trip').",
+                },
+                "days": {
+                    "type": "array",
+                    "description": (
+                        "Ordered list, one entry per trip day. ride_sequence "
+                        "and the other per-day fields are optional and can be "
+                        "filled in later per day via record_plan with the "
+                        "trip_id."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "date": {"type": "string"},
+                            "park": {"type": "string"},
+                            "ride_sequence": {"type": "array", "items": {"type": "object"}},
+                            "show_selections": {"type": "array", "items": {"type": "object"}},
+                            "plan_window": {"type": "object"},
+                            "notes": {"type": "string"},
+                        },
+                        "required": ["date", "park"],
+                    },
+                },
+                "user_id": {"type": "string"},
+            },
+            "required": ["name", "days"],
+        },
+    },
+    {
+        "name": "get_plan_for_day",
+        "description": (
+            "Return the plan recorded for a specific day (default today). "
+            "Use on a trip day ('what's my plan today?') to pull up that "
+            "day's plan so you can re-evaluate it against live conditions "
+            "and activate it, or mid-day to see what's left. Prefers the "
+            "active plan for the date, else the most recently recorded one."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "ISO date (YYYY-MM-DD). Defaults to today (ET).",
+                },
+                "user_id": {"type": "string"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_upcoming_trip",
+        "description": (
+            "Return the soonest upcoming (or in-progress) trip and its "
+            "days. Call at the start of a session to see whether the user "
+            "has a trip coming up ('you've got your June 23-25 trip — want "
+            "to keep building it?'). Returns the nearest trip whose "
+            "end_date >= today, with each day's park and whether that "
+            "day's plan is active or still dormant."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "activate_plan",
+        "description": (
+            "Activate a day's plan: turn on live disruption monitoring "
+            "AFTER re-evaluating it against live conditions. The "
+            "activation step in the multi-day flow — on the trip day, "
+            "once you've pulled the plan up (get_plan_for_day), re-checked "
+            "it against get_planning_context (what's DOWN now, today's "
+            "real forecast/weather/hours), and the user accepts the "
+            "adjusted plan, call this. It flips the plan ACTIVE (the "
+            "poller then fires disruption alerts for its rides — a dormant "
+            "plan fires NOTHING until activated) and stores the "
+            "re-evaluated ride_sequence + resolved plan_window. Same-day "
+            "plans from record_plan are already active; use this for "
+            "future/dormant plans on their day. Don't activate a future "
+            "day early."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "plan_id": {
+                    "type": "string",
+                    "description": (
+                        "The plan to activate. If omitted, the plan for "
+                        "`date` (default today) is looked up."
+                    ),
+                },
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "ISO date to look the plan up by, if plan_id isn't "
+                        "given. Defaults to today (ET)."
+                    ),
+                },
+                "ride_sequence": {
+                    "type": "array",
+                    "description": (
+                        "The accepted, live-re-evaluated ride order — "
+                        "replaces the stored sequence."
+                    ),
+                    "items": {"type": "object"},
+                },
+                "plan_window": {
+                    "type": "object",
+                    "description": (
+                        "{open, close} ET window resolved to concrete times "
+                        "(e.g. close -> the park's actual close). Alerts "
+                        "fire only inside it once set."
+                    ),
+                },
+                "user_id": {"type": "string"},
+            },
+            "required": [],
         },
     },
 ]

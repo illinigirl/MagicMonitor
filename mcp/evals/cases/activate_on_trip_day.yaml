@@ -1,0 +1,199 @@
+# Seventh eval case — M5 multi-day: the on-the-day re-evaluate -> activate flow.
+#
+# The companion to build_future_multiday_trip. That case builds a trip
+# dormant; this one is the other half: it's now one of the trip days,
+# and the user wants to start it. The correct behavior is the
+# activate-on-the-day half of the multi-day flow (get_planning_context
+# docstring section 0d, third bullet):
+#
+#   1. Pull up the pre-built plan for today  -> get_plan_for_day
+#   2. Re-evaluate it against LIVE conditions -> get_planning_context
+#      (the canned context has Space Mountain DOWN this morning, so the
+#      re-eval is not a no-op — there's a real reason to adjust).
+#   3. Only THEN, after the user has signalled "lock it in / start
+#      watching", flip it on -> activate_plan.
+#
+# The ORDER is the load-bearing assertion. Activating before
+# re-evaluating against live data would defeat the whole point of the
+# dormant->active design: the plan was built weeks ago against typical
+# patterns, and the day-of activation is the moment it gets reconciled
+# with reality. tool_called_in_order locks
+# get_plan_for_day -> get_planning_context -> activate_plan.
+#
+# The "plausible-but-wrong" outputs this guards against:
+#   - Activating straight off the stored plan without a live re-check
+#     (skips get_planning_context, or calls it after activate_plan).
+#   - Treating this as a fresh build (calling create_trip) instead of
+#     activating the day that already exists.
+#
+# What we assert:
+#   - All three tools are called, in the right relative order.
+#   - create_trip is NOT called (this is an activation, not a build).
+#
+# What we deliberately do NOT assert:
+#   - That Claude mentions Space Mountain being down, or restates the
+#     park name. A good response surfaces the re-evaluation (the first
+#     pass said "Space Mountain is down, I'll bump it later, then
+#     activate") but it can legitimately do so in many phrasings, and it
+#     often skips the park name entirely to go straight to ride-level
+#     planning. The tool-order assertion already proves the re-eval
+#     happened before activation — far stronger than any string match,
+#     which would only add brittleness.
+
+name: activate_on_trip_day
+description: >
+  Verifies the on-the-day half of the M5 multi-day flow: Claude pulls
+  up the pre-built plan, re-evaluates it against live conditions, and
+  only then activates monitoring — in that order. Activating before the
+  live re-check would defeat the dormant->active design.
+
+prompt: >
+  It's our Magic Kingdom day — we just walked through the gates! Pull
+  up the plan we built for today, check it against what's actually
+  going on this morning, and adjust the order around anything that's
+  down. Then go ahead and lock it in and start monitoring for ride
+  breakdowns — no need to check back with me first.
+
+tool_responses:
+  # The pre-built day, still dormant (active: false). This is what a
+  # create_trip day looks like when get_plan_for_day reads it back.
+  get_plan_for_day:
+    response:
+      date: "2026-06-23"
+      user_id: megan
+      found: true
+      plan_id: "2026-06-03T14:00:00.000001+00:00"
+      trip_id: "2026-06-23_1750000000"
+      park_key: mk
+      active: false
+      activated_at: null
+      plan_window: null
+      ride_sequence:
+        - ride_name: Seven Dwarfs Mine Train
+          ride_id: seven-dwarfs
+          predicted_wait_min: 55
+          position: 1
+        - ride_name: Space Mountain
+          ride_id: space-mountain
+          predicted_wait_min: 40
+          position: 2
+        - ride_name: TRON Lightcycle / Run
+          ride_id: tron-lightcycle
+          predicted_wait_min: 70
+          position: 3
+        - ride_name: Big Thunder Mountain Railroad
+          ride_id: big-thunder
+          predicted_wait_min: 35
+          position: 4
+        - ride_name: Haunted Mansion
+          ride_id: haunted-mansion
+          predicted_wait_min: 25
+          position: 5
+      completed_rides: []
+      dropped_rides: []
+      show_selections: []
+      notes: null
+      outcome_recorded: false
+      other_plans_for_day: 0
+
+  # Live re-eval. Space Mountain is DOWN this morning — a real reason to
+  # reconsider the order before locking in, not a rubber-stamp re-check.
+  get_planning_context:
+    response:
+      park_key: mk
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "23:00"
+        extra_evening_hours: null
+      weather_summary:
+        forecast_high_f: 93
+        forecast_low_f: 77
+        rain_chance_pct: 50
+      rides:
+        - ride_id: seven-dwarfs
+          ride_name: Seven Dwarfs Mine Train
+          status: OPERATING
+          wait_mins: 65
+          forecast:
+            typical_wait_now: 60
+            confidence: high
+        - ride_id: space-mountain
+          ride_name: Space Mountain
+          status: DOWN
+          wait_mins: null
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+        - ride_id: tron-lightcycle
+          ride_name: TRON Lightcycle / Run
+          status: OPERATING
+          wait_mins: 85
+          forecast:
+            typical_wait_now: 80
+            confidence: high
+        - ride_id: big-thunder
+          ride_name: Big Thunder Mountain Railroad
+          status: OPERATING
+          wait_mins: 40
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+        - ride_id: haunted-mansion
+          ride_name: Haunted Mansion
+          status: OPERATING
+          wait_mins: 20
+          forecast:
+            typical_wait_now: 30
+            confidence: high
+      currently_down_in_park:
+        - ride_id: space-mountain
+          ride_name: Space Mountain
+          down_since: "2026-06-23T08:40:00-04:00"
+
+  # In case Claude checks history at session start. Empty is fine.
+  get_user_plan_history:
+    response:
+      plans: []
+      calibration_summary: null
+
+  activate_plan:
+    response:
+      plan_id: "2026-06-03T14:00:00.000001+00:00"
+      user_id: megan
+      active: true
+      activated_at: "2026-06-23T09:05:00+00:00"
+      planned_for_date: "2026-06-23"
+      plan_window:
+        open: "09:00"
+        close: "23:00"
+      ride_count: 5
+      note: >
+        Plan activated — Magic Monitor is now watching its rides for
+        live disruptions within the plan window.
+
+assertions:
+  - tool_called: get_plan_for_day
+  - tool_called: get_planning_context
+  - tool_called: activate_plan
+
+  # The load-bearing assertion: re-evaluate (get_planning_context)
+  # BEFORE activating. Pulling the plan up comes first of all.
+  - tool_called_in_order:
+      - get_plan_for_day
+      - get_planning_context
+      - activate_plan
+
+  # Guardrail: this is an activation of an existing day, not a fresh
+  # build. create_trip must not be called.
+  - tool_not_called: create_trip
+
+  # NOTE: we deliberately do NOT assert a park-name string match here.
+  # The first pass showed Claude jumps straight to ride-level planning
+  # ("bump Space Mountain, slide TRON up, then activate") without ever
+  # restating "MK" — which is fine. Engagement with the right plan is
+  # already proven far better by get_plan_for_day returning the MK plan
+  # and activate_plan firing on it; a literal park-name match would only
+  # add phrasing brittleness for no behavioral coverage.
+
+  - stop_reason: end_turn
