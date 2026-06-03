@@ -1,6 +1,0 @@
-allowBuilds:
-  # sharp = native image optimization for next/image. Worth running.
-  sharp: true
-  # unrs-resolver = Rust ESLint resolver. Pure perf, not safety-
-  # critical; skipping the postinstall is fine — falls back to JS.
-  unrs-resolver: false

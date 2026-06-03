@@ -66,7 +66,7 @@ flowchart TD
     APIGW --> MCP[MCP Lambda<br/>Python 3.12<br/>FastMCP + Mangum]
     MCP -.->|reads| DDB
     MCP -.->|fetch snapshot<br/>on cold start| S3[(S3<br/>analytics snapshot<br/>+ baselines)]
-    Cog -.->|access-token JWT verify (JWKS)<br/>+ RFC 7591 DCR proxy| MCP
+    Cog -.->|access-token JWT verify via JWKS<br/>+ RFC 7591 DCR proxy| MCP
 
     SSR -.reads.-> Snapshot[analytics-snapshot.ts<br/>shipped in repo<br/>millions of historical rows]
     Poll -.reads.-> Baselines[baselines.json<br/>per-ride-hour wait thresholds]

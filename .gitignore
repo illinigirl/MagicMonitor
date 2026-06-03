@@ -13,6 +13,12 @@ web/build/
 web/.turbo/
 web/tsconfig.tsbuildinfo
 web/next-env.d.ts
+# pnpm 10+ auto-generates this for build-script approval (its newer
+# `allowBuilds:` field). It has no `packages:` field, which CI's pinned
+# pnpm 9 rejects ("packages field missing or empty"). The real build
+# config lives in web/package.json (pnpm.onlyBuiltDependencies), so this
+# file is local-only noise — ignore it so a pnpm-11 dev can't re-commit it.
+web/pnpm-workspace.yaml
 
 # Python
 __pycache__/
