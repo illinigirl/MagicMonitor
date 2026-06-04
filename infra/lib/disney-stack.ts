@@ -7,6 +7,7 @@ import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 import * as codebuild from "aws-cdk-lib/aws-codebuild";
 import * as amplify from "@aws-cdk/aws-amplify-alpha";
 import * as path from "path";
@@ -54,6 +55,13 @@ const GITHUB_TOKEN_SECRET = "/magicmonitor/github-token";
  * by re-creating the secret + redeploying Amplify (existing sessions
  * invalidate, which is fine). */
 const NEXTAUTH_SECRET_NAME = "/magicmonitor/nextauth-secret";
+
+/** SSM param holding the comma-separated family email allowlist for the
+ * shared /trips page. Kept in SSM (not committed source) since the repo
+ * is public and these are personal emails. Plain String param (not a
+ * secret) — free tier; update with `aws ssm put-parameter --overwrite`
+ * + an Amplify rebuild to add/remove family. */
+const TRIPS_ALLOWED_EMAILS_PARAM = "/magicmonitor/trips-allowed-emails";
 
 /** Cognito user pool that owns Magic Monitor's auth. Owned by
  * an earlier project — imported here read-only as `IUserPool`. The pool
@@ -482,6 +490,14 @@ export class DisneyStack extends cdk.Stack {
         COGNITO_DOMAIN_URL,
         NEXT_PUBLIC_COGNITO_DOMAIN_URL: COGNITO_DOMAIN_URL,
         NEXT_PUBLIC_COGNITO_CLIENT_ID: userPoolClient.userPoolClientId,
+        // Family email allowlist for the shared /trips page. Resolved
+        // from SSM at deploy time ({{resolve:ssm:...}}) so the emails
+        // stay out of the public repo. Echoed into .env.production below
+        // so the SSR runtime (isTripsAllowed) can read it.
+        TRIPS_ALLOWED_EMAILS: ssm.StringParameter.valueForStringParameter(
+          this,
+          TRIPS_ALLOWED_EMAILS_PARAM,
+        ),
       },
       buildSpec: codebuild.BuildSpec.fromObjectToYaml({
         version: "1.0",
@@ -516,6 +532,7 @@ export class DisneyStack extends cdk.Stack {
                     "echo \"COGNITO_CLIENT_ID=$COGNITO_CLIENT_ID\" >> .env.production",
                     "echo \"COGNITO_CLIENT_SECRET=$COGNITO_CLIENT_SECRET\" >> .env.production",
                     "echo \"COGNITO_DOMAIN_URL=$COGNITO_DOMAIN_URL\" >> .env.production",
+                    "echo \"TRIPS_ALLOWED_EMAILS=$TRIPS_ALLOWED_EMAILS\" >> .env.production",
                     "pnpm build",
                   ],
                 },
