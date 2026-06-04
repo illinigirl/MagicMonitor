@@ -151,3 +151,123 @@ describe("getParkRides", () => {
     expect(items).toEqual([]);
   });
 });
+
+// ── getUpcomingTrips() — the /trips read path ──────────────────────
+//
+// Fires two paginated Queries (TRIP# headers + PLAN# rows) against the
+// shared USER#megan partition, then DERIVES each trip's days + date
+// range from the PLAN# rows (the (Y) model — the header's denormalized
+// `days` is deliberately ignored so it can't drift). These pin that
+// derivation, the upcoming/past cutoff, the partition contract, and the
+// pagination loop (same data-growth defense as getParkRides).
+
+function makeTripRow(over: Partial<Record<string, unknown>> = {}) {
+  return { SK: "TRIP#t1", name: "June trip", ...over };
+}
+function makePlanRow(over: Partial<Record<string, unknown>> = {}) {
+  return {
+    SK: "PLAN#p1",
+    trip_id: "t1",
+    planned_for_date: "2099-09-01",
+    park_key: "magic_kingdom",
+    active: false,
+    outcome_recorded: false,
+    ride_sequence: [],
+    ...over,
+  };
+}
+
+// Route the two interleaved Queries by their SK prefix so the test is
+// independent of Promise.all call ordering. planPages feeds successive
+// PLAN# calls (for the pagination test).
+function mockTripsAndPlans(
+  tripItems: unknown[],
+  planPages: { Items: unknown[]; LastEvaluatedKey?: unknown }[],
+) {
+  let planCall = 0;
+  sendMock.mockImplementation((cmd: { input: { ExpressionAttributeValues: Record<string, unknown> } }) => {
+    const sk = cmd.input.ExpressionAttributeValues[":sk"];
+    if (sk === "TRIP#") return Promise.resolve({ Items: tripItems, LastEvaluatedKey: undefined });
+    if (sk === "PLAN#") {
+      const page = planPages[planCall] ?? { Items: [], LastEvaluatedKey: undefined };
+      planCall += 1;
+      return Promise.resolve(page);
+    }
+    return Promise.resolve({ Items: [], LastEvaluatedKey: undefined });
+  });
+}
+
+describe("getUpcomingTrips", () => {
+  it("derives days + date range from PLAN# rows, sorted by date", async () => {
+    mockTripsAndPlans(
+      [makeTripRow({ name: "June trip" })],
+      [{
+        Items: [
+          // intentionally out of date order to prove we sort
+          makePlanRow({ SK: "PLAN#p2", planned_for_date: "2099-09-02", park_key: "epcot",
+                        ride_sequence: [{ ride_name: "Test Track" }] }),
+          makePlanRow({ SK: "PLAN#p1", planned_for_date: "2099-09-01", park_key: "magic_kingdom",
+                        active: true,
+                        ride_sequence: [{ ride_name: "Space", ride_id: "sm" }, { ride_name: "TRON" }] }),
+        ],
+        LastEvaluatedKey: undefined,
+      }],
+    );
+
+    const { getUpcomingTrips } = await import("./dynamodb");
+    const trips = await getUpcomingTrips();
+
+    expect(trips).toHaveLength(1);
+    const t = trips[0];
+    expect(t.name).toBe("June trip");
+    expect(t.start_date).toBe("2099-09-01");   // derived from rows, min
+    expect(t.end_date).toBe("2099-09-02");     // derived from rows, max
+    expect(t.days.map((d) => d.date)).toEqual(["2099-09-01", "2099-09-02"]);
+    expect(t.days[0].park_key).toBe("magic_kingdom");
+    expect(t.days[0].active).toBe(true);
+    expect(t.days[0].ride_count).toBe(2);
+    expect(t.days[0].rides.map((r) => r.ride_name)).toEqual(["Space", "TRON"]);
+    expect(t.days[0].plan_id).toBe("p1");
+  });
+
+  it("skips a trip whose latest day is in the past", async () => {
+    mockTripsAndPlans(
+      [makeTripRow()],
+      [{ Items: [makePlanRow({ planned_for_date: "2000-01-01" })], LastEvaluatedKey: undefined }],
+    );
+    const { getUpcomingTrips } = await import("./dynamodb");
+    expect(await getUpcomingTrips()).toEqual([]);
+  });
+
+  it("skips a header with no PLAN# day rows", async () => {
+    mockTripsAndPlans([makeTripRow({ SK: "TRIP#ghost" })], [{ Items: [], LastEvaluatedKey: undefined }]);
+    const { getUpcomingTrips } = await import("./dynamodb");
+    expect(await getUpcomingTrips()).toEqual([]);
+  });
+
+  it("paginates the PLAN# query (data-growth defense)", async () => {
+    mockTripsAndPlans(
+      [makeTripRow()],
+      [
+        { Items: [makePlanRow({ SK: "PLAN#p1", planned_for_date: "2099-09-01" })],
+          LastEvaluatedKey: { PK: "USER#megan", SK: "PLAN#p1" } },
+        { Items: [makePlanRow({ SK: "PLAN#p2", planned_for_date: "2099-09-02" })],
+          LastEvaluatedKey: undefined },
+      ],
+    );
+    const { getUpcomingTrips } = await import("./dynamodb");
+    const trips = await getUpcomingTrips();
+    expect(trips[0].days.map((d) => d.date)).toEqual(["2099-09-01", "2099-09-02"]);
+  });
+
+  it("queries the shared USER#megan partition with begins_with", async () => {
+    mockTripsAndPlans([], [{ Items: [], LastEvaluatedKey: undefined }]);
+    const { getUpcomingTrips } = await import("./dynamodb");
+    await getUpcomingTrips();
+    const cmds = sendMock.mock.calls.map((c) => c[0].input);
+    const tripQ = cmds.find((i) => i.ExpressionAttributeValues[":sk"] === "TRIP#");
+    expect(tripQ.KeyConditionExpression).toBe("PK = :pk AND begins_with(SK, :sk)");
+    expect(tripQ.ExpressionAttributeValues[":pk"]).toBe("USER#megan");
+    expect(tripQ.IndexName).toBeUndefined(); // base table, not a GSI
+  });
+});

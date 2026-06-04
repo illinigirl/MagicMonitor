@@ -99,3 +99,128 @@ export async function getParkRides(parkKey: ParkKey): Promise<RideState[]> {
   } while (exclusiveStartKey);
   return items.sort((a, b) => a.name.localeCompare(b.name));
 }
+
+// ─── Multi-day trips (shared family planner) ────────────────────────
+//
+// The MCP trip planner writes to ONE shared partition (USER#megan) — not
+// per-user; identity is attribution only (created_by). So the dashboard
+// reads trips from this fixed partition, and the /trips page gates access
+// to the family at the page layer (NOT per logged-in sub, unlike /me).
+
+const SHARED_TRIP_USER = "megan";
+
+export interface TripDay {
+  date: string;
+  park_key: ParkKey;
+  plan_id: string;
+  active: boolean;
+  ride_count: number;
+  outcome_recorded: boolean;
+  rides: { ride_name: string; ride_id?: string }[];
+}
+
+export interface Trip {
+  trip_id: string;
+  name: string | null;
+  start_date: string;
+  end_date: string;
+  days: TripDay[];
+}
+
+interface PlanRow {
+  SK: string;
+  trip_id?: string;
+  planned_for_date?: string;
+  park_key?: ParkKey;
+  active?: boolean;
+  outcome_recorded?: boolean;
+  ride_sequence?: { ride_name?: string; ride_id?: string }[];
+}
+
+interface TripRow {
+  SK: string;
+  name?: string;
+}
+
+/** Today's date as YYYY-MM-DD in Eastern (the parks' tz), matching the
+ *  planner's planned_for_date convention. */
+function todayEtIso(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
+/** Paginated Query of USER#<SHARED_TRIP_USER> rows whose SK begins_with
+ *  the given prefix. Paginate defensively — the partition is small today
+ *  but never single-page a partition that grows (the getParkRides lesson). */
+async function querySharedTripRows<T>(skPrefix: string): Promise<T[]> {
+  const items: T[] = [];
+  let exclusiveStartKey: Record<string, unknown> | undefined = undefined;
+  do {
+    const resp: QueryCommandOutput = await client.send(
+      new QueryCommand({
+        TableName: tableName,
+        KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+        ExpressionAttributeValues: {
+          ":pk": `USER#${SHARED_TRIP_USER}`,
+          ":sk": skPrefix,
+        },
+        ExclusiveStartKey: exclusiveStartKey,
+      }),
+    );
+    items.push(...((resp.Items ?? []) as T[]));
+    exclusiveStartKey = resp.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+  return items;
+}
+
+/**
+ * Upcoming (or in-progress) shared family trips, soonest first. Each
+ * trip's days + date range are DERIVED from its PLAN# rows, not the
+ * TRIP# header's denormalized `days` (which can drift) — mirrors the
+ * MCP get_upcoming_trip (Y) model. A trip is "upcoming" if its latest
+ * day is today-or-later (ET). Trips with no day rows are skipped.
+ */
+export async function getUpcomingTrips(): Promise<Trip[]> {
+  const today = todayEtIso();
+  const [tripRows, planRows] = await Promise.all([
+    querySharedTripRows<TripRow>("TRIP#"),
+    querySharedTripRows<PlanRow>("PLAN#"),
+  ]);
+
+  const byTrip = new Map<string, PlanRow[]>();
+  for (const p of planRows) {
+    if (!p.trip_id) continue;
+    const arr = byTrip.get(p.trip_id);
+    if (arr) arr.push(p);
+    else byTrip.set(p.trip_id, [p]);
+  }
+
+  const trips: Trip[] = [];
+  for (const hdr of tripRows) {
+    const tripId = hdr.SK.slice("TRIP#".length);
+    const rows = (byTrip.get(tripId) ?? []).filter((r) => r.planned_for_date);
+    if (rows.length === 0) continue;
+    rows.sort((a, b) => (a.planned_for_date! < b.planned_for_date! ? -1 : 1));
+    const endDate = rows[rows.length - 1].planned_for_date!;
+    if (endDate < today) continue; // already over
+    trips.push({
+      trip_id: tripId,
+      name: hdr.name ?? null,
+      start_date: rows[0].planned_for_date!,
+      end_date: endDate,
+      days: rows.map((r) => ({
+        date: r.planned_for_date!,
+        park_key: (r.park_key ?? "magic_kingdom") as ParkKey,
+        plan_id: r.SK.slice("PLAN#".length),
+        active: Boolean(r.active),
+        ride_count: (r.ride_sequence ?? []).length,
+        outcome_recorded: Boolean(r.outcome_recorded),
+        rides: (r.ride_sequence ?? []).map((rd) => ({
+          ride_name: rd.ride_name ?? "(unnamed)",
+          ride_id: rd.ride_id,
+        })),
+      })),
+    });
+  }
+  trips.sort((a, b) => (a.start_date < b.start_date ? -1 : 1));
+  return trips;
+}

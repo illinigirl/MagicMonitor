@@ -13,6 +13,7 @@
 import Link from "next/link";
 
 import { auth } from "@/auth";
+import { isTripsAllowed } from "@/lib/trips-access";
 
 import { SignInButton } from "./SignInButton";
 import { SignOutButton } from "./SignOutButton";
@@ -25,6 +26,9 @@ export async function HeaderAuth() {
   }
 
   const email = session.user.email ?? "";
+  // Only family accounts see the Trips link — /trips shows shared data
+  // and denies non-family, so don't surface a dead-end link to others.
+  const showTrips = isTripsAllowed(session.user.email);
 
   return (
     <div className="flex items-center gap-3">
@@ -32,6 +36,14 @@ export async function HeaderAuth() {
         <span className="hidden md:inline text-fg-3 text-sm" title={email}>
           {email}
         </span>
+      )}
+      {showTrips && (
+        <Link
+          href="/trips"
+          className="rounded-md border border-line bg-bg-1 hover:bg-bg-2 px-3 py-1.5 text-sm font-medium text-fg-1 transition-colors"
+        >
+          Trips
+        </Link>
       )}
       <Link
         href="/me"
