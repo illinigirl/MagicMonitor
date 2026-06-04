@@ -197,9 +197,24 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
   const trips: Trip[] = [];
   for (const hdr of tripRows) {
     const tripId = hdr.SK.slice("TRIP#".length);
-    const rows = (byTrip.get(tripId) ?? []).filter((r) => r.planned_for_date);
-    if (rows.length === 0) continue;
-    rows.sort((a, b) => (a.planned_for_date! < b.planned_for_date! ? -1 : 1));
+    const allRows = (byTrip.get(tripId) ?? []).filter((r) => r.planned_for_date);
+    if (allRows.length === 0) continue;
+    // Collapse to one row per date (prefer the active plan, else the
+    // most-recently-recorded SK) — defensive against duplicate day rows,
+    // so a date never renders twice even if a dup slipped in.
+    const byDate = new Map<string, PlanRow>();
+    for (const r of allRows) {
+      const d = r.planned_for_date!;
+      const cur = byDate.get(d);
+      const better =
+        !cur ||
+        (Number(Boolean(r.active)) > Number(Boolean(cur.active))) ||
+        (Boolean(r.active) === Boolean(cur.active) && r.SK > cur.SK);
+      if (better) byDate.set(d, r);
+    }
+    const rows = [...byDate.values()].sort((a, b) =>
+      a.planned_for_date! < b.planned_for_date! ? -1 : 1,
+    );
     const endDate = rows[rows.length - 1].planned_for_date!;
     if (endDate < today) continue; // already over
     trips.push({

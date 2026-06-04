@@ -260,6 +260,31 @@ describe("getUpcomingTrips", () => {
     expect(trips[0].days.map((d) => d.date)).toEqual(["2099-09-01", "2099-09-02"]);
   });
 
+  it("collapses duplicate same-date rows to one day, preferring the active row", async () => {
+    // Legacy data can hold two PLAN# rows for the same (trip, date) —
+    // the pre-upsert record_plan appended instead of updating. The
+    // reader must render that date ONCE, preferring the active row (and
+    // its richer ride list) so a stale dormant dup never doubles a day.
+    mockTripsAndPlans(
+      [makeTripRow()],
+      [{
+        Items: [
+          makePlanRow({ SK: "PLAN#2099-01-01T10:00:00+00:00", planned_for_date: "2099-09-01",
+                        active: false, ride_sequence: [{ ride_name: "A" }] }),
+          makePlanRow({ SK: "PLAN#2099-01-01T11:00:00+00:00", planned_for_date: "2099-09-01",
+                        active: true, ride_sequence: [{ ride_name: "A" }, { ride_name: "B" }] }),
+        ],
+        LastEvaluatedKey: undefined,
+      }],
+    );
+    const { getUpcomingTrips } = await import("./dynamodb");
+    const trips = await getUpcomingTrips();
+    expect(trips).toHaveLength(1);
+    expect(trips[0].days).toHaveLength(1);          // the date shows ONCE
+    expect(trips[0].days[0].active).toBe(true);     // active row preferred
+    expect(trips[0].days[0].ride_count).toBe(2);
+  });
+
   it("queries the shared USER#megan partition with begins_with", async () => {
     mockTripsAndPlans([], [{ Items: [], LastEvaluatedKey: undefined }]);
     const { getUpcomingTrips } = await import("./dynamodb");

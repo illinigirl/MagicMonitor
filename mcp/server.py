@@ -1511,6 +1511,40 @@ def record_plan(
             "error_message": f"Could not parse '{planned_for_date}'. Use YYYY-MM-DD.",
         }
 
+    try:
+        table = _ddb_table()
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan write failed",
+            "error_message": str(e),
+        }
+
+    # Upsert per day: if an un-recorded plan for this same
+    # (planned_for_date, trip_id) already exists, UPDATE it in place
+    # (reuse its SK) rather than appending a second row. Without this,
+    # re-recording a pre-built trip day — e.g. to add shows — created a
+    # duplicate day (one row per call). Recording is "set this day's plan."
+    # If legacy dups already exist, prefer the active one, else most-recent.
+    try:
+        existing = [
+            r for r in (
+                _convert_decimals(x)
+                for x in _query_user_prefix(table, user_id, "PLAN#")
+            )
+            if r.get("planned_for_date") == pfd
+            and r.get("trip_id") == trip_id
+            and not r.get("outcome_recorded")
+        ]
+    except Exception:
+        existing = []  # read failed → fall through to an insert
+    if existing:
+        existing.sort(
+            key=lambda r: (bool(r.get("active")), r.get("planned_at") or r["SK"]),
+            reverse=True,
+        )
+        plan_ts = existing[0]["SK"][len("PLAN#"):]  # reuse SK → update in place
+
     # Same-day plans auto-activate; future-dated plans stay dormant
     # until activate_plan flips them on their day.
     if active is None:
@@ -1534,7 +1568,6 @@ def record_plan(
     )
 
     try:
-        table = _ddb_table()
         table.put_item(Item=_floats_to_decimals(item))
     except Exception as e:
         err = _aws_error_payload(e)
@@ -1885,7 +1918,19 @@ def get_upcoming_trip(user_id: str = _DEFAULT_USER_ID) -> dict[str, Any]:
         return {"user_id": user_id, "found": False, "note": "No upcoming trip."}
     candidates.sort(key=lambda c: c[0])  # soonest start_date first
     _start, trip_id, hdr, rows = candidates[0]
-    rows.sort(key=lambda r: r.get("planned_for_date") or "")
+
+    # Collapse to one row per date (prefer the active plan, else the
+    # most-recently-recorded) — defensive against duplicate day rows, so
+    # a date never shows twice even if a dup slipped in.
+    by_date: dict[str, dict] = {}
+    for r in rows:
+        d = r.get("planned_for_date")
+        cur = by_date.get(d)
+        if cur is None or (bool(r.get("active")), r["SK"]) > (
+            bool(cur.get("active")), cur["SK"]
+        ):
+            by_date[d] = r
+    rows = sorted(by_date.values(), key=lambda r: r.get("planned_for_date") or "")
 
     days_out = [{
         "date": r.get("planned_for_date"),

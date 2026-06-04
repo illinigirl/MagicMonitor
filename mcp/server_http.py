@@ -1533,6 +1533,36 @@ def record_plan(
             "error_message": f"Could not parse '{planned_for_date}'. Use YYYY-MM-DD.",
         }
 
+    try:
+        table = _ddb_table()
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Plan write failed", "error_message": str(e),
+        }
+
+    # Upsert per day: update an existing un-recorded plan for this same
+    # (planned_for_date, trip_id) in place rather than appending a dup
+    # row (re-recording a pre-built trip day, e.g. to add shows, used to
+    # create a second row). Prefer active, else most-recent, if dups exist.
+    try:
+        existing = [
+            r for r in (
+                _convert_decimals(x) for x in _query_shared_prefix(table, "PLAN#")
+            )
+            if r.get("planned_for_date") == pfd
+            and r.get("trip_id") == trip_id
+            and not r.get("outcome_recorded")
+        ]
+    except Exception:
+        existing = []
+    if existing:
+        existing.sort(
+            key=lambda r: (bool(r.get("active")), r.get("planned_at") or r["SK"]),
+            reverse=True,
+        )
+        plan_ts = existing[0]["SK"][len("PLAN#"):]
+
     if active is None:
         active = pfd == _today_et_date_iso()
     activated_at = now_utc.isoformat() if active else None
@@ -1555,7 +1585,7 @@ def record_plan(
     )
 
     try:
-        _ddb_table().put_item(Item=_floats_to_decimals(item))
+        table.put_item(Item=_floats_to_decimals(item))
     except Exception as e:
         err = _aws_error_payload(e)
         return err if err is not None else {
@@ -1851,7 +1881,18 @@ def get_upcoming_trip() -> dict[str, Any]:
         return {"found": False, "note": "No upcoming trip."}
     candidates.sort(key=lambda c: c[0])
     _start, trip_id, hdr, rows = candidates[0]
-    rows.sort(key=lambda r: r.get("planned_for_date") or "")
+
+    # Collapse to one row per date (prefer active, else most-recent) —
+    # defensive against duplicate day rows.
+    by_date: dict[str, dict] = {}
+    for r in rows:
+        d = r.get("planned_for_date")
+        cur = by_date.get(d)
+        if cur is None or (bool(r.get("active")), r["SK"]) > (
+            bool(cur.get("active")), cur["SK"]
+        ):
+            by_date[d] = r
+    rows = sorted(by_date.values(), key=lambda r: r.get("planned_for_date") or "")
 
     days_out = [{
         "date": r.get("planned_for_date"),

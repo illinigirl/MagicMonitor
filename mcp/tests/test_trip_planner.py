@@ -222,14 +222,19 @@ class TestGetPlanForDay:
         assert out["found"] is False
 
     def test_prefers_active(self, stub):
-        # Two plans for the same day — one dormant, one active.
+        # Two plans for the same day — one dormant, one active. record_plan
+        # now upserts per (date, trip_id), so two same-day calls would
+        # collapse to one row; inject the pair directly to exercise the
+        # "prefer active, count the rest" path get_plan_for_day still owns.
         d = _today()
-        dormant = server.record_plan("MK", [], planned_for_date=d, active=False)
-        active = server.record_plan("MK", [], planned_for_date=d, active=True)
+        stub.put_item(Item={"PK": "USER#megan", "SK": "PLAN#2099-01-01T10:00:00+00:00",
+                            "planned_for_date": d, "active": False, "park_key": "magic_kingdom"})
+        stub.put_item(Item={"PK": "USER#megan", "SK": "PLAN#2099-01-01T11:00:00+00:00",
+                            "planned_for_date": d, "active": True, "park_key": "magic_kingdom"})
         out = server.get_plan_for_day(date=d)
         assert out["found"] is True
         assert out["active"] is True
-        assert out["plan_id"] == active["plan_id"]
+        assert out["plan_id"] == "2099-01-01T11:00:00+00:00"
         assert out["other_plans_for_day"] == 1
 
     def test_bad_date_errors(self, stub):
@@ -414,3 +419,75 @@ class TestUpcomingTripDerivation:
         out = server.create_trip("old", [{"date": "2020-01-01", "park": "MK"}])
         res = server.get_upcoming_trip()
         assert res["found"] is False
+
+
+# ─── record_plan upsert-per-day + get_upcoming_trip dedupe ──────────
+
+
+class TestRecordPlanUpsert:
+    @staticmethod
+    def _plan_rows(stub, trip_id=None):
+        return [v for (p, s), v in stub.items.items()
+                if s.startswith("PLAN#") and (trip_id is None or v.get("trip_id") == trip_id)]
+
+    def test_re_record_same_trip_day_updates_in_place(self, stub):
+        # The bug this fixes: re-recording a pre-built day (e.g. to add
+        # shows) used to append a 2nd row for the date. Now it upserts.
+        tid = "t-upsert"
+        r1 = server.record_plan("MK", [{"ride_name": "Space", "ride_id": "sm"}],
+                                planned_for_date=_future(10), trip_id=tid, active=False)
+        r2 = server.record_plan(
+            "MK", [{"ride_name": "Space", "ride_id": "sm"}],
+            show_selections=[{"show_name": "Happily Ever After",
+                              "performance_start": "2099-01-01T21:00:00",
+                              "predicted_arrival_min": 45}],
+            planned_for_date=_future(10), trip_id=tid, active=False)
+        assert r2["plan_id"] == r1["plan_id"]              # same SK reused
+        rows = self._plan_rows(stub, tid)
+        assert len(rows) == 1                              # ONE row, not two
+        assert len(rows[0].get("show_selections") or []) == 1  # shows landed
+
+    def test_re_record_standalone_same_day_updates_in_place(self, stub):
+        r1 = server.record_plan("MK", [], planned_for_date=_future(3), active=False)
+        r2 = server.record_plan("MK", [{"ride_name": "TRON", "ride_id": "tron"}],
+                                planned_for_date=_future(3), active=False)
+        assert r2["plan_id"] == r1["plan_id"]
+        rows = [v for v in self._plan_rows(stub) if not v.get("trip_id")]
+        assert len(rows) == 1
+        assert len(rows[0].get("ride_sequence") or []) == 1
+
+    def test_different_dates_do_not_collide(self, stub):
+        tid = "t-multi"
+        a = server.record_plan("MK", [], planned_for_date=_future(5), trip_id=tid, active=False)
+        b = server.record_plan("EPCOT", [], planned_for_date=_future(6), trip_id=tid, active=False)
+        assert a["plan_id"] != b["plan_id"]
+        assert len(self._plan_rows(stub, tid)) == 2
+
+    def test_recorded_outcome_not_overwritten(self, stub):
+        # A day whose outcome is already recorded must not be silently
+        # clobbered by a re-record — that one is history; a new row is fine.
+        tid = "t-rec"
+        r1 = server.record_plan("MK", [], planned_for_date=_future(8), trip_id=tid, active=False)
+        stub.items[("USER#megan", f"PLAN#{r1['plan_id']}")]["outcome_recorded"] = True
+        r2 = server.record_plan("MK", [], planned_for_date=_future(8), trip_id=tid, active=False)
+        assert r2["plan_id"] != r1["plan_id"]              # new row, didn't touch the recorded one
+        assert len(self._plan_rows(stub, tid)) == 2
+
+    def test_upcoming_trip_dedupes_duplicate_date(self, stub):
+        # Inject a legacy dup (two rows, same date+trip) and confirm
+        # get_upcoming_trip collapses to one day, preferring the active row.
+        tid = "t-dup"
+        stub.put_item(Item={"PK": "USER#megan", "SK": f"TRIP#{tid}", "name": "Dup trip",
+                            "days": [{"date": _future(15), "park_key": "magic_kingdom"}]})
+        stub.put_item(Item={"PK": "USER#megan", "SK": "PLAN#2099-01-01T10:00:00+00:00",
+                            "planned_for_date": _future(15), "trip_id": tid, "active": False,
+                            "ride_sequence": [{"ride_name": "A"}], "outcome_recorded": False})
+        stub.put_item(Item={"PK": "USER#megan", "SK": "PLAN#2099-01-01T11:00:00+00:00",
+                            "planned_for_date": _future(15), "trip_id": tid, "active": True,
+                            "ride_sequence": [{"ride_name": "A"}, {"ride_name": "B"}],
+                            "outcome_recorded": False})
+        out = server.get_upcoming_trip()
+        assert out["found"] is True and out["trip_id"] == tid
+        assert len(out["days"]) == 1                        # the date shows ONCE
+        assert out["days"][0]["active"] is True             # active row preferred
+        assert out["days"][0]["ride_count"] == 2

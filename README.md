@@ -293,6 +293,23 @@ what's actually left. The trip space is shared across the family (one
 `USER#megan` partition); each write is stamped with `created_by` from
 the verified login — never a client-supplied id.
 
+The same trip is glanceable on the web at **`/trips`** — a read-only
+Server Component that renders the upcoming trip day by day. Because
+`/me` shows per-user data but the trip space is *shared*, this page
+isn't gated by "any logged-in user" — it's an email allowlist
+(`TRIPS_ALLOWED_EMAILS`), so a stranger's Google sign-in can use `/me`
+with their own favorites but never sees the family's plan.
+
+**Idempotent by `(date, trip)`, defensive on read.** `record_plan`
+upserts: re-recording a day Claude already built (to drop in a dinner
+reservation, say) updates that day's row in place instead of appending
+a second `PLAN#` row for the same date — it reuses the existing SK
+unless the day's outcome is already recorded (history is never
+clobbered; that gets a fresh row). And both readers — `get_upcoming_trip`
+and the `/trips` page — still collapse to one row per date as a
+belt-and-suspenders guard, preferring the active row, so a legacy
+duplicate from before the upsert can never render a date twice.
+
 ### HTTPS MCP transport: OAuth on a remote data plane
 
 The stdio MCP server only reaches clients that can launch a local
@@ -497,8 +514,9 @@ Captured in [`PROJECT.md` → Roadmap](PROJECT.md) and
 
 Recently shipped: **M5** (the multi-day shared trip planner above —
 build → activate → re-evaluate, live across both MCP transports with
-the poller activation gate and a sparse GSI backing active-plan
-lookup), **M6-B** (analytics now regenerate nightly from DynamoDB
+the poller activation gate, a sparse GSI backing active-plan lookup,
+idempotent per-day upserts, and a read-only `/trips` web view),
+**M6-B** (analytics now regenerate nightly from DynamoDB
 rather than a frozen Pi snapshot), and **M9 Phase 1** (the
 [HTTPS MCP transport with Cognito OAuth](#https-mcp-transport-oauth-on-a-remote-data-plane),
 live on Claude mobile + the Desktop Custom Connector).
