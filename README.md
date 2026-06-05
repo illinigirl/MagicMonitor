@@ -102,7 +102,7 @@ session without re-validating JWT cookies at an API edge.
 | ![Landing](docs/screenshots/landing.png) | ![Live park](docs/screenshots/park-live.png) |
 | **Landing** — pick a park; live status shows current open hours and the per-park entry into both rides and showtimes | **Live ride status** — down rides surface above operating; favorites get a star; closed-park empty state suppresses stale wait times |
 | ![Today at the park](docs/screenshots/park-today.png) | ![Analytics heatmap](docs/screenshots/analytics-park.png) |
-| **Today at the park** — chronological showtimes with category-pill filters (parade, fireworks, stage, music, character meet) and live search | **Analytics** — hour × day-of-week heatmap, ride downtime ranking with three sort modes, drawn from 8.8M historical poll rows |
+| **Today at the park** — chronological showtimes with category-pill filters (parade, fireworks, stage, music, character meet) and live search | **Analytics** — hour × day-of-week heatmap, ride downtime ranking with three sort modes, drawn from 2.8M historical poll rows |
 
 ## Engineering judgment moments
 
@@ -169,8 +169,9 @@ move to a GSI on `FAV_RIDE#<ride_id>` and the fanout filter becomes
 ### Pre-aggregated analytics, not streams→Athena
 
 The "millions of polling rows" behind the analytics page live as
-a ~230 KB TypeScript module checked into the repo, not behind a
-DynamoDB Streams → Firehose → S3 → Athena pipeline. Two reasons.
+a ~1.3 MB JSON snapshot checked into the repo (re-exported by a small
+TypeScript shim), not behind a DynamoDB Streams → Firehose → S3 →
+Athena pipeline. Two reasons.
 
 First, MM's poller writes only status *changes* to DDB (HIST# rows
 on transition), not every poll. A streams pipeline would carry
@@ -211,7 +212,7 @@ and writes two outputs:
 The poller checks each operating ride's current wait against its
 hour-bucket baseline. If `current ≤ min(30, 0.5 × typical)` and a
 90-min cooldown isn't active, a low-wait Pushover fires. Only 38 of
-the 88 tracked rides have baselines — for rides whose typical wait
+the 72 tracked rides have baselines — for rides whose typical wait
 is already short, alerting "this is a short wait" is meaningless.
 
 ### Agentic planner with cross-session feedback loop
