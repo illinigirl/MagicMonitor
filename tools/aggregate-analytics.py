@@ -863,10 +863,30 @@ def _derive_park_hours(con: sqlite3.Connection, rides_meta: dict) -> dict:
     return {k: (v[0], v[1]) for k, v in park_hours.items()}
 
 
+def _as_instant(ts: str) -> datetime:
+    """Parse an ISO timestamp to a timezone-aware datetime.
+
+    Naive inputs are assumed UTC so a comparison against the (aware)
+    bounds never raises — defensive only; production timestamps are
+    aware (`...+00:00`)."""
+    dt = datetime.fromisoformat(ts)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 def _within_park_hours(
     park_hours: dict, park_id: str, dt_et: datetime, polled_at: str
 ) -> bool:
-    """True if this poll falls within the derived operating window."""
+    """True if this poll falls within the derived operating window.
+
+    Compares timezone-aware INSTANTS, not raw ISO strings. The derived
+    bounds are stored as their source `polled_at` values, which are UTC
+    (`...+00:00`), but callers may pass a timestamp in a different
+    offset — the active-minutes path passes an ET-offset string
+    (`...-04:00`). A lexicographic compare of two different offsets is
+    meaningless: it silently dropped every pre-noon ET slice (a 9am-ET
+    `T09...-04:00` sorts below the same-instant `T13...+00:00` open
+    bound), blanking the morning of every park heatmap and downtime
+    cell even though wait data for those hours exists."""
     key = (park_id, _park_day_iso(dt_et))
     bounds = park_hours.get(key)
     if not bounds:
@@ -874,7 +894,7 @@ def _within_park_hours(
         # park entirely closed or a data gap. Either way, don't count
         # any poll from this date as "active."
         return False
-    return bounds[0] <= polled_at <= bounds[1]
+    return _as_instant(bounds[0]) <= _as_instant(polled_at) <= _as_instant(bounds[1])
 
 
 def _detect_down_clusters(
