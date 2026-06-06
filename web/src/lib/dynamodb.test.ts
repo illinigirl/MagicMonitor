@@ -295,4 +295,98 @@ describe("getUpcomingTrips", () => {
     expect(tripQ.ExpressionAttributeValues[":pk"]).toBe("USER#megan");
     expect(tripQ.IndexName).toBeUndefined(); // base table, not a GSI
   });
+
+  it("surfaces a standalone plan (no trip_id) as a single-day entry", async () => {
+    // A same-day record_plan writes a lone PLAN# row with no trip_id and no
+    // TRIP# header. It must still appear on /trips — it lives in the shared
+    // partition, so it shows up nowhere else (this was the reported bug).
+    mockTripsAndPlans(
+      [], // no TRIP# headers at all
+      [{
+        Items: [
+          makePlanRow({
+            SK: "PLAN#solo1", trip_id: undefined, planned_for_date: "2099-09-01",
+            park_key: "epcot", active: true,
+            ride_sequence: [{ ride_name: "Test Track", ride_id: "tt" }],
+          }),
+        ],
+        LastEvaluatedKey: undefined,
+      }],
+    );
+    const { getUpcomingTrips } = await import("./dynamodb");
+    const { findPark } = await import("./parks");
+    const trips = await getUpcomingTrips();
+
+    expect(trips).toHaveLength(1);
+    const t = trips[0];
+    expect(t.trip_id).toBe("solo:2099-09-01");
+    expect(t.start_date).toBe("2099-09-01");
+    expect(t.end_date).toBe("2099-09-01");
+    expect(t.days).toHaveLength(1);
+    expect(t.days[0].park_key).toBe("epcot");
+    expect(t.days[0].active).toBe(true);
+    expect(t.days[0].plan_id).toBe("solo1");
+    expect(t.days[0].rides.map((r) => r.ride_name)).toEqual(["Test Track"]);
+    // A future standalone day is titled by its park name (not "Today's plan").
+    expect(t.name).toBe(findPark("epcot")!.name);
+  });
+
+  it("labels a same-day standalone plan \"Today's plan\"", async () => {
+    // Freeze the clock mid-day UTC so the ET calendar date is unambiguous
+    // (18:00Z → 14:00 ET → 2099-09-01), then plan FOR that same date.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2099-09-01T18:00:00Z"));
+    try {
+      mockTripsAndPlans(
+        [],
+        [{
+          Items: [
+            makePlanRow({
+              SK: "PLAN#today1", trip_id: undefined, planned_for_date: "2099-09-01",
+              park_key: "magic_kingdom", active: true,
+            }),
+          ],
+          LastEvaluatedKey: undefined,
+        }],
+      );
+      const { getUpcomingTrips } = await import("./dynamodb");
+      const trips = await getUpcomingTrips();
+      expect(trips).toHaveLength(1);
+      expect(trips[0].name).toBe("Today's plan");
+      expect(trips[0].days[0].active).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips a standalone plan whose date is in the past", async () => {
+    mockTripsAndPlans(
+      [],
+      [{
+        Items: [makePlanRow({ SK: "PLAN#old", trip_id: undefined, planned_for_date: "2000-01-01" })],
+        LastEvaluatedKey: undefined,
+      }],
+    );
+    const { getUpcomingTrips } = await import("./dynamodb");
+    expect(await getUpcomingTrips()).toEqual([]);
+  });
+
+  it("shows a standalone plan alongside a header-grouped trip, sorted by date", async () => {
+    mockTripsAndPlans(
+      [makeTripRow({ SK: "TRIP#t1", name: "June trip" })],
+      [{
+        Items: [
+          makePlanRow({ SK: "PLAN#p1", trip_id: "t1", planned_for_date: "2099-09-10", park_key: "magic_kingdom" }),
+          makePlanRow({ SK: "PLAN#solo", trip_id: undefined, planned_for_date: "2099-09-02", park_key: "epcot" }),
+        ],
+        LastEvaluatedKey: undefined,
+      }],
+    );
+    const { getUpcomingTrips } = await import("./dynamodb");
+    const trips = await getUpcomingTrips();
+    expect(trips).toHaveLength(2);
+    // Sorted by start_date: the standalone 09-02 before the trip's 09-10.
+    expect(trips[0].trip_id).toBe("solo:2099-09-02");
+    expect(trips[1].name).toBe("June trip");
+  });
 });

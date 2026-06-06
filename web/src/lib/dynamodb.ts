@@ -18,7 +18,7 @@ import "server-only";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand, type QueryCommandOutput } from "@aws-sdk/lib-dynamodb";
 
-import type { ParkKey } from "./parks";
+import { findPark, type ParkKey } from "./parks";
 
 // Hardcoded — AWS_REGION is auto-set by the runtime to whatever region
 // the SSR Lambda is invoked in, which for Amplify Hosting's edge-style
@@ -236,6 +236,53 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
       })),
     });
   }
+
+  // Standalone single-day plans (no trip_id) — e.g. a same-day record_plan,
+  // which writes a lone PLAN# row with no TRIP# header. Without this they'd be
+  // invisible everywhere: they live in the shared partition (not /me), and the
+  // trip loop above only renders plans attached to a TRIP# header. Surface each
+  // upcoming one as a single-day entry, collapsing to one row per date (same
+  // active-then-newest preference as the grouped path).
+  const soloByDate = new Map<string, PlanRow>();
+  for (const p of planRows) {
+    if (p.trip_id) continue; // grouped plans already handled above
+    if (!p.planned_for_date) continue;
+    if (p.planned_for_date < today) continue; // already over
+    const d = p.planned_for_date;
+    const cur = soloByDate.get(d);
+    const better =
+      !cur ||
+      Number(Boolean(p.active)) > Number(Boolean(cur.active)) ||
+      (Boolean(p.active) === Boolean(cur.active) && p.SK > cur.SK);
+    if (better) soloByDate.set(d, p);
+  }
+  for (const r of soloByDate.values()) {
+    const date = r.planned_for_date!;
+    const parkKey = (r.park_key ?? "magic_kingdom") as ParkKey;
+    trips.push({
+      trip_id: `solo:${date}`,
+      // A same-day plan reads as "Today's plan"; a standalone future day
+      // (rare) falls back to its park name, since "today" wouldn't be true.
+      name: date === today ? "Today's plan" : (findPark(parkKey)?.name ?? null),
+      start_date: date,
+      end_date: date,
+      days: [
+        {
+          date,
+          park_key: parkKey,
+          plan_id: r.SK.slice("PLAN#".length),
+          active: Boolean(r.active),
+          ride_count: (r.ride_sequence ?? []).length,
+          outcome_recorded: Boolean(r.outcome_recorded),
+          rides: (r.ride_sequence ?? []).map((rd) => ({
+            ride_name: rd.ride_name ?? "(unnamed)",
+            ride_id: rd.ride_id,
+          })),
+        },
+      ],
+    });
+  }
+
   trips.sort((a, b) => (a.start_date < b.start_date ? -1 : 1));
   return trips;
 }
