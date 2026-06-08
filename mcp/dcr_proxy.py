@@ -30,9 +30,9 @@ authenticate as one of the allowed family subs.
 clients directly at Cognito's hosted UI for authorize/token. DCR is
 the only RFC 7591/8414 endpoint we proxy; the rest is Cognito-native.
 
-**Unwired in session 2A.** This module exists but nothing in
-`mcp/server_http.py` imports it yet. The `/register` route lands in
-session 2B alongside the metadata endpoints and the middleware swap.
+**Wired in session 2B.** `mcp/server_http.py` imports this module and
+serves the `/register` route alongside the RFC 8414/9728 metadata
+endpoints and the Cognito JWT middleware swap.
 """
 
 from typing import Any

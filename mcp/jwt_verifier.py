@@ -18,11 +18,11 @@ verify after a cold start. JWKS rotation is rare (Cognito controls the
 schedule); if a token arrives with a `kid` we don't have, we evict the
 cache and re-fetch once before failing.
 
-**Unwired in session 2A.** This module exists but nothing in
-`mcp/server_http.py` imports it yet — the bearer middleware still runs
-unchanged. Session 2B (the wiring step) swaps the bearer middleware
-for a Cognito middleware that calls `verify_token()` per request and
-sets `MCP_ALLOWED_SUBS` + `COGNITO_*` env vars in the CDK stack.
+**Wired in session 2B.** `mcp/server_http.py` imports this module and
+installs `_CognitoJwtMiddleware`, which calls `verify_token()` on every
+non-public request and returns 401 on failure. The old shared-bearer
+middleware was hard-replaced (no dual-auth path). `MCP_ALLOWED_SUBS` +
+`COGNITO_*` env vars are set on the Lambda by the CDK stack.
 """
 
 import json
