@@ -34,7 +34,11 @@ function formatDay(iso: string): string {
 export default async function TripsPage() {
   const session = await auth();
   if (!session?.user) {
-    redirect("/api/auth/signin/cognito?callbackUrl=/trips");
+    // Redirect to the sign-in PAGE (not the provider endpoint): a GET
+    // to /api/auth/signin/cognito has no CSRF token, so Auth.js v5 fails
+    // it as a "Configuration" error. The page handles CSRF + the bounce
+    // to Cognito → Google itself.
+    redirect("/api/auth/signin?callbackUrl=/trips");
   }
 
   // Family-only gate: this surface shows shared data.

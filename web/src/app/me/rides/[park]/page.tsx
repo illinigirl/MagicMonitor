@@ -35,9 +35,10 @@ export default async function FavoritesPage({
   const session = await auth();
   const sub = session?.user?.id;
   if (!sub) {
-    redirect(
-      `/api/auth/signin/cognito?callbackUrl=/me/rides/${park.key}`,
-    );
+    // Sign-in PAGE, not the provider endpoint: a GET to
+    // /api/auth/signin/cognito has no CSRF token and fails as a
+    // "Configuration" error in Auth.js v5. The page handles CSRF.
+    redirect(`/api/auth/signin?callbackUrl=/me/rides/${park.key}`);
   }
 
   // Parallel: full ride list + this user's existing favorites.

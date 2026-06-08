@@ -35,9 +35,11 @@ export default async function MePage({
   const session = await auth();
   const sub = session?.user?.id;
   if (!sub) {
-    // NextAuth's signin endpoint takes callbackUrl so the user
-    // lands back on /me after Cognito → Google → callback.
-    redirect("/api/auth/signin/cognito?callbackUrl=/me");
+    // Redirect to the sign-in PAGE (not the provider endpoint): a GET
+    // to /api/auth/signin/cognito has no CSRF token, so Auth.js v5 fails
+    // it as a "Configuration" error. The page handles CSRF + the bounce
+    // to Cognito → Google, then callbackUrl lands the user back on /me.
+    redirect("/api/auth/signin?callbackUrl=/me");
   }
 
   // Three checks drive the Phase 3 setup banner. Done in parallel
