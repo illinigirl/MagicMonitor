@@ -94,8 +94,11 @@ eval framework in `mcp/evals/` exists exactly for this category.
 
 When adding a new tool, changing a docstring, or changing the
 agentic planner's instructions, add an eval case that exercises the
-new behavior. The 5 existing cases cover: happy path, write-side
-guardrail, context-reading, personalization, ambiguity resolution.
+new behavior. The 10 existing cases cover the core planning flow
+(happy path, context-reading, personalization, calibration,
+ambiguity/guardrails) plus the M5 multi-day surface (future trip
+build, on-the-day activation, future-day lookup, single
+future-dated record, trip deletion).
 
 Don't change tool docstrings in `mcp/server.py` casually — they
 are the contract Claude reads at runtime. Run the eval suite after

@@ -107,10 +107,13 @@ drift. The eval framework in `mcp/evals/` exists for this category.
 
 **Defense:** when adding a new MCP tool, changing a docstring, or
 changing the agentic planner's instructions, add an eval case that
-exercises the new behavior. The existing 5 cases cover happy path,
-write-side guardrail, context-reading, personalization, and
-ambiguity resolution; new dimensions deserve new cases. Run
-`pytest evals/` from `mcp/` before merging.
+exercises the new behavior. The existing 10 cases cover the core
+planning flow (happy path, write-side guardrail, context-reading,
+personalization, calibration, ambiguity resolution) plus the M5
+multi-day surface (future trip build, on-the-day activation,
+future-day lookup, single future-dated record, trip deletion); new
+dimensions deserve new cases. Run `pytest evals/` from `mcp/`
+before merging.
 
 ### Multi-source alert dispatch picking the wrong winner
 
