@@ -61,9 +61,19 @@ function todayDates(): { today: string; tomorrow: string } {
   const fmt = new Intl.DateTimeFormat("sv-SE", {
     timeZone: "America/New_York",
   });
-  const now = new Date();
-  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  return { today: fmt.format(now), tomorrow: fmt.format(tomorrow) };
+  const today = fmt.format(new Date()); // YYYY-MM-DD in ET
+  // Derive tomorrow by CALENDAR arithmetic on the ET date, not now+24h:
+  // on the DST fall-back day (25 hours), now+24h formatted in ET can still
+  // land on the same calendar date for the first hour, so tomorrow would
+  // wrongly equal today. UTC date math rolls month/year over correctly.
+  const [y, m, d] = today.split("-").map(Number);
+  const next = new Date(Date.UTC(y, m - 1, d + 1));
+  const tomorrow = [
+    next.getUTCFullYear(),
+    String(next.getUTCMonth() + 1).padStart(2, "0"),
+    String(next.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+  return { today, tomorrow };
 }
 
 function classify(entry: RawScheduleEntry): ScheduleSegment["kind"] | null {

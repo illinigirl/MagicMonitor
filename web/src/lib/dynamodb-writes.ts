@@ -36,9 +36,10 @@ const region = process.env.DISNEY_REGION ?? "us-east-2";
 const tableName = process.env.DISNEY_TABLE_NAME ?? "DisneyData";
 
 // Reuse the same global singleton key as the reader so dev hot-reload
-// doesn't multiply the socket pool. In production each module
-// initializes its own reference, but both end up pointing at the
-// first-constructed client via the global cache.
+// doesn't multiply the socket pool. The global is only assigned when
+// NODE_ENV !== "production" (below), so in PRODUCTION this module and
+// dynamodb.ts each construct their own client — two small socket pools,
+// which is fine. The global cache only collapses them to one in dev.
 declare global {
   // eslint-disable-next-line no-var
   var __ddbClient: DynamoDBDocumentClient | undefined;

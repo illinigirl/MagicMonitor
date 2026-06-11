@@ -11,6 +11,7 @@
  * Server-side only (reads a non-public env var); used by the /trips page
  * gate and the conditional nav link.
  */
+import "server-only";
 
 export function isTripsAllowed(email: string | null | undefined): boolean {
   if (!email) return false;
