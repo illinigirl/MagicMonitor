@@ -57,6 +57,12 @@ const MCP_DATA_BUCKET_NAME = `magic-monitor-mcp-data-${DEPLOY_ENV.account}`;
 const MCP_SNAPSHOT_KEY = "analytics-snapshot.json";
 const MCP_BASELINES_KEY = "baselines.json";
 
+/** Pushover credential SSM params — same ones the poller's notifier uses.
+ * The alarm forwarder reads them to push CloudWatch alarms to the phone
+ * (this account's Gmail drops AWS SNS mail, so email is a dead channel). */
+const PUSHOVER_APP_TOKEN_PARAM = "/disney/pushover/app_token";
+const PUSHOVER_USER_KEY_PARAM = "/disney/pushover/megan_user_key";
+
 /**
  * Local Python bundling for the MCP Lambda. Same approach as the
  * poller Lambda in disney-stack.ts (manylinux wheels for cross-
@@ -399,8 +405,35 @@ export class DisneyMcpStack extends cdk.Stack {
     const mcpAlarmTopic = new sns.Topic(this, "McpAlarmTopic", {
       topicName: "magic-monitor-mcp-alarms",
     });
-    // Optional notify target, supplied at deploy time (no PII in source):
-    // `cdk deploy -c alarmEmail=you@example.com`.
+    // Primary notification: forward alarms to Pushover (Gmail drops AWS
+    // SNS mail for this account). Pure-stdlib Lambda, shares the poller's
+    // Pushover creds from SSM.
+    const mcpAlarmForwarder = new lambda.Function(this, "McpAlarmForwarder", {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "../lambda/alarm-forwarder"),
+      ),
+      timeout: cdk.Duration.seconds(15),
+      environment: {
+        PUSHOVER_APP_TOKEN_PARAM,
+        PUSHOVER_USER_KEY_PARAM,
+      },
+    });
+    mcpAlarmForwarder.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${DEPLOY_ENV.region}:${DEPLOY_ENV.account}:parameter${PUSHOVER_APP_TOKEN_PARAM}`,
+          `arn:aws:ssm:${DEPLOY_ENV.region}:${DEPLOY_ENV.account}:parameter${PUSHOVER_USER_KEY_PARAM}`,
+        ],
+      }),
+    );
+    mcpAlarmTopic.addSubscription(
+      new subscriptions.LambdaSubscription(mcpAlarmForwarder),
+    );
+    // Optional extra email subscription if a working address is supplied:
+    // `cdk deploy -c alarmEmail=you@example.com`. Default deploys omit it.
     const alarmEmail = this.node.tryGetContext("alarmEmail");
     if (alarmEmail) {
       mcpAlarmTopic.addSubscription(
