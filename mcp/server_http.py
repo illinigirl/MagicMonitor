@@ -2323,6 +2323,10 @@ def mark_ride_complete(
     Returns:
         Dict with completed (0/1), remaining_rides, total_completed.
     """
+    # CONCURRENCY: shared-row read-modify-write with no version check is an
+    # accepted limitation (last-write-wins on simultaneous same-plan edits
+    # by two family members). Deliberate — see the fuller note in
+    # server.py's mark_ride_complete (decision 2026-06-11).
     sk = _coerce_plan_id_to_sk(plan_id)
     try:
         table = _ddb_table()

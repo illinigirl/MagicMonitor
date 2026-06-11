@@ -2529,6 +2529,15 @@ def mark_ride_complete(
         remaining_rides (still in ride_sequence), total_completed.
         Error payload on plan-not-found / AWS auth / DDB issues.
     """
+    # CONCURRENCY (accepted limitation, not a bug): this and the other
+    # plan-edit tools (remove_ride_from_plan, add_ride_to_plan) read the
+    # row, mutate the full lists in Python, and write them back with no
+    # optimistic-concurrency version check. The trip space is shared, so two
+    # family members editing the SAME day-plan within the same ~second would
+    # last-write-wins one edit. Deliberately left as-is: the window is tiny,
+    # the cost is a re-done edit, and version+retry across all the edit tools
+    # isn't worth it for a 2-person family (decision 2026-06-11). Don't
+    # "fix" this without revisiting that call.
     sk = _coerce_plan_id_to_sk(plan_id)
     try:
         table = _ddb_table()
