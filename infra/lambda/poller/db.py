@@ -355,11 +355,23 @@ def mark_still_down_alert_sent(ride_id: str, cooldown_secs: int) -> None:
 # Query per park returns every subscriber, no scan needed.
 
 def get_park_subscribers(park_key: str) -> list[str]:
-    """Return the user IDs subscribed to alerts for this park."""
-    resp = _table.query(
-        KeyConditionExpression=Key("PK").eq(f"PARK#{park_key}") & Key("SK").begins_with("USER#"),
-    )
-    return [item["SK"].removeprefix("USER#") for item in resp.get("Items", [])]
+    """Return the user IDs subscribed to alerts for this park.
+
+    Paginated: a park's subscriber rows could in principle exceed a single
+    1MB Query page, and a partial subscriber list silently drops alerts —
+    the project's signature data-growth failure class.
+    """
+    out: list[str] = []
+    kwargs = {
+        "KeyConditionExpression": Key("PK").eq(f"PARK#{park_key}") & Key("SK").begins_with("USER#"),
+    }
+    while True:
+        resp = _table.query(**kwargs)
+        out.extend(item["SK"].removeprefix("USER#") for item in resp.get("Items", []))
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            return out
+        kwargs["ExclusiveStartKey"] = lek
 
 
 def get_user_profile(user_id: str) -> Optional[dict]:
@@ -384,12 +396,19 @@ def get_user_favorites_for_park(user_id: str, park_key: str) -> set[str]:
     fanout filter will skip them entirely. That's the intended behavior
     (matches Phase 3's "default zero rides → zero alerts" spec).
     """
-    resp = _table.query(
-        KeyConditionExpression=Key("PK").eq(f"USER#{user_id}") & Key("SK").begins_with("FAV_RIDE#"),
-        FilterExpression="park_key = :park",
-        ExpressionAttributeValues={":park": park_key},
-    )
-    return {item["SK"].removeprefix("FAV_RIDE#") for item in resp.get("Items", [])}
+    out: set[str] = set()
+    kwargs = {
+        "KeyConditionExpression": Key("PK").eq(f"USER#{user_id}") & Key("SK").begins_with("FAV_RIDE#"),
+        "FilterExpression": "park_key = :park",
+        "ExpressionAttributeValues": {":park": park_key},
+    }
+    while True:
+        resp = _table.query(**kwargs)
+        out.update(item["SK"].removeprefix("FAV_RIDE#") for item in resp.get("Items", []))
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            return out
+        kwargs["ExclusiveStartKey"] = lek
 
 
 # ─── Active plan index (M9 bridge: plan-aware DOWN/UP alerts) ───────
@@ -479,7 +498,12 @@ def build_active_plan_ride_index(
             "IndexName": "planned_for_date-index",
             "KeyConditionExpression": "planned_for_date = :d",
             "FilterExpression": (
-                "outcome_recorded = :false "
+                # Missing outcome_recorded counts as not-recorded (DDB
+                # equality is false on a missing attribute, which would
+                # WRONGLY exclude a legacy row the Python re-guard below
+                # includes via item.get(...)). Match the two so the filter
+                # and the re-guard agree.
+                "(attribute_not_exists(outcome_recorded) OR outcome_recorded = :false) "
                 # Activation gate (M5): a future trip day is written DORMANT
                 # (active=false) and fires no alerts until activate_plan flips
                 # it on its day. Legacy rows predate the field, so missing

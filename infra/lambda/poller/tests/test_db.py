@@ -400,3 +400,47 @@ class TestActivePlanGating:
         assert len(active_plans) == 5
         for i in range(5):
             assert ("megan", f"p{i}") in index.get(f"r{i}", [])
+
+    def test_filter_treats_missing_outcome_recorded_as_not_recorded(self):
+        # The GSI FilterExpression must include attribute_not_exists so a
+        # legacy row missing outcome_recorded isn't excluded server-side
+        # while the Python re-guard includes it (the 2026-06-11 alignment).
+        captured = {}
+        real_query = self.stub.query
+
+        def capturing_query(**kwargs):
+            captured.update(kwargs)
+            return real_query(**kwargs)
+
+        self.stub.query = capturing_query
+        db.build_active_plan_ride_index("2026-06-23")
+        assert "attribute_not_exists(outcome_recorded)" in captured["FilterExpression"]
+
+
+# ── Subscriber / favorite fanout pagination (2026-06-11) ──
+
+class TestFanoutPagination:
+    """get_park_subscribers / get_user_favorites_for_park were single-page
+    Queries. A partial result silently drops a subscriber's alerts — the
+    project's data-growth failure class. These drive the stub's page_size
+    loop to prove every row is read."""
+
+    def setup_method(self):
+        self.stub = _StubTable()
+        _swap_in_stub(self.stub)
+
+    def test_get_park_subscribers_reads_all_pages(self):
+        self.stub.page_size = 1
+        for u in ("alice", "bob", "carol"):
+            self.stub.put_item(Item={"PK": "PARK#magic_kingdom", "SK": f"USER#{u}"})
+        subs = db.get_park_subscribers("magic_kingdom")
+        assert sorted(subs) == ["alice", "bob", "carol"]
+
+    def test_get_user_favorites_reads_all_pages(self):
+        self.stub.page_size = 1
+        for r in ("r1", "r2", "r3"):
+            self.stub.put_item(Item={
+                "PK": "USER#megan", "SK": f"FAV_RIDE#{r}", "park_key": "magic_kingdom",
+            })
+        favs = db.get_user_favorites_for_park("megan", "magic_kingdom")
+        assert favs == {"r1", "r2", "r3"}
