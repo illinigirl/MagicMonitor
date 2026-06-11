@@ -380,11 +380,37 @@ export class DisneyStack extends cdk.Stack {
     const alarmTopic = new sns.Topic(this, "PollerAlarmTopic", {
       topicName: "disney-poller-alarms",
     });
-    // Email subscription is supplied at deploy time so no address lands
-    // in this public repo: `cdk deploy -c alarmEmail=you@example.com`.
-    // Without it the alarms still fire (visible in the console / usable
-    // as a dashboard source); they just don't notify until an endpoint
-    // is subscribed to the topic.
+    // Primary notification: forward alarms to Pushover (this account's
+    // Gmail silently drops AWS SNS confirmation mail, so email is a dead
+    // channel here). The forwarder reads the same Pushover creds the
+    // poller's notifier uses. Pure-stdlib Lambda → no bundling.
+    const alarmForwarder = new lambda.Function(this, "PollerAlarmForwarder", {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "../lambda/alarm-forwarder"),
+      ),
+      timeout: cdk.Duration.seconds(15),
+      environment: {
+        PUSHOVER_APP_TOKEN_PARAM,
+        PUSHOVER_USER_KEY_PARAM,
+      },
+    });
+    alarmForwarder.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter${PUSHOVER_APP_TOKEN_PARAM}`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter${PUSHOVER_USER_KEY_PARAM}`,
+        ],
+      }),
+    );
+    alarmTopic.addSubscription(
+      new subscriptions.LambdaSubscription(alarmForwarder),
+    );
+    // Optional extra email subscription if an address is supplied AND it
+    // can receive AWS mail: `cdk deploy -c alarmEmail=you@example.com`.
+    // Default deploys omit it (the Pushover path above is the real one).
     const alarmEmail = this.node.tryGetContext("alarmEmail");
     if (alarmEmail) {
       alarmTopic.addSubscription(
