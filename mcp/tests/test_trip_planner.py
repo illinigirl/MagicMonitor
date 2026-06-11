@@ -161,6 +161,66 @@ class TestRecordPlan:
         stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]
         assert stored["created_by"] == "jim"
 
+    def test_upsert_preserves_completed_rides(self, stub):
+        # Re-recording a same-day plan must NOT wipe execution state
+        # captured by mark_ride_complete. The upsert reuses the SK and
+        # does a full put_item; without the merge, the completed ride and
+        # its actual_wait_min (the strongest calibration signal) vanish.
+        out = server.record_plan("MK", [
+            {"ride_name": "Space Mountain", "ride_id": "sm"},
+            {"ride_name": "Pirates", "ride_id": "pi"},
+        ])
+        plan_id = out["plan_id"]
+        server.mark_ride_complete(plan_id, "sm", "Space Mountain", actual_wait_min=35)
+        assert len(stub.items[("USER#megan", f"PLAN#{plan_id}")]["completed_rides"]) == 1
+
+        # Re-record the same day (same trip_id=None) → upsert in place.
+        out2 = server.record_plan("MK", [{"ride_name": "Pirates", "ride_id": "pi"}])
+        assert out2["plan_id"] == plan_id  # same row, not a duplicate
+        stored = stub.items[("USER#megan", f"PLAN#{plan_id}")]
+        assert len(stored["completed_rides"]) == 1
+        assert stored["completed_rides"][0].get("actual_wait_min") == 35
+
+    def test_upsert_preserves_plan_window_when_not_respecified(self, stub):
+        # An already-resolved plan_window survives a re-record that doesn't
+        # pass one; a re-record that DOES pass one overrides it.
+        out = server.record_plan("MK", [], plan_window={"open": "09:00", "close": "22:00"})
+        plan_id = out["plan_id"]
+        server.record_plan("MK", [])  # no plan_window passed
+        assert stub.items[("USER#megan", f"PLAN#{plan_id}")]["plan_window"] == {
+            "open": "09:00", "close": "22:00",
+        }
+
+    def test_naive_planned_at_normalized_to_aware(self, stub):
+        # A naive timestamp (plausible model output) must be coerced to an
+        # aware UTC SK so downstream aware-minus-naive date math can't crash.
+        out = server.record_plan("MK", [], context={"planned_at": "2026-06-09T18:00"})
+        assert "error" not in out
+        parsed = datetime.fromisoformat(out["plan_id"])
+        assert parsed.tzinfo is not None
+
+    def test_unparseable_planned_at_fails_loud(self, stub):
+        out = server.record_plan("MK", [], context={"planned_at": "sometime tuesday"})
+        assert out["error"] == "Invalid context.planned_at"
+        assert stub.items == {}  # nothing written
+
+
+class TestPlanHistory:
+    def test_tolerates_legacy_naive_planned_at(self, stub):
+        # A legacy row whose planned_at is naive (written before
+        # normalization) must not crash the whole history read with an
+        # uncaught aware-minus-naive TypeError.
+        stub.put_item(Item={
+            "PK": "USER#megan", "SK": "PLAN#2026-06-09T18:00",
+            "planned_at": "2026-06-09T18:00",  # naive, pre-normalization
+            "planned_for_date": "2026-06-09", "outcome_recorded": False,
+            "ride_sequence": [], "park_key": "magic_kingdom",
+        })
+        out = server.get_user_plan_history()
+        assert "error" not in out
+        assert out["count"] == 1
+        assert out["plans"][0]["days_since_plan"] is not None
+
 
 # ─── create_trip ────────────────────────────────────────────────────
 

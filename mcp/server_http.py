@@ -1523,7 +1523,28 @@ def record_plan(
         return {"error": str(e)}
 
     now_utc = datetime.now(timezone.utc)
-    plan_ts = (context or {}).get("planned_at") or now_utc.isoformat()
+    # Normalize context.planned_at before it becomes the PLAN# sort key.
+    # A naive timestamp here (e.g. "2026-06-09T18:00") parses fine but later
+    # crashes get_user_plan_history's aware-minus-naive date math; a reused
+    # snapshot across two days collides SKs. Require an aware ISO-8601
+    # datetime (coerce naive → UTC), reject anything unparseable.
+    raw_planned_at = (context or {}).get("planned_at")
+    if raw_planned_at:
+        try:
+            parsed_planned_at = datetime.fromisoformat(raw_planned_at)
+        except (ValueError, TypeError):
+            return {
+                "error": "Invalid context.planned_at",
+                "error_message": (
+                    f"Could not parse planned_at {raw_planned_at!r}. Use an "
+                    "ISO-8601 timestamp like 2026-06-09T18:00:00+00:00."
+                ),
+            }
+        if parsed_planned_at.tzinfo is None:
+            parsed_planned_at = parsed_planned_at.replace(tzinfo=timezone.utc)
+        plan_ts = parsed_planned_at.isoformat()
+    else:
+        plan_ts = now_utc.isoformat()
     pfd = planned_for_date or _today_et_date_iso()
     try:
         datetime.fromisoformat(pfd)
@@ -1556,12 +1577,14 @@ def record_plan(
         ]
     except Exception:
         existing = []
+    prior = None
     if existing:
         existing.sort(
             key=lambda r: (bool(r.get("active")), r.get("planned_at") or r["SK"]),
             reverse=True,
         )
-        plan_ts = existing[0]["SK"][len("PLAN#"):]
+        prior = existing[0]
+        plan_ts = prior["SK"][len("PLAN#"):]
 
     if active is None:
         active = pfd == _today_et_date_iso()
@@ -1583,6 +1606,20 @@ def record_plan(
         activated_at=activated_at,
         created_by=created_by,
     )
+
+    if prior is not None:
+        # Upsert means "set this day's plan", but put_item replaces the whole
+        # row and _build_plan_item hardcodes completed_rides / dropped_rides
+        # to []. Without this merge, re-recording a day after rides were
+        # marked complete silently wipes calibration data. Carry mid-trip
+        # execution state forward, plus an already-resolved plan_window /
+        # activation the caller didn't re-specify.
+        item["completed_rides"] = prior.get("completed_rides") or []
+        item["dropped_rides"] = prior.get("dropped_rides") or []
+        if plan_window is None and prior.get("plan_window") is not None:
+            item["plan_window"] = prior.get("plan_window")
+        if active and prior.get("active") and prior.get("activated_at"):
+            item["activated_at"] = prior.get("activated_at")
 
     try:
         table.put_item(Item=_floats_to_decimals(item))
@@ -2455,8 +2492,14 @@ def get_user_plan_history(
             continue
         plan_ts = it.get("planned_at") or it["SK"][len("PLAN#"):]
         try:
-            days_since = (now_utc - datetime.fromisoformat(plan_ts)).days
-        except ValueError:
+            plan_dt = datetime.fromisoformat(plan_ts)
+            # A legacy naive planned_at would make the subtraction raise
+            # TypeError, not ValueError — coerce to UTC and catch both so one
+            # bad row can't take down the whole history read.
+            if plan_dt.tzinfo is None:
+                plan_dt = plan_dt.replace(tzinfo=timezone.utc)
+            days_since = (now_utc - plan_dt).days
+        except (ValueError, TypeError):
             days_since = None
         plans.append({
             "plan_id": it["SK"][len("PLAN#"):],
