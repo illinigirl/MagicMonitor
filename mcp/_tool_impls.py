@@ -248,6 +248,15 @@ def _park_day_window_utc(days_back: int) -> tuple[datetime, datetime, str]:
     park-day's 4am-ET-rendered-as-UTC won't double-count.
     """
     now_et = datetime.now(_EASTERN)
+    # Anchor on the CURRENT park-day, not the calendar day. Before the 4am
+    # boundary we're still inside the previous calendar day's park-day (a
+    # 2am poll belongs to yesterday's 4am→4am window). Without this shift,
+    # days_back=0 between midnight and 4am ET builds a window that is
+    # entirely in the future, the HIST# BETWEEN query returns nothing, and
+    # get_ride_downtime_today reports "0 down today" after an evening of
+    # breakdowns. Matches tools/aggregate-analytics.py _park_day_iso.
+    if now_et.hour < _PARK_DAY_BOUNDARY_HOUR:
+        now_et -= timedelta(days=1)
     target_date = (now_et - timedelta(days=days_back)).date()
     start_et = datetime.combine(
         target_date, time(_PARK_DAY_BOUNDARY_HOUR, 0), tzinfo=_EASTERN
