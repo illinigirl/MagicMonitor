@@ -32,6 +32,7 @@ from mcp.server.fastmcp import FastMCP
 # call sites are unchanged.
 import _tool_impls
 from _tool_impls import (
+    _AGGRESSION_VALUES,
     _DOW_INDEX,
     _DOW_NAMES,
     _EASTERN,
@@ -49,6 +50,7 @@ from _tool_impls import (
     _SHOW_PARK_IDS,
     _SPECTACULAR_RX,
     _STAGE_RX,
+    _TIMING_VALUES,
     _TRIP_BUFFER_DAYS,
     _WDW_LAT,
     _WDW_LON,
@@ -1525,10 +1527,14 @@ def record_plan(
         plan_ts = now_utc.isoformat()
 
     pfd = planned_for_date or _today_et_date_iso()
-    # Validate an explicitly-passed date so a typo fails loudly rather
-    # than writing a row that never matches a get_plan_for_day lookup.
+    # Validate AND normalize to a bare YYYY-MM-DD. fromisoformat also
+    # accepts datetime forms ("2026-06-23T09:00"), and storing such a value
+    # verbatim would silently never match the YYYY-MM-DD string-equality
+    # used for activation (active = pfd == today) and get_plan_for_day — the
+    # plan would stay dormant or be invisible to lookups. Normalizing the
+    # date part fixes that; a true typo still fails loudly.
     try:
-        datetime.fromisoformat(pfd)
+        pfd = datetime.fromisoformat(pfd).date().isoformat()
     except ValueError:
         return {
             "error": "Invalid planned_for_date",
@@ -1697,7 +1703,9 @@ def create_trip(
                 "error_message": f"day index {i} missing date/park: {day!r}",
             }
         try:
-            datetime.fromisoformat(date_str)
+            # Normalize to bare YYYY-MM-DD (see record_plan) so day dates,
+            # the derived start/end, and trip_id are always pure dates.
+            date_str = datetime.fromisoformat(date_str).date().isoformat()
         except ValueError:
             return {
                 "error": "Invalid day date",
@@ -1827,7 +1835,9 @@ def get_plan_for_day(
     """
     target = date or _today_et_date_iso()
     try:
-        datetime.fromisoformat(target)
+        # Normalize so a datetime-form arg still matches the YYYY-MM-DD
+        # stored on PLAN# rows (the lookup is string equality on target).
+        target = datetime.fromisoformat(target).date().isoformat()
     except ValueError:
         return {
             "error": "Invalid date",
@@ -2354,6 +2364,28 @@ def record_plan_outcome(
         Dict with the updated plan_id, outcome_recorded=true, and
         the new TTL (1 year out). On error, returns an error payload.
     """
+    # Validate the rating enums BEFORE writing. An off-enum value (classic
+    # near-miss model output like "slightly_aggressive") would otherwise be
+    # stored verbatim, mark the outcome recorded, and then be silently
+    # dropped by the calibration aggregator (which only counts known
+    # values) — the feedback is lost with no error. Reject loudly instead.
+    if aggression_rating is not None and aggression_rating not in _AGGRESSION_VALUES:
+        return {
+            "error": "Invalid aggression_rating",
+            "error_message": (
+                f"{aggression_rating!r} is not valid. Use one of: "
+                f"{sorted(_AGGRESSION_VALUES)}."
+            ),
+        }
+    if timing_rating is not None and timing_rating not in _TIMING_VALUES:
+        return {
+            "error": "Invalid timing_rating",
+            "error_message": (
+                f"{timing_rating!r} is not valid. Use one of: "
+                f"{sorted(_TIMING_VALUES)}."
+            ),
+        }
+
     sk = _coerce_plan_id_to_sk(plan_id)
     now_iso = datetime.now(timezone.utc).isoformat()
     new_ttl = _epoch_now() + _PLAN_RECORDED_TTL_SECS
@@ -2934,16 +2966,34 @@ def get_user_plan_history(
     limit = max(1, min(limit, 50))
     try:
         table = _ddb_table()
-        resp = table.query(
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
-            ExpressionAttributeValues={
-                ":pk": f"USER#{user_id}",
-                ":sk": "PLAN#",
-            },
-            ScanIndexForward=False,  # newest first (PLAN# sorts by iso ts)
-            Limit=limit,
-        )
-        items = [_convert_decimals(it) for it in resp.get("Items", [])]
+        base_kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{user_id}", ":sk": "PLAN#"},
+            "ScanIndexForward": False,  # newest first (PLAN# sorts by iso ts)
+        }
+        if include_unrecorded_only:
+            # Filter BEFORE the limit: paginate and accumulate up to `limit`
+            # UNRECORDED plans. Applying Limit first (newest `limit` rows,
+            # then filter) silently hid an older unrecorded plan behind a
+            # batch of newer recorded/dormant ones — e.g. a pre-built
+            # multi-day trip's future days push the 1-14-day-old plan the
+            # "anything to ask about?" check exists to surface out of range.
+            items = []
+            kwargs = dict(base_kwargs)
+            while len(items) < limit:
+                resp = table.query(**kwargs)
+                for raw in resp.get("Items", []):
+                    it = _convert_decimals(raw)
+                    if not it.get("outcome_recorded"):
+                        items.append(it)
+                        if len(items) >= limit:
+                            break
+                if "LastEvaluatedKey" not in resp:
+                    break
+                kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        else:
+            resp = table.query(Limit=limit, **base_kwargs)
+            items = [_convert_decimals(it) for it in resp.get("Items", [])]
     except Exception as e:
         err = _aws_error_payload(e)
         return err if err is not None else {

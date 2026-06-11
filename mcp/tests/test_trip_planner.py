@@ -204,6 +204,46 @@ class TestRecordPlan:
         assert out["error"] == "Invalid context.planned_at"
         assert stub.items == {}  # nothing written
 
+    def test_datetime_form_planned_for_date_normalized(self, stub):
+        # A datetime-shaped date must be stored as bare YYYY-MM-DD, or it
+        # would silently never match the date string-equality used for
+        # activation + get_plan_for_day.
+        out = server.record_plan(
+            "MK", [], planned_for_date="2026-12-23T09:00:00"
+        )
+        assert out["planned_for_date"] == "2026-12-23"
+        stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]
+        assert stored["planned_for_date"] == "2026-12-23"
+        # ...and it's now findable by the bare date.
+        found = server.get_plan_for_day("2026-12-23")
+        assert found["found"] is True
+
+    def test_get_plan_for_day_normalizes_datetime_arg(self, stub):
+        server.record_plan("MK", [], planned_for_date="2026-12-23")
+        found = server.get_plan_for_day("2026-12-23T15:00:00")
+        assert found["found"] is True
+
+
+class TestRecordOutcomeValidation:
+    def test_invalid_aggression_rating_rejected(self, stub):
+        out = server.record_plan_outcome("PLAN#x", aggression_rating="slightly_aggressive")
+        assert out["error"] == "Invalid aggression_rating"
+        assert stub.items == {}  # rejected before any write
+
+    def test_invalid_timing_rating_rejected(self, stub):
+        out = server.record_plan_outcome("PLAN#x", timing_rating="overran")
+        assert out["error"] == "Invalid timing_rating"
+
+    def test_valid_ratings_accepted(self, stub):
+        plan = server.record_plan("MK", [{"ride_name": "Space", "ride_id": "sm"}])
+        out = server.record_plan_outcome(
+            plan["plan_id"], aggression_rating="about_right", timing_rating="on_time"
+        )
+        assert "error" not in out
+        stored = stub.items[("USER#megan", f"PLAN#{plan['plan_id']}")]
+        assert stored["aggression_rating"] == "about_right"
+        assert stored["timing_rating"] == "on_time"
+
 
 class TestPlanHistory:
     def test_tolerates_legacy_naive_planned_at(self, stub):
@@ -220,6 +260,28 @@ class TestPlanHistory:
         assert "error" not in out
         assert out["count"] == 1
         assert out["plans"][0]["days_since_plan"] is not None
+
+    def test_unrecorded_only_finds_old_plan_behind_newer_recorded(self, stub):
+        # include_unrecorded_only must filter BEFORE the limit. With limit=2
+        # and three NEWER recorded plans ahead of one OLDER unrecorded plan,
+        # the pre-fix behavior (Limit=2 then filter) returned nothing; the
+        # fix paginates and surfaces the old unrecorded plan.
+        def put(ts, recorded):
+            stub.put_item(Item={
+                "PK": "USER#megan", "SK": f"PLAN#{ts}",
+                "planned_at": ts, "planned_for_date": ts[:10],
+                "outcome_recorded": recorded, "ride_sequence": [],
+                "park_key": "magic_kingdom",
+            })
+        put("2026-06-10T10:00:00+00:00", True)
+        put("2026-06-09T10:00:00+00:00", True)
+        put("2026-06-08T10:00:00+00:00", True)
+        put("2026-06-01T10:00:00+00:00", False)  # older, unrecorded
+
+        out = server.get_user_plan_history(include_unrecorded_only=True, limit=2)
+        ids = [p["plan_id"] for p in out["plans"]]
+        assert "2026-06-01T10:00:00+00:00" in ids
+        assert all(not p["outcome_recorded"] for p in out["plans"])
 
 
 # ─── create_trip ────────────────────────────────────────────────────

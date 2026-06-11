@@ -86,6 +86,7 @@ from mcp.server.fastmcp import FastMCP
 import _tool_impls
 from _tool_impls import (
     _AGGRESSION_SCORES,
+    _AGGRESSION_VALUES,
     _BIAS_CONFIDENCE_HIGH,
     _BIAS_CONFIDENCE_MEDIUM,
     _BIAS_NEUTRAL_MINUTES,
@@ -106,6 +107,7 @@ from _tool_impls import (
     _SHOW_PARK_IDS,
     _SPECTACULAR_RX,
     _STAGE_RX,
+    _TIMING_VALUES,
     _TRIP_BUFFER_DAYS,
     _WDW_LAT,
     _WDW_LON,
@@ -1556,8 +1558,11 @@ def record_plan(
     else:
         plan_ts = now_utc.isoformat()
     pfd = planned_for_date or _today_et_date_iso()
+    # Normalize to bare YYYY-MM-DD so a datetime form can't be stored
+    # verbatim and silently never match the date string-equality used for
+    # activation + get_plan_for_day. (Mirrors server.py.)
     try:
-        datetime.fromisoformat(pfd)
+        pfd = datetime.fromisoformat(pfd).date().isoformat()
     except ValueError:
         return {
             "error": "Invalid planned_for_date",
@@ -1695,7 +1700,7 @@ def create_trip(name: str, days: list[dict[str, Any]]) -> dict[str, Any]:
             return {"error": "Each day needs 'date' and 'park'",
                     "error_message": f"day index {i} missing date/park: {day!r}"}
         try:
-            datetime.fromisoformat(date_str)
+            date_str = datetime.fromisoformat(date_str).date().isoformat()
         except ValueError:
             return {"error": "Invalid day date",
                     "error_message": f"day {i}: could not parse '{date_str}'. Use YYYY-MM-DD."}
@@ -1807,7 +1812,7 @@ def get_plan_for_day(date: str | None = None) -> dict[str, Any]:
     """
     target = date or _today_et_date_iso()
     try:
-        datetime.fromisoformat(target)
+        target = datetime.fromisoformat(target).date().isoformat()
     except ValueError:
         return {"error": "Invalid date",
                 "error_message": f"Could not parse '{date}'. Use YYYY-MM-DD."}
@@ -2218,6 +2223,26 @@ def record_plan_outcome(
     Returns:
         Dict with plan_id, outcome_recorded=true, new_expires_at_epoch.
     """
+    # Validate rating enums before writing — an off-enum value is stored
+    # then silently dropped by the calibration aggregator. (Mirrors
+    # server.py.)
+    if aggression_rating is not None and aggression_rating not in _AGGRESSION_VALUES:
+        return {
+            "error": "Invalid aggression_rating",
+            "error_message": (
+                f"{aggression_rating!r} is not valid. Use one of: "
+                f"{sorted(_AGGRESSION_VALUES)}."
+            ),
+        }
+    if timing_rating is not None and timing_rating not in _TIMING_VALUES:
+        return {
+            "error": "Invalid timing_rating",
+            "error_message": (
+                f"{timing_rating!r} is not valid. Use one of: "
+                f"{sorted(_TIMING_VALUES)}."
+            ),
+        }
+
     sk = _coerce_plan_id_to_sk(plan_id)
     now_iso = datetime.now(timezone.utc).isoformat()
     new_ttl = _epoch_now() + _PLAN_RECORDED_TTL_SECS
@@ -2482,13 +2507,31 @@ def get_user_plan_history(
     """
     limit = max(1, min(limit, 50))
     try:
-        resp = _ddb_table().query(
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
-            ExpressionAttributeValues={":pk": f"USER#{_SHARED_USER_ID}", ":sk": "PLAN#"},
-            ScanIndexForward=False,
-            Limit=limit,
-        )
-        items = [_convert_decimals(it) for it in resp.get("Items", [])]
+        table = _ddb_table()
+        base_kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{_SHARED_USER_ID}", ":sk": "PLAN#"},
+            "ScanIndexForward": False,
+        }
+        if include_unrecorded_only:
+            # Filter BEFORE the limit so an older unrecorded plan isn't
+            # hidden behind newer recorded/dormant rows. (Mirrors server.py.)
+            items = []
+            kwargs = dict(base_kwargs)
+            while len(items) < limit:
+                resp = table.query(**kwargs)
+                for raw in resp.get("Items", []):
+                    it = _convert_decimals(raw)
+                    if not it.get("outcome_recorded"):
+                        items.append(it)
+                        if len(items) >= limit:
+                            break
+                if "LastEvaluatedKey" not in resp:
+                    break
+                kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        else:
+            resp = table.query(Limit=limit, **base_kwargs)
+            items = [_convert_decimals(it) for it in resp.get("Items", [])]
     except Exception as e:
         err = _aws_error_payload(e)
         return err if err is not None else {

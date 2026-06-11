@@ -56,6 +56,13 @@ _AGGRESSION_SCORES = {
     "not_aggressive_enough": 1.0,
 }
 
+# Canonical rating enums — the single source of truth for both write-side
+# validation (record_plan_outcome) and read-side aggregation. An off-enum
+# value stored verbatim is silently dropped by the aggregator, so writes
+# must reject anything not in these sets.
+_AGGRESSION_VALUES = frozenset(_AGGRESSION_SCORES)
+_TIMING_VALUES = frozenset({"ran_over", "on_time", "extra_time"})
+
 # Sample-size thresholds for per-ride / per-show bias confidence.
 # Below 3 samples a derived average is essentially noise; treat as
 # directional only or ignore entirely.
@@ -2306,7 +2313,7 @@ def _compute_calibration_summary(
         aggression = None
 
     # ── Timing aggregate ──
-    timing_buckets = {"ran_over": 0, "on_time": 0, "extra_time": 0}
+    timing_buckets = {k: 0 for k in ("ran_over", "on_time", "extra_time")}
     extra_times: list[float] = []
     for p in plans:
         t = p.get("timing_rating")
