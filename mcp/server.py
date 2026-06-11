@@ -1566,8 +1566,15 @@ def record_plan(
             and r.get("trip_id") == trip_id
             and not r.get("outcome_recorded")
         ]
+        dedup_unchecked = False
     except Exception:
-        existing = []  # read failed → fall through to an insert
+        # The dedup read failed — we can't tell whether a row for this day
+        # already exists, so we fall through to an insert. That can create a
+        # duplicate day row (the exact thing the upsert prevents); surface a
+        # warning in the response instead of doing it silently. (/trips
+        # collapses same-date dups on read, so this degrades, not breaks.)
+        existing = []
+        dedup_unchecked = True
     prior = None
     if existing:
         existing.sort(
@@ -1638,7 +1645,7 @@ def record_plan(
             f"conditions and start disruption monitoring."
         )
 
-    return {
+    result = {
         "plan_id": plan_ts,
         "user_id": user_id,
         "park_key": park_key,
@@ -1648,6 +1655,13 @@ def record_plan(
         "expires_at_epoch": item["ttl"],
         "next_step_hint": next_hint,
     }
+    if dedup_unchecked:
+        result["warning"] = (
+            "Couldn't check for an existing plan on this day (read failed), "
+            "so this was inserted as a new row — a duplicate day is possible. "
+            "Re-check with get_plan_for_day if it matters."
+        )
+    return result
 
 
 @mcp.tool()

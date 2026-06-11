@@ -1590,8 +1590,13 @@ def record_plan(
             and r.get("trip_id") == trip_id
             and not r.get("outcome_recorded")
         ]
+        dedup_unchecked = False
     except Exception:
+        # Dedup read failed → can't tell if a row for this day exists, so we
+        # insert (possible duplicate day). Surface a warning rather than do
+        # it silently. (Mirrors server.py; /trips dedupes on read.)
         existing = []
+        dedup_unchecked = True
     prior = None
     if existing:
         existing.sort(
@@ -1657,7 +1662,7 @@ def record_plan(
             f"conditions and start monitoring."
         )
 
-    return {
+    result = {
         "plan_id": plan_ts,
         "planned_for_date": pfd,
         "trip_id": trip_id,
@@ -1667,6 +1672,12 @@ def record_plan(
         "expires_at_epoch": item["ttl"],
         "next_step_hint": hint,
     }
+    if dedup_unchecked:
+        result["warning"] = (
+            "Couldn't check for an existing plan on this day (read failed), "
+            "so this was inserted as a new row — a duplicate day is possible."
+        )
+    return result
 
 
 @mcp.tool()

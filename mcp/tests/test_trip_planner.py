@@ -224,6 +224,18 @@ class TestRecordPlan:
         assert found["found"] is True
 
 
+class TestRecordPlanDedupWarning:
+    def test_warns_when_dedup_read_fails(self, stub, monkeypatch):
+        def _boom(*a, **k):
+            raise RuntimeError("ddb blip")
+
+        monkeypatch.setattr(server, "_query_user_prefix", _boom)
+        out = server.record_plan("MK", [{"ride_name": "Space", "ride_id": "sm"}])
+        # Plan still written, but the response flags the possible duplicate.
+        assert "warning" in out
+        assert ("USER#megan", f"PLAN#{out['plan_id']}") in stub.items
+
+
 class TestRecordOutcomeValidation:
     def test_invalid_aggression_rating_rejected(self, stub):
         out = server.record_plan_outcome("PLAN#x", aggression_rating="slightly_aggressive")
