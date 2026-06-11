@@ -98,22 +98,34 @@ def cognito_stub():
     return stub
 
 
-def _make_test_client(verifier=None):
-    """Build a Starlette TestClient over a minimal app + the middleware."""
+def _make_test_client(verifier=None, client_registered=None):
+    """Build a Starlette TestClient over a minimal app + the middleware.
+
+    client_registered defaults to always-True so a valid token reaches the
+    app without a DDB lookup; tests that exercise the #8 registered-client
+    gate inject their own predicate.
+    """
     async def echo(request):
         return JSONResponse({"ok": True, "path": request.url.path})
 
     app = Starlette(routes=[
         Route("/mcp/echo", echo, methods=["GET", "POST"]),
     ])
-    app.add_middleware(server_http._CognitoJwtMiddleware, verifier=verifier)
+    app.add_middleware(
+        server_http._CognitoJwtMiddleware,
+        verifier=verifier,
+        client_registered=client_registered or (lambda cid: True),
+    )
     return TestClient(app)
 
 
 class TestRegisterRoute:
-    def test_happy_path_returns_201_and_client_id(self, cognito_stub):
+    def test_happy_path_returns_201_and_records_marker(self, cognito_stub):
         client = _make_test_client()
-        with patch("boto3.client", return_value=cognito_stub):
+        ddb = MagicMock()
+        with patch("boto3.client", return_value=cognito_stub), patch.object(
+            server_http, "_ddb_table", return_value=ddb
+        ):
             resp = client.post(
                 "/register",
                 json={"redirect_uris": ["https://claude.ai/mcp/callback"]},
@@ -122,6 +134,26 @@ class TestRegisterRoute:
         body = resp.json()
         assert body["client_id"] == "test-client-id-12345"
         assert body["token_endpoint_auth_method"] == "none"
+        # The new client_id is recorded so it can pass the per-request
+        # registered-client check (#8).
+        ddb.put_item.assert_called_once()
+        item = ddb.put_item.call_args.kwargs["Item"]
+        assert item["PK"] == "MCPCLIENT#test-client-id-12345"
+        assert item["SK"] == "META"
+
+    def test_register_marker_write_failure_returns_503(self, cognito_stub):
+        client = _make_test_client()
+        ddb = MagicMock()
+        ddb.put_item.side_effect = RuntimeError("ddb down")
+        with patch("boto3.client", return_value=cognito_stub), patch.object(
+            server_http, "_ddb_table", return_value=ddb
+        ):
+            resp = client.post(
+                "/register",
+                json={"redirect_uris": ["https://claude.ai/mcp/callback"]},
+            )
+        # Cognito client exists but couldn't be recorded → retryable, not 201.
+        assert resp.status_code == 503
 
     def test_invalid_payload_returns_400(self, cognito_stub):
         client = _make_test_client()
@@ -255,6 +287,42 @@ class TestMiddlewareAuthGate:
         )
         assert resp.status_code == 200
         assert resp.json()["ok"] is True
+
+
+class TestMiddlewareRegisteredClientGate:
+    """#8 — a validly-signed, allowlisted-sub token must ALSO carry a
+    client_id minted by this server's DCR proxy. Blocks tokens from other
+    clients on the shared pool (notably the web dashboard's)."""
+
+    def _accept(self, token):
+        return {"sub": "test-sub", "token_use": "access", "client_id": "abc"}
+
+    def test_unregistered_client_id_returns_403(self, caplog):
+        client = _make_test_client(
+            verifier=self._accept, client_registered=lambda cid: False
+        )
+        with caplog.at_level(logging.WARNING, logger="magicmonitor.mcp.auth"):
+            resp = client.get(
+                "/mcp/echo", headers={"authorization": "Bearer t"}
+            )
+        assert resp.status_code == 403
+        assert resp.json()["error"] == "client not registered"
+        assert any("not registered" in r.getMessage() for r in caplog.records)
+
+    def test_registered_client_id_reaches_app(self):
+        client = _make_test_client(
+            verifier=self._accept, client_registered=lambda cid: cid == "abc"
+        )
+        resp = client.get("/mcp/echo", headers={"authorization": "Bearer t"})
+        assert resp.status_code == 200
+
+    def test_registered_check_error_fails_closed_503(self):
+        def boom(cid):
+            raise RuntimeError("ddb get_item failed")
+
+        client = _make_test_client(verifier=self._accept, client_registered=boom)
+        resp = client.get("/mcp/echo", headers={"authorization": "Bearer t"})
+        assert resp.status_code == 503
 
 
 class TestMiddlewareDoesNotMisroute:

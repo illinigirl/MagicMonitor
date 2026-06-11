@@ -305,7 +305,10 @@ export class DisneyMcpStack extends cdk.Stack {
         ],
         conditions: {
           "ForAllValues:StringLike": {
-            "dynamodb:LeadingKeys": ["USER#*", "PARK#*"],
+            // MCPCLIENT#* — DCR registered-client marker rows (#8). The
+            // /register handler writes one per minted client; the auth
+            // middleware GetItems it (read is covered by the read grant).
+            "dynamodb:LeadingKeys": ["USER#*", "PARK#*", "MCPCLIENT#*"],
           },
         },
       }),

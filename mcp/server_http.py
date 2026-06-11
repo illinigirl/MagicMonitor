@@ -2624,6 +2624,43 @@ def _authorization_server_metadata() -> dict[str, Any]:
     }
 
 
+# ─── Registered-client tracking (review finding #8) ─────────────────
+# The Cognito pool is shared with the web dashboard (it authenticates
+# against the same pool), so a token minted by the dashboard's Cognito
+# client carries a valid, allowlisted sub and would otherwise pass the
+# auth gate here. We additionally require the token's client_id to belong
+# to a client THIS server's DCR proxy created: each /register records an
+# MCPCLIENT# marker row, and every request checks the token's client_id
+# against it. The pool is imported read-only from another project, so this
+# lives entirely in MM's own table rather than as a Cognito
+# resource-server scope (which would mean modifying infra we don't own).
+
+_MCP_CLIENT_PK_PREFIX = "MCPCLIENT#"
+
+
+def _record_dcr_client(client_id: str, client_name: str | None) -> None:
+    """Persist the marker row that lets `client_id` pass the per-request
+    registered-client check. Raises on write failure (caller surfaces it)."""
+    item: dict[str, Any] = {
+        "PK": f"{_MCP_CLIENT_PK_PREFIX}{client_id}",
+        "SK": "META",
+        "registered_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if client_name:
+        item["client_name"] = client_name
+    _ddb_table().put_item(Item=item)
+
+
+def _ddb_client_is_registered(client_id: str | None) -> bool:
+    """True iff `client_id` was created by this server's DCR proxy."""
+    if not client_id:
+        return False
+    resp = _ddb_table().get_item(
+        Key={"PK": f"{_MCP_CLIENT_PK_PREFIX}{client_id}", "SK": "META"}
+    )
+    return "Item" in resp
+
+
 async def _handle_register(request: Request) -> JSONResponse:
     """POST /register — RFC 7591 DCR proxy to Cognito CreateUserPoolClient."""
     try:
@@ -2652,6 +2689,24 @@ async def _handle_register(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    # Record the new client so it passes the per-request registered-client
+    # check (#8). If the marker write fails the Cognito client exists but
+    # would be unusable, so surface a retryable error rather than return an
+    # unauthorizable client_id. (The /register throttle bounds the orphan
+    # Cognito clients a retry loop could create.)
+    client_id = result.get("client_id")
+    if client_id:
+        try:
+            _record_dcr_client(
+                client_id, result.get("client_name") or payload.get("client_name")
+            )
+        except Exception:
+            _logger.exception("failed to record DCR client_id %s", client_id)
+            return JSONResponse(
+                {"error": "registration incomplete, please retry"},
+                status_code=503,
+            )
+
     return JSONResponse(result, status_code=201)
 
 
@@ -2670,11 +2725,14 @@ async def _handle_register(request: Request) -> JSONResponse:
 # Everything else (FastMCP's /mcp/* routes) requires a valid token.
 
 class _CognitoJwtMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, verifier=None):
+    def __init__(self, app, verifier=None, client_registered=None):
         super().__init__(app)
         # Injectable for tests. Production callers pass nothing and
         # we use the env-derived verifier from jwt_verifier.
         self._verify = verifier or jwt_verifier.verify_token
+        # Injectable for tests; production uses the DDB-backed check that
+        # only accepts client_ids minted by this server's DCR proxy (#8).
+        self._client_registered = client_registered or _ddb_client_is_registered
 
     async def dispatch(self, request: Request, call_next):
         method = request.method
@@ -2727,6 +2785,31 @@ class _CognitoJwtMiddleware(BaseHTTPMiddleware):
                 {"error": "auth verification failed"},
                 status_code=503,
             )
+
+        # Defense-in-depth (#8): the token is validly signed and its sub is
+        # allowlisted, but the shared pool also issues tokens to the web
+        # dashboard's client. Require the token's client_id to belong to a
+        # client our DCR proxy created. Fail CLOSED on a lookup error — a
+        # 503 the client can retry beats letting an unverified client_id
+        # through during a DDB blip.
+        client_id = claims.get("client_id") if isinstance(claims, dict) else None
+        try:
+            registered = self._client_registered(client_id)
+        except Exception:
+            _logger.exception(
+                "registered-client check failed for client_id=%r", client_id
+            )
+            return JSONResponse(
+                {"error": "auth verification failed"}, status_code=503
+            )
+        if not registered:
+            _logger.warning(
+                "client_id %r not registered via DCR — rejecting %s %s",
+                client_id,
+                method,
+                path,
+            )
+            return JSONResponse({"error": "client not registered"}, status_code=403)
 
         return await call_next(request)
 
