@@ -2257,6 +2257,7 @@ def activate_plan(
         plan_window, ride_count. Error payload if the plan isn't found.
     """
     # Resolve plan_id from the date if not given explicitly.
+    planned_for_date = None
     if not plan_id:
         lookup = get_plan_for_day(date=date, user_id=user_id)
         if lookup.get("error"):
@@ -2267,8 +2268,37 @@ def activate_plan(
                 "error_message": lookup.get("note") or f"No plan for {date or 'today'}.",
             }
         plan_id = lookup["plan_id"]
+        planned_for_date = lookup.get("planned_for_date")
 
     sk = _coerce_plan_id_to_sk(plan_id)
+
+    # Refuse to activate a FUTURE-dated plan early — it would turn on
+    # disruption alerts for rides days/weeks out. The docstring and
+    # _build_plan_item's contract both say a dormant future plan must stay
+    # inactive until its day; enforce it in code, not just prose. When
+    # plan_id was passed directly we don't yet know the date — best-effort
+    # read it (a read failure skips the guard rather than blocking a legit
+    # activation). On the actual day planned_for_date == today, so normal
+    # activation and same-day re-activation are unaffected.
+    if planned_for_date is None:
+        try:
+            row = _ddb_table().get_item(
+                Key={"PK": f"USER#{user_id}", "SK": sk}
+            ).get("Item")
+            if row:
+                planned_for_date = _convert_decimals(row).get("planned_for_date")
+        except Exception:
+            planned_for_date = None
+    if planned_for_date and planned_for_date > _today_et_date_iso():
+        return {
+            "error": "Plan is future-dated",
+            "error_message": (
+                f"This plan is for {planned_for_date}, not today "
+                f"({_today_et_date_iso()}). Activate it on the day so "
+                f"monitoring doesn't start firing weeks early."
+            ),
+        }
+
     now_iso = datetime.now(timezone.utc).isoformat()
 
     set_parts = ["active = :a", "activated_at = :at"]

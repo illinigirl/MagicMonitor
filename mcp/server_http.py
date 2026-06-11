@@ -2152,6 +2152,7 @@ def activate_plan(
         Dict with plan_id, active=true, activated_at, planned_for_date,
         plan_window, ride_count.
     """
+    planned_for_date = None
     if not plan_id:
         lookup = get_plan_for_day(date=date)
         if lookup.get("error"):
@@ -2160,8 +2161,32 @@ def activate_plan(
             return {"error": "No plan to activate",
                     "error_message": lookup.get("note") or f"No plan for {date or 'today'}."}
         plan_id = lookup["plan_id"]
+        planned_for_date = lookup.get("planned_for_date")
 
     sk = _coerce_plan_id_to_sk(plan_id)
+
+    # Refuse early activation of a future-dated plan (mirrors server.py): it
+    # would fire disruption alerts weeks ahead. Best-effort read of the date
+    # when plan_id was passed directly.
+    if planned_for_date is None:
+        try:
+            row = _ddb_table().get_item(
+                Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk}
+            ).get("Item")
+            if row:
+                planned_for_date = _convert_decimals(row).get("planned_for_date")
+        except Exception:
+            planned_for_date = None
+    if planned_for_date and planned_for_date > _today_et_date_iso():
+        return {
+            "error": "Plan is future-dated",
+            "error_message": (
+                f"This plan is for {planned_for_date}, not today "
+                f"({_today_et_date_iso()}). Activate it on the day so "
+                f"monitoring doesn't start firing weeks early."
+            ),
+        }
+
     now_iso = datetime.now(timezone.utc).isoformat()
     set_parts = ["active = :a", "activated_at = :at"]
     expr_values: dict[str, Any] = {":a": True, ":at": now_iso}

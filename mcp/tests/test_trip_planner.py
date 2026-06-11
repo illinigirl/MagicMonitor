@@ -402,10 +402,11 @@ class TestGetUpcomingTrip:
 
 
 class TestActivatePlan:
-    def test_activates_dormant_future_plan_by_date(self, stub):
-        d = _future(15)
+    def test_activates_dormant_today_plan_by_date(self, stub):
+        # Activation is an ON-THE-DAY action, so the dormant plan is dated
+        # today (create_trip always writes dormant). Activating it works.
+        d = _today()
         server.create_trip("Trip", [{"date": d, "park": "MK"}])
-        # The day-plan is dormant; activate it by date.
         out = server.activate_plan(date=d, ride_sequence=[{"ride_name": "Space", "ride_id": "sm"}],
                                    plan_window={"open": "10:00", "close": "22:00"})
         assert out["active"] is True
@@ -417,11 +418,20 @@ class TestActivatePlan:
         assert stub.items[pk_sk]["active"] is True
         assert len(stub.items[pk_sk]["ride_sequence"]) == 1
 
-    def test_activate_by_plan_id(self, stub):
-        rec = server.record_plan("MK", [], planned_for_date=_future(5), active=False)
+    def test_activate_by_plan_id_today(self, stub):
+        rec = server.record_plan("MK", [], planned_for_date=_today(), active=False)
         out = server.activate_plan(plan_id=rec["plan_id"])
         assert out["active"] is True
         assert stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]["active"] is True
+
+    def test_refuses_to_activate_a_future_plan(self, stub):
+        # The guard: a future-dated dormant plan must NOT activate early —
+        # it would fire disruption alerts weeks ahead. Activate on the day.
+        rec = server.record_plan("MK", [], planned_for_date=_future(10),
+                                  trip_id="t", active=False)
+        out = server.activate_plan(plan_id=rec["plan_id"])
+        assert out["error"] == "Plan is future-dated"
+        assert stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]["active"] is False
 
     def test_activate_no_plan_for_day(self, stub):
         out = server.activate_plan(date=_future(77))
