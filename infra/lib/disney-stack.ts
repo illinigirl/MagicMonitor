@@ -238,6 +238,13 @@ export class DisneyStack extends cdk.Stack {
     // observations case, etc. AWS backfills existing rows
     // automatically when the GSI is created — no schema migration
     // code needed.
+    // ⚠️ LIVE READ PATH — backs the web getParkRides Query. GSIs are NOT
+    // covered by the table's RemovalPolicy.RETAIN: changing this index's
+    // name, keys, or projection makes CloudFormation DELETE then RE-CREATE
+    // it, and reads return empty during the multi-minute backfill — a
+    // production outage of the exact class this index was added to fix.
+    // Mutate at most one GSI per deploy and watch the backfill before the
+    // next change.
     dataTable.addGlobalSecondaryIndex({
       indexName: "park_key-SK-index",
       partitionKey: { name: "park_key", type: dynamodb.AttributeType.STRING },
@@ -266,6 +273,11 @@ export class DisneyStack extends cdk.Stack {
     // PLAN# rows automatically on GSI creation, and they all already
     // carry planned_for_date. Sort key is `SK` (PLAN#<iso_ts>) for
     // uniqueness.
+    // ⚠️ LIVE READ PATH — backs the poller's active-plan disruption
+    // alerts. Same GSI-mutation hazard as park_key-SK-index above: a
+    // name/key/projection change deletes and rebuilds the index, and
+    // plan-aware alerts go dark during the backfill. One GSI change per
+    // deploy.
     dataTable.addGlobalSecondaryIndex({
       indexName: "planned_for_date-index",
       partitionKey: { name: "planned_for_date", type: dynamodb.AttributeType.STRING },

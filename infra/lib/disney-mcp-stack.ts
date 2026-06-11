@@ -146,8 +146,13 @@ function bundleMcpAsset(assetPath: string): lambda.AssetCode {
  *   • Reads DisneyData by name, doesn't take a cross-stack ref
  *   • Doesn't touch the Amplify app, poller Lambda, user pool, or
  *     anything else DisneyStack owns
- *   • Rollback path is `cdk destroy DisneyMcpStack` — removes
- *     every resource this stack created and nothing else
+ *   • Rollback path is `cdk destroy DisneyMcpStack` — removes every
+ *     resource this stack created EXCEPT the RETAIN'd analytics bucket
+ *     (kept deliberately, see its comment). Note: because that bucket has
+ *     a deterministic fixed name, a later re-deploy of this stack will
+ *     FAIL on a name collision until the retained bucket is deleted or
+ *     `cdk import`ed back in. Re-create procedure: delete (or import) the
+ *     retained bucket first.
  *
  * Auth (2B): Cognito access-token JWTs verified per request against
  * the user pool's JWKS, gated by an allowlist of `sub` UUIDs bound
