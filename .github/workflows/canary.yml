@@ -59,7 +59,7 @@ jobs:
   selftest-assertion:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Known-good HTML must pass; known-empty HTML must fail
         run: |
           set -euo pipefail
@@ -87,7 +87,7 @@ jobs:
     needs: selftest-assertion
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Curl each park, assert non-zero attractions count
         run: |
           set -euo pipefail
