@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import dcr_proxy
 from dcr_proxy import RegistrationError, register_client
 
 
@@ -175,3 +176,34 @@ class TestValidation:
                 cognito_client=cognito_stub,
             )
         assert exc.value.code == "invalid_redirect_uri"
+
+
+class TestRedirectUriValidation:
+    """Exact-hostname matching — a startswith prefix check accepted
+    look-alike hosts (the 2026-06-11 fix)."""
+
+    def test_https_accepted(self):
+        assert dcr_proxy._is_acceptable_redirect_uri("https://claude.ai/cb") is True
+
+    def test_loopback_http_accepted(self):
+        for uri in (
+            "http://localhost/cb",
+            "http://localhost:3000/cb",
+            "http://127.0.0.1:8080/cb",
+        ):
+            assert dcr_proxy._is_acceptable_redirect_uri(uri) is True
+
+    def test_lookalike_localhost_rejected(self):
+        for uri in (
+            "http://localhost.evil.com/cb",
+            "http://localhostevil.com/cb",
+            "http://localhost@evil.com/cb",
+            "http://127.0.0.1.evil.com/cb",
+        ):
+            assert dcr_proxy._is_acceptable_redirect_uri(uri) is False
+
+    def test_remote_http_rejected(self):
+        assert dcr_proxy._is_acceptable_redirect_uri("http://evil.com/cb") is False
+
+    def test_non_string_rejected(self):
+        assert dcr_proxy._is_acceptable_redirect_uri(123) is False

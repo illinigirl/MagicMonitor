@@ -138,7 +138,7 @@ from _tool_impls import (
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 import dcr_proxy
 import jwt_verifier
@@ -2777,12 +2777,26 @@ class _CognitoJwtMiddleware(BaseHTTPMiddleware):
         # only accepts client_ids minted by this server's DCR proxy (#8).
         self._client_registered = client_registered or _ddb_client_is_registered
 
+    @staticmethod
+    def _unauthorized(body: dict) -> JSONResponse:
+        # RFC 9728 §5.1 / MCP auth spec: a 401 from a protected resource
+        # must point the client at its protected-resource metadata so it
+        # can discover the auth server and start the OAuth flow.
+        challenge = (
+            f'Bearer resource_metadata="{_public_base_url()}{_PROTECTED_RESOURCE_PATH}"'
+        )
+        return JSONResponse(
+            body, status_code=401, headers={"WWW-Authenticate": challenge}
+        )
+
     async def dispatch(self, request: Request, call_next):
         method = request.method
         path = request.url.path
 
         if method == "OPTIONS":
-            return await call_next(request)
+            # Answer preflight directly — don't forward an unauthenticated
+            # request into the inner app. 204, no body.
+            return Response(status_code=204)
 
         # Public OAuth discovery + DCR — handled here, no auth gate.
         if method == "GET" and path == _PROTECTED_RESOURCE_PATH:
@@ -2795,9 +2809,8 @@ class _CognitoJwtMiddleware(BaseHTTPMiddleware):
         # All other paths require a valid Cognito access token.
         auth = request.headers.get("authorization", "")
         if not auth.startswith("Bearer "):
-            return JSONResponse(
-                {"error": "missing or malformed Authorization header"},
-                status_code=401,
+            return self._unauthorized(
+                {"error": "missing or malformed Authorization header"}
             )
 
         token = auth[len("Bearer "):].strip()
@@ -2816,7 +2829,7 @@ class _CognitoJwtMiddleware(BaseHTTPMiddleware):
             # not ERROR: a rejected token is expected operational noise,
             # not a system fault.
             _logger.warning("token rejected for %s %s: %s", method, path, e)
-            return JSONResponse({"error": "invalid token"}, status_code=401)
+            return self._unauthorized({"error": "invalid token"})
         except Exception:
             # Defensive: any unexpected verify-side error (e.g., JWKS
             # network failure or missing pool config) becomes a 503 so the

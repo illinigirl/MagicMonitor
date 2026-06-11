@@ -192,15 +192,12 @@ class TestMiddlewarePublicRoutes:
         assert resp.status_code == 200
         assert "authorization_endpoint" in resp.json()
 
-    def test_options_bypass(self):
-        # OPTIONS to a protected path should pass to the inner app
-        # without an auth check (the inner app 405s, which is fine —
-        # we're only verifying we got past the auth gate).
+    def test_options_answered_directly_204(self):
+        # OPTIONS preflight is answered by the middleware itself (204), not
+        # forwarded unauthenticated into the inner app.
         client = _make_test_client()
         resp = client.options("/mcp/echo")
-        # Starlette's default OPTIONS handling returns 405 for routes
-        # without an OPTIONS handler. The important check is "not 401".
-        assert resp.status_code != 401
+        assert resp.status_code == 204
 
 
 class TestMiddlewareAuthGate:
@@ -217,6 +214,17 @@ class TestMiddlewareAuthGate:
             headers={"authorization": "Basic dGVzdDp0ZXN0"},
         )
         assert resp.status_code == 401
+
+    def test_401_carries_www_authenticate_resource_metadata(self):
+        # RFC 9728 §5.1 / MCP auth spec: a 401 must point clients at the
+        # protected-resource metadata to bootstrap discovery.
+        client = _make_test_client()
+        resp = client.get("/mcp/echo")
+        assert resp.status_code == 401
+        www = resp.headers.get("WWW-Authenticate", "")
+        assert www.startswith("Bearer ")
+        assert "resource_metadata=" in www
+        assert "/.well-known/oauth-protected-resource" in www
 
     def test_verify_error_returns_401(self):
         def reject(token):
