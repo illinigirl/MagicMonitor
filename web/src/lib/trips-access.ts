@@ -13,6 +13,14 @@
  */
 import "server-only";
 
+// Trust model (reviewed 2026-06-11): this gates on the email string
+// alone, without an explicit email_verified assertion. That's accepted
+// because the only identity source is Cognito federated to Google with
+// scope "openid email profile" (see web/src/auth.ts) — Google verifies
+// the email, so a session.user.email reaching here is already verified in
+// practice. If a non-Google IdP (or an unverified-email IdP) is ever added
+// to the pool, this gate must additionally require an email_verified claim
+// before trusting the address.
 export function isTripsAllowed(email: string | null | undefined): boolean {
   if (!email) return false;
   const allowed = (process.env.TRIPS_ALLOWED_EMAILS ?? "")

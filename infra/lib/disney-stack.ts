@@ -494,6 +494,14 @@ export class DisneyStack extends cdk.Stack {
           cognito.OAuthScope.EMAIL,
           cognito.OAuthScope.PROFILE,
         ],
+        // ACCEPTED (reviewed 2026-06-11): this single prod client also
+        // whitelists localhost callback/logout URLs for `pnpm dev` against
+        // the real pool. The theoretical risk (an attacker delivering an
+        // intercepted auth code to a localhost listener) requires MITM of an
+        // allowlisted user's live OAuth flow — low for a 2-person app, so we
+        // keep one client rather than split a separate dev client. Revisit
+        // (split to an HTTPS-only prod client + a dev client) if the user
+        // base or exposure grows.
         callbackUrls: [
           `https://${APP_DOMAIN}/api/auth/callback/cognito`,
           // Local dev (`pnpm dev` → :3000)
