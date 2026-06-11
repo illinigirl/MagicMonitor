@@ -635,23 +635,14 @@ def handler(event, context):
         if elapsed_mins < SECOND_ALERT_MINS:
             continue
 
-        # Use a separate cooldown key so the still-down alert doesn't
-        # collide with the initial DOWN cooldown.
-        cooldown_pk = f"RIDE#{ride_id}"
-        cooldown_sk = "COOLDOWN#STILL_DOWN"
-        # Reuse the same TTL helper by writing directly — small enough
-        # to inline here without bloating db.py.
-        from db import _table  # type: ignore
-        existing_cooldown = _table.get_item(Key={"PK": cooldown_pk, "SK": cooldown_sk}).get("Item")
-        if existing_cooldown:
+        # Separate cooldown key so the still-down alert doesn't collide
+        # with the initial DOWN cooldown. Goes through the db helpers
+        # (not an inline _table write) so it shares the ttl-aware cooldown
+        # check — a best-effort-TTL-undeleted row must not silently
+        # suppress a later second-alert.
+        if db.is_still_down_alert_on_cooldown(ride_id):
             continue
-        expire_ts = int(time.time()) + (SECOND_ALERT_MINS * 60)
-        _table.put_item(Item={
-            "PK": cooldown_pk,
-            "SK": cooldown_sk,
-            "sent_at": datetime.now(timezone.utc).isoformat(),
-            "ttl": expire_ts,
-        })
+        db.mark_still_down_alert_sent(ride_id, SECOND_ALERT_MINS * 60)
 
         subscribers = get_subscribers(attr["park_key"])
         favoriters = filter_to_favoriters(subscribers, attr["park_key"], ride_id)

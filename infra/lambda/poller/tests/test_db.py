@@ -13,6 +13,7 @@ What we're verifying:
     the ride-index view from a single scan (the 2026-05-12 refactor)
 """
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import db
@@ -147,6 +148,51 @@ class TestDownCooldown:
     def test_down_cooldown_is_per_ride(self):
         db.mark_down_alert_sent("ride-123")
         assert db.is_down_alert_on_cooldown("ride-456") is False
+
+
+# ── Cooldown TTL expiry — the 2026-06-11 fix ──
+
+class TestCooldownTtlExpiry:
+    """DynamoDB's TTL reaper is best-effort: an expired row can linger and
+    still be returned by GetItem. The cooldown check must compare ttl to
+    now, not just presence — otherwise a 15-min cooldown silently stretches
+    to however long the reaper lags, suppressing a later distinct alert."""
+
+    def setup_method(self):
+        self.stub = _StubTable()
+        _swap_in_stub(self.stub)
+
+    def test_expired_but_present_row_reads_as_inactive(self):
+        # Simulate an expired-but-undeleted cooldown row (ttl in the past).
+        self.stub.put_item(Item={
+            "PK": "RIDE#ride-123", "SK": "COOLDOWN#DOWN",
+            "sent_at": "2026-06-11T00:00:00+00:00",
+            "ttl": int(time.time()) - 60,  # expired a minute ago
+        })
+        assert db.is_down_alert_on_cooldown("ride-123") is False
+
+    def test_unexpired_row_reads_as_active(self):
+        self.stub.put_item(Item={
+            "PK": "RIDE#ride-123", "SK": "COOLDOWN#DOWN",
+            "sent_at": "2026-06-11T00:00:00+00:00",
+            "ttl": int(time.time()) + 600,
+        })
+        assert db.is_down_alert_on_cooldown("ride-123") is True
+
+    def test_legacy_row_without_ttl_falls_back_to_presence(self):
+        self.stub.put_item(Item={"PK": "RIDE#r", "SK": "COOLDOWN#DOWN"})
+        assert db.is_down_alert_on_cooldown("r") is True
+
+    def test_still_down_helpers_roundtrip_and_expire(self):
+        assert db.is_still_down_alert_on_cooldown("r") is False
+        db.mark_still_down_alert_sent("r", 2700)
+        assert db.is_still_down_alert_on_cooldown("r") is True
+        # An expired still-down row no longer suppresses the second alert.
+        self.stub.put_item(Item={
+            "PK": "RIDE#r", "SK": "COOLDOWN#STILL_DOWN",
+            "ttl": int(time.time()) - 1,
+        })
+        assert db.is_still_down_alert_on_cooldown("r") is False
 
 
 # ── BACK_UP cooldown — the 2026-05-11 fix ──
