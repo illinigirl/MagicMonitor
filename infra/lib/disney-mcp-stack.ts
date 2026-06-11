@@ -5,6 +5,10 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as apigwv2_integ from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cw_actions from "aws-cdk-lib/aws-cloudwatch-actions";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as path from "path";
 import { execSync } from "child_process";
 import * as fs from "fs";
@@ -142,8 +146,13 @@ function bundleMcpAsset(assetPath: string): lambda.AssetCode {
  *   • Reads DisneyData by name, doesn't take a cross-stack ref
  *   • Doesn't touch the Amplify app, poller Lambda, user pool, or
  *     anything else DisneyStack owns
- *   • Rollback path is `cdk destroy DisneyMcpStack` — removes
- *     every resource this stack created and nothing else
+ *   • Rollback path is `cdk destroy DisneyMcpStack` — removes every
+ *     resource this stack created EXCEPT the RETAIN'd analytics bucket
+ *     (kept deliberately, see its comment). Note: because that bucket has
+ *     a deterministic fixed name, a later re-deploy of this stack will
+ *     FAIL on a name collision until the retained bucket is deleted or
+ *     `cdk import`ed back in. Re-create procedure: delete (or import) the
+ *     retained bucket first.
  *
  * Auth (2B): Cognito access-token JWTs verified per request against
  * the user pool's JWKS, gated by an allowlist of `sub` UUIDs bound
@@ -301,7 +310,10 @@ export class DisneyMcpStack extends cdk.Stack {
         ],
         conditions: {
           "ForAllValues:StringLike": {
-            "dynamodb:LeadingKeys": ["USER#*", "PARK#*"],
+            // MCPCLIENT#* — DCR registered-client marker rows (#8). The
+            // /register handler writes one per minted client; the auth
+            // middleware GetItems it (read is covered by the read grant).
+            "dynamodb:LeadingKeys": ["USER#*", "PARK#*", "MCPCLIENT#*"],
           },
         },
       }),
@@ -336,11 +348,25 @@ export class DisneyMcpStack extends cdk.Stack {
     const httpApi = new apigwv2.HttpApi(this, "McpHttpApi", {
       apiName: "magic-monitor-mcp",
       description: "HTTPS transport for the Magic Monitor MCP server (M9 Phase 1)",
-      // No throttling at the API Gateway layer for v1 — bearer-token
-      // gate + per-user Cognito allowlist (session 2) will be the
-      // primary rate-limit story. Lambda's account-wide concurrency
-      // cap (10) is the ultimate ceiling.
     });
+
+    // Stage-level throttle. JWT verification happens INSIDE the Lambda,
+    // so unauthenticated/rejected requests still consume one of the
+    // account's 10 concurrency slots before the 401 — the auth gate
+    // cannot be the rate-limit story for resource EXHAUSTION (only for
+    // access). The unauthenticated /register and discovery routes do real
+    // in-Lambda work too. Without a throttle, a flood of anonymous
+    // requests to the public URL can starve the every-2-min poller in the
+    // sibling stack, which shares the same account-wide cap. Cap the
+    // request rate well below that exhaustion point. These numbers are a
+    // starting point — raise them if a legit planning session (many
+    // sequential tool calls) ever returns 429s.
+    const defaultStage = httpApi.defaultStage?.node
+      .defaultChild as apigwv2.CfnStage;
+    defaultStage.defaultRouteSettings = {
+      throttlingRateLimit: 10,
+      throttlingBurstLimit: 20,
+    };
 
     const lambdaIntegration = new apigwv2_integ.HttpLambdaIntegration(
       "McpLambdaIntegration",
@@ -368,6 +394,53 @@ export class DisneyMcpStack extends cdk.Stack {
     // Wire the public base URL back to the Lambda env so the OAuth
     // metadata endpoints can advertise their own resource + issuer.
     mcpFn.addEnvironment("MCP_PUBLIC_BASE_URL", httpApi.apiEndpoint);
+
+    // ─── Monitoring ────────────────────────────────────────────────
+    const mcpAlarmTopic = new sns.Topic(this, "McpAlarmTopic", {
+      topicName: "magic-monitor-mcp-alarms",
+    });
+    // Optional notify target, supplied at deploy time (no PII in source):
+    // `cdk deploy -c alarmEmail=you@example.com`.
+    const alarmEmail = this.node.tryGetContext("alarmEmail");
+    if (alarmEmail) {
+      mcpAlarmTopic.addSubscription(
+        new subscriptions.EmailSubscription(alarmEmail),
+      );
+    }
+
+    // Duration p95 alarm: several live tools full-table-Scan a multi-GB
+    // table that grows every 2 min, so latency creeps toward the 30s API
+    // Gateway hard cap (see the data-growth review finding). This is the
+    // runtime stop-loss before users start seeing 504s — pairs with
+    // migrating those Scans to the park_key-SK GSI.
+    mcpFn
+      .metricDuration({ period: cdk.Duration.minutes(5), statistic: "p95" })
+      .createAlarm(this, "McpDurationAlarm", {
+        alarmName: "magic-monitor-mcp-slow",
+        alarmDescription:
+          "MCP Lambda p95 duration >10s — live Scans approaching the 30s cap.",
+        threshold: cdk.Duration.seconds(10).toMilliseconds(),
+        evaluationPeriods: 3,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      })
+      .addAlarmAction(new cw_actions.SnsAction(mcpAlarmTopic));
+
+    // Error alarm: a 5xx-raising MCP handler (verifier misconfig, JWKS
+    // outage, unhandled tool exception) surfaces instead of failing silent.
+    mcpFn
+      .metricErrors({ period: cdk.Duration.minutes(5) })
+      .createAlarm(this, "McpErrorsAlarm", {
+        alarmName: "magic-monitor-mcp-errors",
+        alarmDescription: "MCP Lambda raised >=1 error in a 5-minute window.",
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      })
+      .addAlarmAction(new cw_actions.SnsAction(mcpAlarmTopic));
 
     // ─── Outputs ───────────────────────────────────────────────────
     new cdk.CfnOutput(this, "McpApiUrl", {

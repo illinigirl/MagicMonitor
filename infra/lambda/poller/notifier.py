@@ -51,19 +51,25 @@ def _send(user_key: str, title: str, message: str, priority: int = 0) -> bool:
     hours). DOWN alerts use priority 1 so they punch through; LOW WAIT
     and back-up alerts use priority 0.
     """
-    payload = {
-        "token":    _get_app_token(),
-        "user":     user_key,
-        "title":    title,
-        "message":  message,
-        "priority": priority,
-    }
     try:
+        # _get_app_token() is inside the try on purpose: it hits SSM lazily
+        # on the first alert a container sends, and an SSM throttle/timeout
+        # there must be CONTAINED to this one send (return False), not
+        # raised out of the per-attraction loop — which would abort the
+        # whole poll after the DOWN cooldown was already marked, losing the
+        # alert for the full cooldown window on the EventBridge retry.
+        payload = {
+            "token":    _get_app_token(),
+            "user":     user_key,
+            "title":    title,
+            "message":  message,
+            "priority": priority,
+        }
         resp = requests.post(PUSHOVER_URL, data=payload, timeout=10)
         resp.raise_for_status()
         return True
     except Exception as e:
-        print(f"[notifier] Pushover send failed for user={user_key[:6]}…: {e}")
+        print(f"[notifier] alert send failed for user={user_key[:6]}…: {e}")
         return False
 
 

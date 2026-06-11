@@ -25,7 +25,7 @@ export default async function HomePage({
   // park pages thinking they'll get alerts when they actually
   // won't (no profile = no Pushover key = nothing to alert).
   // The ?welcome=1 query param tells /me to show the first-run
-  // copy of the setup banner. Bypass with ?skip=1 for testing.
+  // copy of the setup banner. Bypass the redirect with ?welcome=skipped.
   if (session?.user?.id && sp.welcome !== "skipped") {
     const profile = await getUserProfile(session.user.id);
     if (!profile) {

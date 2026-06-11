@@ -5,6 +5,11 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as events from "aws-cdk-lib/aws-events";
 import * as targets from "aws-cdk-lib/aws-events-targets";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cw_actions from "aws-cdk-lib/aws-cloudwatch-actions";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
+import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as ssm from "aws-cdk-lib/aws-ssm";
@@ -233,6 +238,13 @@ export class DisneyStack extends cdk.Stack {
     // observations case, etc. AWS backfills existing rows
     // automatically when the GSI is created — no schema migration
     // code needed.
+    // ⚠️ LIVE READ PATH — backs the web getParkRides Query. GSIs are NOT
+    // covered by the table's RemovalPolicy.RETAIN: changing this index's
+    // name, keys, or projection makes CloudFormation DELETE then RE-CREATE
+    // it, and reads return empty during the multi-minute backfill — a
+    // production outage of the exact class this index was added to fix.
+    // Mutate at most one GSI per deploy and watch the backfill before the
+    // next change.
     dataTable.addGlobalSecondaryIndex({
       indexName: "park_key-SK-index",
       partitionKey: { name: "park_key", type: dynamodb.AttributeType.STRING },
@@ -261,6 +273,11 @@ export class DisneyStack extends cdk.Stack {
     // PLAN# rows automatically on GSI creation, and they all already
     // carry planned_for_date. Sort key is `SK` (PLAN#<iso_ts>) for
     // uniqueness.
+    // ⚠️ LIVE READ PATH — backs the poller's active-plan disruption
+    // alerts. Same GSI-mutation hazard as park_key-SK-index above: a
+    // name/key/projection change deletes and rebuilds the index, and
+    // plan-aware alerts go dark during the backfill. One GSI change per
+    // deploy.
     dataTable.addGlobalSecondaryIndex({
       indexName: "planned_for_date-index",
       partitionKey: { name: "planned_for_date", type: dynamodb.AttributeType.STRING },
@@ -331,12 +348,82 @@ export class DisneyStack extends cdk.Stack {
     //
     // Could narrow this to "park hours only" later (saves ~50% of
     // invocations) but Lambda free tier covers it either way.
+    // Dead-letter queue for async invokes EventBridge can't deliver
+    // (e.g. the function is throttled out by the shared concurrency cap,
+    // or errors past its retries). Without this, a failed poll vanishes
+    // with no trace — exactly the silent-failure shape the alarms below
+    // exist to catch.
+    const pollerDlq = new sqs.Queue(this, "PollerDlq", {
+      queueName: "disney-poller-dlq",
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
     new events.Rule(this, "PollerSchedule", {
       ruleName: "disney-poller-every-2min",
       description: "Trigger Disney poller Lambda every 2 minutes",
       schedule: events.Schedule.rate(cdk.Duration.minutes(2)),
-      targets: [new targets.LambdaFunction(pollerFn)],
+      targets: [
+        new targets.LambdaFunction(pollerFn, {
+          deadLetterQueue: pollerDlq,
+          retryAttempts: 2,
+        }),
+      ],
     });
+
+    // ─── Monitoring: a dead/erroring poller must not be silent ──────
+    // The project's documented failure-mode doctrine (CLAUDE.md) requires
+    // a runtime stop-loss for silent failures. The hourly web canary only
+    // asserts the page renders non-empty data — but a stalled poller
+    // leaves stale-but-PRESENT STATE rows, so the page stays non-empty and
+    // the canary never trips. These alarms are the write-side stop-loss
+    // the canary can't be: they watch the poller itself, not its output.
+    const alarmTopic = new sns.Topic(this, "PollerAlarmTopic", {
+      topicName: "disney-poller-alarms",
+    });
+    // Email subscription is supplied at deploy time so no address lands
+    // in this public repo: `cdk deploy -c alarmEmail=you@example.com`.
+    // Without it the alarms still fire (visible in the console / usable
+    // as a dashboard source); they just don't notify until an endpoint
+    // is subscribed to the topic.
+    const alarmEmail = this.node.tryGetContext("alarmEmail");
+    if (alarmEmail) {
+      alarmTopic.addSubscription(
+        new subscriptions.EmailSubscription(alarmEmail),
+      );
+    }
+
+    // Any poller error → alarm. Catches a bad deploy, IAM drift, or a
+    // themeparks-API shape change within ~4 minutes.
+    pollerFn
+      .metricErrors({ period: cdk.Duration.minutes(2) })
+      .createAlarm(this, "PollerErrorsAlarm", {
+        alarmName: "disney-poller-errors",
+        alarmDescription: "Poller Lambda raised >=1 error in a poll cycle.",
+        threshold: 1,
+        evaluationPeriods: 2,
+        comparisonOperator:
+          cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      })
+      .addAlarmAction(new cw_actions.SnsAction(alarmTopic));
+
+    // Freshness: the poller fires every 2 min (~30 invocations/hr). Fewer
+    // than 25 in an hour means the schedule has stalled — the silent-dead
+    // case the canary cannot see (stale rows still render non-empty).
+    // Missing data is treated as breaching: no invocations at all is the
+    // worst case, not a reason to stay green.
+    pollerFn
+      .metricInvocations({ period: cdk.Duration.hours(1) })
+      .createAlarm(this, "PollerStalledAlarm", {
+        alarmName: "disney-poller-stalled",
+        alarmDescription:
+          "Poller invoked <25 times in an hour — schedule likely stalled.",
+        threshold: 25,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      })
+      .addAlarmAction(new cw_actions.SnsAction(alarmTopic));
 
     // ─── Outputs (M1) ────────────────────────────────────────────────
     new cdk.CfnOutput(this, "TableName", {
@@ -407,6 +494,14 @@ export class DisneyStack extends cdk.Stack {
           cognito.OAuthScope.EMAIL,
           cognito.OAuthScope.PROFILE,
         ],
+        // ACCEPTED (reviewed 2026-06-11): this single prod client also
+        // whitelists localhost callback/logout URLs for `pnpm dev` against
+        // the real pool. The theoretical risk (an attacker delivering an
+        // intercepted auth code to a localhost listener) requires MITM of an
+        // allowlisted user's live OAuth flow — low for a 2-person app, so we
+        // keep one client rather than split a separate dev client. Revisit
+        // (split to an HTTPS-only prod client + a dev client) if the user
+        // base or exposure grows.
         callbackUrls: [
           `https://${APP_DOMAIN}/api/auth/callback/cognito`,
           // Local dev (`pnpm dev` → :3000)

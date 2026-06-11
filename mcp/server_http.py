@@ -60,11 +60,21 @@ setting; we pass it at construction.
 
 import contextvars
 import json
+import logging
 import os
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+# Module logger. The auth middleware below logs verification outcomes
+# here (WARNING for a rejected token, ERROR for an unexpected verify-side
+# failure). In Lambda these land in the function's CloudWatch log group.
+# Previously the middleware comments claimed "the verifier logs the
+# detail server-side" but NO logging existed anywhere on the auth path —
+# a missing-diagnostics gap that conflicts with the project's
+# "log at each boundary first" debugging doctrine (CLAUDE.md).
+_logger = logging.getLogger("magicmonitor.mcp.auth")
 
 from mcp.server.fastmcp import FastMCP
 
@@ -76,6 +86,7 @@ from mcp.server.fastmcp import FastMCP
 import _tool_impls
 from _tool_impls import (
     _AGGRESSION_SCORES,
+    _AGGRESSION_VALUES,
     _BIAS_CONFIDENCE_HIGH,
     _BIAS_CONFIDENCE_MEDIUM,
     _BIAS_NEUTRAL_MINUTES,
@@ -96,6 +107,7 @@ from _tool_impls import (
     _SHOW_PARK_IDS,
     _SPECTACULAR_RX,
     _STAGE_RX,
+    _TIMING_VALUES,
     _TRIP_BUFFER_DAYS,
     _WDW_LAT,
     _WDW_LON,
@@ -126,7 +138,7 @@ from _tool_impls import (
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 import dcr_proxy
 import jwt_verifier
@@ -1523,10 +1535,34 @@ def record_plan(
         return {"error": str(e)}
 
     now_utc = datetime.now(timezone.utc)
-    plan_ts = (context or {}).get("planned_at") or now_utc.isoformat()
+    # Normalize context.planned_at before it becomes the PLAN# sort key.
+    # A naive timestamp here (e.g. "2026-06-09T18:00") parses fine but later
+    # crashes get_user_plan_history's aware-minus-naive date math; a reused
+    # snapshot across two days collides SKs. Require an aware ISO-8601
+    # datetime (coerce naive → UTC), reject anything unparseable.
+    raw_planned_at = (context or {}).get("planned_at")
+    if raw_planned_at:
+        try:
+            parsed_planned_at = datetime.fromisoformat(raw_planned_at)
+        except (ValueError, TypeError):
+            return {
+                "error": "Invalid context.planned_at",
+                "error_message": (
+                    f"Could not parse planned_at {raw_planned_at!r}. Use an "
+                    "ISO-8601 timestamp like 2026-06-09T18:00:00+00:00."
+                ),
+            }
+        if parsed_planned_at.tzinfo is None:
+            parsed_planned_at = parsed_planned_at.replace(tzinfo=timezone.utc)
+        plan_ts = parsed_planned_at.isoformat()
+    else:
+        plan_ts = now_utc.isoformat()
     pfd = planned_for_date or _today_et_date_iso()
+    # Normalize to bare YYYY-MM-DD so a datetime form can't be stored
+    # verbatim and silently never match the date string-equality used for
+    # activation + get_plan_for_day. (Mirrors server.py.)
     try:
-        datetime.fromisoformat(pfd)
+        pfd = datetime.fromisoformat(pfd).date().isoformat()
     except ValueError:
         return {
             "error": "Invalid planned_for_date",
@@ -1554,14 +1590,21 @@ def record_plan(
             and r.get("trip_id") == trip_id
             and not r.get("outcome_recorded")
         ]
+        dedup_unchecked = False
     except Exception:
+        # Dedup read failed → can't tell if a row for this day exists, so we
+        # insert (possible duplicate day). Surface a warning rather than do
+        # it silently. (Mirrors server.py; /trips dedupes on read.)
         existing = []
+        dedup_unchecked = True
+    prior = None
     if existing:
         existing.sort(
             key=lambda r: (bool(r.get("active")), r.get("planned_at") or r["SK"]),
             reverse=True,
         )
-        plan_ts = existing[0]["SK"][len("PLAN#"):]
+        prior = existing[0]
+        plan_ts = prior["SK"][len("PLAN#"):]
 
     if active is None:
         active = pfd == _today_et_date_iso()
@@ -1584,6 +1627,20 @@ def record_plan(
         created_by=created_by,
     )
 
+    if prior is not None:
+        # Upsert means "set this day's plan", but put_item replaces the whole
+        # row and _build_plan_item hardcodes completed_rides / dropped_rides
+        # to []. Without this merge, re-recording a day after rides were
+        # marked complete silently wipes calibration data. Carry mid-trip
+        # execution state forward, plus an already-resolved plan_window /
+        # activation the caller didn't re-specify.
+        item["completed_rides"] = prior.get("completed_rides") or []
+        item["dropped_rides"] = prior.get("dropped_rides") or []
+        if plan_window is None and prior.get("plan_window") is not None:
+            item["plan_window"] = prior.get("plan_window")
+        if active and prior.get("active") and prior.get("activated_at"):
+            item["activated_at"] = prior.get("activated_at")
+
     try:
         table.put_item(Item=_floats_to_decimals(item))
     except Exception as e:
@@ -1605,7 +1662,7 @@ def record_plan(
             f"conditions and start monitoring."
         )
 
-    return {
+    result = {
         "plan_id": plan_ts,
         "planned_for_date": pfd,
         "trip_id": trip_id,
@@ -1615,6 +1672,12 @@ def record_plan(
         "expires_at_epoch": item["ttl"],
         "next_step_hint": hint,
     }
+    if dedup_unchecked:
+        result["warning"] = (
+            "Couldn't check for an existing plan on this day (read failed), "
+            "so this was inserted as a new row — a duplicate day is possible."
+        )
+    return result
 
 
 @mcp.tool()
@@ -1648,7 +1711,7 @@ def create_trip(name: str, days: list[dict[str, Any]]) -> dict[str, Any]:
             return {"error": "Each day needs 'date' and 'park'",
                     "error_message": f"day index {i} missing date/park: {day!r}"}
         try:
-            datetime.fromisoformat(date_str)
+            date_str = datetime.fromisoformat(date_str).date().isoformat()
         except ValueError:
             return {"error": "Invalid day date",
                     "error_message": f"day {i}: could not parse '{date_str}'. Use YYYY-MM-DD."}
@@ -1760,7 +1823,7 @@ def get_plan_for_day(date: str | None = None) -> dict[str, Any]:
     """
     target = date or _today_et_date_iso()
     try:
-        datetime.fromisoformat(target)
+        target = datetime.fromisoformat(target).date().isoformat()
     except ValueError:
         return {"error": "Invalid date",
                 "error_message": f"Could not parse '{date}'. Use YYYY-MM-DD."}
@@ -2089,6 +2152,7 @@ def activate_plan(
         Dict with plan_id, active=true, activated_at, planned_for_date,
         plan_window, ride_count.
     """
+    planned_for_date = None
     if not plan_id:
         lookup = get_plan_for_day(date=date)
         if lookup.get("error"):
@@ -2097,8 +2161,32 @@ def activate_plan(
             return {"error": "No plan to activate",
                     "error_message": lookup.get("note") or f"No plan for {date or 'today'}."}
         plan_id = lookup["plan_id"]
+        planned_for_date = lookup.get("planned_for_date")
 
     sk = _coerce_plan_id_to_sk(plan_id)
+
+    # Refuse early activation of a future-dated plan (mirrors server.py): it
+    # would fire disruption alerts weeks ahead. Best-effort read of the date
+    # when plan_id was passed directly.
+    if planned_for_date is None:
+        try:
+            row = _ddb_table().get_item(
+                Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk}
+            ).get("Item")
+            if row:
+                planned_for_date = _convert_decimals(row).get("planned_for_date")
+        except Exception:
+            planned_for_date = None
+    if planned_for_date and planned_for_date > _today_et_date_iso():
+        return {
+            "error": "Plan is future-dated",
+            "error_message": (
+                f"This plan is for {planned_for_date}, not today "
+                f"({_today_et_date_iso()}). Activate it on the day so "
+                f"monitoring doesn't start firing weeks early."
+            ),
+        }
+
     now_iso = datetime.now(timezone.utc).isoformat()
     set_parts = ["active = :a", "activated_at = :at"]
     expr_values: dict[str, Any] = {":a": True, ":at": now_iso}
@@ -2171,6 +2259,26 @@ def record_plan_outcome(
     Returns:
         Dict with plan_id, outcome_recorded=true, new_expires_at_epoch.
     """
+    # Validate rating enums before writing — an off-enum value is stored
+    # then silently dropped by the calibration aggregator. (Mirrors
+    # server.py.)
+    if aggression_rating is not None and aggression_rating not in _AGGRESSION_VALUES:
+        return {
+            "error": "Invalid aggression_rating",
+            "error_message": (
+                f"{aggression_rating!r} is not valid. Use one of: "
+                f"{sorted(_AGGRESSION_VALUES)}."
+            ),
+        }
+    if timing_rating is not None and timing_rating not in _TIMING_VALUES:
+        return {
+            "error": "Invalid timing_rating",
+            "error_message": (
+                f"{timing_rating!r} is not valid. Use one of: "
+                f"{sorted(_TIMING_VALUES)}."
+            ),
+        }
+
     sk = _coerce_plan_id_to_sk(plan_id)
     now_iso = datetime.now(timezone.utc).isoformat()
     new_ttl = _epoch_now() + _PLAN_RECORDED_TTL_SECS
@@ -2240,6 +2348,10 @@ def mark_ride_complete(
     Returns:
         Dict with completed (0/1), remaining_rides, total_completed.
     """
+    # CONCURRENCY: shared-row read-modify-write with no version check is an
+    # accepted limitation (last-write-wins on simultaneous same-plan edits
+    # by two family members). Deliberate — see the fuller note in
+    # server.py's mark_ride_complete (decision 2026-06-11).
     sk = _coerce_plan_id_to_sk(plan_id)
     try:
         table = _ddb_table()
@@ -2435,13 +2547,31 @@ def get_user_plan_history(
     """
     limit = max(1, min(limit, 50))
     try:
-        resp = _ddb_table().query(
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
-            ExpressionAttributeValues={":pk": f"USER#{_SHARED_USER_ID}", ":sk": "PLAN#"},
-            ScanIndexForward=False,
-            Limit=limit,
-        )
-        items = [_convert_decimals(it) for it in resp.get("Items", [])]
+        table = _ddb_table()
+        base_kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{_SHARED_USER_ID}", ":sk": "PLAN#"},
+            "ScanIndexForward": False,
+        }
+        if include_unrecorded_only:
+            # Filter BEFORE the limit so an older unrecorded plan isn't
+            # hidden behind newer recorded/dormant rows. (Mirrors server.py.)
+            items = []
+            kwargs = dict(base_kwargs)
+            while len(items) < limit:
+                resp = table.query(**kwargs)
+                for raw in resp.get("Items", []):
+                    it = _convert_decimals(raw)
+                    if not it.get("outcome_recorded"):
+                        items.append(it)
+                        if len(items) >= limit:
+                            break
+                if "LastEvaluatedKey" not in resp:
+                    break
+                kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        else:
+            resp = table.query(Limit=limit, **base_kwargs)
+            items = [_convert_decimals(it) for it in resp.get("Items", [])]
     except Exception as e:
         err = _aws_error_payload(e)
         return err if err is not None else {
@@ -2455,8 +2585,14 @@ def get_user_plan_history(
             continue
         plan_ts = it.get("planned_at") or it["SK"][len("PLAN#"):]
         try:
-            days_since = (now_utc - datetime.fromisoformat(plan_ts)).days
-        except ValueError:
+            plan_dt = datetime.fromisoformat(plan_ts)
+            # A legacy naive planned_at would make the subtraction raise
+            # TypeError, not ValueError — coerce to UTC and catch both so one
+            # bad row can't take down the whole history read.
+            if plan_dt.tzinfo is None:
+                plan_dt = plan_dt.replace(tzinfo=timezone.utc)
+            days_since = (now_utc - plan_dt).days
+        except (ValueError, TypeError):
             days_since = None
         plans.append({
             "plan_id": it["SK"][len("PLAN#"):],
@@ -2571,6 +2707,43 @@ def _authorization_server_metadata() -> dict[str, Any]:
     }
 
 
+# ─── Registered-client tracking (review finding #8) ─────────────────
+# The Cognito pool is shared with the web dashboard (it authenticates
+# against the same pool), so a token minted by the dashboard's Cognito
+# client carries a valid, allowlisted sub and would otherwise pass the
+# auth gate here. We additionally require the token's client_id to belong
+# to a client THIS server's DCR proxy created: each /register records an
+# MCPCLIENT# marker row, and every request checks the token's client_id
+# against it. The pool is imported read-only from another project, so this
+# lives entirely in MM's own table rather than as a Cognito
+# resource-server scope (which would mean modifying infra we don't own).
+
+_MCP_CLIENT_PK_PREFIX = "MCPCLIENT#"
+
+
+def _record_dcr_client(client_id: str, client_name: str | None) -> None:
+    """Persist the marker row that lets `client_id` pass the per-request
+    registered-client check. Raises on write failure (caller surfaces it)."""
+    item: dict[str, Any] = {
+        "PK": f"{_MCP_CLIENT_PK_PREFIX}{client_id}",
+        "SK": "META",
+        "registered_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if client_name:
+        item["client_name"] = client_name
+    _ddb_table().put_item(Item=item)
+
+
+def _ddb_client_is_registered(client_id: str | None) -> bool:
+    """True iff `client_id` was created by this server's DCR proxy."""
+    if not client_id:
+        return False
+    resp = _ddb_table().get_item(
+        Key={"PK": f"{_MCP_CLIENT_PK_PREFIX}{client_id}", "SK": "META"}
+    )
+    return "Item" in resp
+
+
 async def _handle_register(request: Request) -> JSONResponse:
     """POST /register — RFC 7591 DCR proxy to Cognito CreateUserPoolClient."""
     try:
@@ -2599,6 +2772,24 @@ async def _handle_register(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    # Record the new client so it passes the per-request registered-client
+    # check (#8). If the marker write fails the Cognito client exists but
+    # would be unusable, so surface a retryable error rather than return an
+    # unauthorizable client_id. (The /register throttle bounds the orphan
+    # Cognito clients a retry loop could create.)
+    client_id = result.get("client_id")
+    if client_id:
+        try:
+            _record_dcr_client(
+                client_id, result.get("client_name") or payload.get("client_name")
+            )
+        except Exception:
+            _logger.exception("failed to record DCR client_id %s", client_id)
+            return JSONResponse(
+                {"error": "registration incomplete, please retry"},
+                status_code=503,
+            )
+
     return JSONResponse(result, status_code=201)
 
 
@@ -2617,18 +2808,35 @@ async def _handle_register(request: Request) -> JSONResponse:
 # Everything else (FastMCP's /mcp/* routes) requires a valid token.
 
 class _CognitoJwtMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, verifier=None):
+    def __init__(self, app, verifier=None, client_registered=None):
         super().__init__(app)
         # Injectable for tests. Production callers pass nothing and
         # we use the env-derived verifier from jwt_verifier.
         self._verify = verifier or jwt_verifier.verify_token
+        # Injectable for tests; production uses the DDB-backed check that
+        # only accepts client_ids minted by this server's DCR proxy (#8).
+        self._client_registered = client_registered or _ddb_client_is_registered
+
+    @staticmethod
+    def _unauthorized(body: dict) -> JSONResponse:
+        # RFC 9728 §5.1 / MCP auth spec: a 401 from a protected resource
+        # must point the client at its protected-resource metadata so it
+        # can discover the auth server and start the OAuth flow.
+        challenge = (
+            f'Bearer resource_metadata="{_public_base_url()}{_PROTECTED_RESOURCE_PATH}"'
+        )
+        return JSONResponse(
+            body, status_code=401, headers={"WWW-Authenticate": challenge}
+        )
 
     async def dispatch(self, request: Request, call_next):
         method = request.method
         path = request.url.path
 
         if method == "OPTIONS":
-            return await call_next(request)
+            # Answer preflight directly — don't forward an unauthenticated
+            # request into the inner app. 204, no body.
+            return Response(status_code=204)
 
         # Public OAuth discovery + DCR — handled here, no auth gate.
         if method == "GET" and path == _PROTECTED_RESOURCE_PATH:
@@ -2641,9 +2849,8 @@ class _CognitoJwtMiddleware(BaseHTTPMiddleware):
         # All other paths require a valid Cognito access token.
         auth = request.headers.get("authorization", "")
         if not auth.startswith("Bearer "):
-            return JSONResponse(
-                {"error": "missing or malformed Authorization header"},
-                status_code=401,
+            return self._unauthorized(
+                {"error": "missing or malformed Authorization header"}
             )
 
         token = auth[len("Bearer "):].strip()
@@ -2656,17 +2863,49 @@ class _CognitoJwtMiddleware(BaseHTTPMiddleware):
             _authenticated_sub.set(
                 claims.get("sub") if isinstance(claims, dict) else None
             )
-        except jwt_verifier.VerifyError:
-            # Don't leak which check failed — verifier logs the detail
-            # server-side; client sees a generic 401.
-            return JSONResponse({"error": "invalid token"}, status_code=401)
+        except jwt_verifier.VerifyError as e:
+            # The detailed reason is safe to log server-side (it never
+            # reaches the client, which only sees a generic 401). WARNING,
+            # not ERROR: a rejected token is expected operational noise,
+            # not a system fault.
+            _logger.warning("token rejected for %s %s: %s", method, path, e)
+            return self._unauthorized({"error": "invalid token"})
         except Exception:
             # Defensive: any unexpected verify-side error (e.g., JWKS
-            # network failure) becomes a 503 so the client can retry.
+            # network failure or missing pool config) becomes a 503 so the
+            # client can retry. Log with traceback at ERROR — without this
+            # a JWKS outage 503s every request with no CloudWatch evidence
+            # of why.
+            _logger.exception("unexpected auth verification failure")
             return JSONResponse(
                 {"error": "auth verification failed"},
                 status_code=503,
             )
+
+        # Defense-in-depth (#8): the token is validly signed and its sub is
+        # allowlisted, but the shared pool also issues tokens to the web
+        # dashboard's client. Require the token's client_id to belong to a
+        # client our DCR proxy created. Fail CLOSED on a lookup error — a
+        # 503 the client can retry beats letting an unverified client_id
+        # through during a DDB blip.
+        client_id = claims.get("client_id") if isinstance(claims, dict) else None
+        try:
+            registered = self._client_registered(client_id)
+        except Exception:
+            _logger.exception(
+                "registered-client check failed for client_id=%r", client_id
+            )
+            return JSONResponse(
+                {"error": "auth verification failed"}, status_code=503
+            )
+        if not registered:
+            _logger.warning(
+                "client_id %r not registered via DCR — rejecting %s %s",
+                client_id,
+                method,
+                path,
+            )
+            return JSONResponse({"error": "client not registered"}, status_code=403)
 
         return await call_next(request)
 

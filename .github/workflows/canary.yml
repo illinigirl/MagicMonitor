@@ -9,15 +9,27 @@ name: live-site canary
 # When this fails: GitHub emails the repo owner. Treat it like a
 # Pushover alert — investigate within the hour. Either the live
 # site is genuinely broken, or themeparks.wiki is having an
-# outage long enough that no rides are operating (rare; would
-# also surface on the per-park pages with "0 open · 0 down · 0
-# closed" which is the assertion).
+# outage long enough that no rides are operating (rare).
 #
 # This is NOT a substitute for unit tests — see TESTING.md
 # "Failure modes we explicitly watch for". It's the runtime layer
 # of a three-layer defense: code-time review + test-time mocks +
 # runtime canary. Each catches different things; this one catches
 # the bugs that ship through despite the other two.
+#
+# Assertion design (rewritten 2026-06-11): the meta line is
+# rendered by React 19 SSR, which inserts "<!-- -->" comment
+# separators between adjacent text nodes — so the live HTML reads
+# `35<!-- --> attractions · <!-- -->30<!-- --> open · ...`, NOT
+# `35 attractions`. The previous canary grepped for the literal
+# empty-data phrase "0 attractions · 0 open ·" and therefore could
+# NEVER match (separators broke it) — the stop-loss was dead code.
+# The fix strips the separators and makes a POSITIVE assertion:
+# extract the attractions count and require it to be present AND
+# > 0. A positive assertion also fails loudly if the markup ever
+# changes (count can't be parsed), instead of a negative match that
+# silently passes. The check_canary.sh script holds the logic so the
+# self-test below exercises the exact same code path against fixtures.
 
 on:
   schedule:
@@ -26,37 +38,70 @@ on:
     - cron: "7 * * * *"
   workflow_dispatch:
   # Also run on PRs that touch the web app's DDB layer or the
-  # park page — quick smoke check before merge. Doesn't replace
-  # the unit-test layer (still queued) but adds a real-data
-  # cross-check for PRs that could break the read path.
+  # user-facing read pages — a real-data cross-check before merge.
+  # Note: on a PR this still curls PRODUCTION, not the PR's code, so
+  # it's a "did we break prod" smoke check, not a test of the diff.
   pull_request:
     paths:
       - "web/src/lib/dynamodb.ts"
+      - "web/src/lib/dynamodb-writes.ts"
       - "web/src/app/parks/**"
+      - "web/src/app/me/**"
+      - ".github/workflows/canary.yml"
+      - ".github/scripts/check_canary.sh"
 
 jobs:
-  check-parks-render-rides:
+  # Self-test the assertion logic against captured fixtures BEFORE
+  # trusting it against the live site. Guards against the grep
+  # silently rotting again (the 2026-06-11 failure): if the parser
+  # can't catch a known-bad page or rejects a known-good one, this
+  # job fails and the canary never gives false assurance.
+  selftest-assertion:
     runs-on: ubuntu-latest
     steps:
-      - name: Curl each park, assert non-zero ride count
+      - uses: actions/checkout@v4
+      - name: Known-good HTML must pass; known-empty HTML must fail
         run: |
           set -euo pipefail
+          chmod +x .github/scripts/check_canary.sh
+          # React-SSR meta line WITH separators, non-zero counts → must PASS.
+          good='<p class="label-meta mt-4">35<!-- --> attractions · <!-- -->30<!-- --> open ·<!-- --> <!-- -->2<!-- --> down · <!-- -->3<!-- --> closed</p>'
+          if ! .github/scripts/check_canary.sh "$good" "good-fixture"; then
+            echo "::error::Self-test FAILED: known-good HTML was rejected"
+            exit 1
+          fi
+          # The empty-data regression shape (also with separators) → must FAIL.
+          bad='<p class="label-meta mt-4">0<!-- --> attractions · <!-- -->0<!-- --> open ·<!-- --> <!-- -->0<!-- --> down · <!-- -->0<!-- --> closed</p>'
+          if .github/scripts/check_canary.sh "$bad" "bad-fixture"; then
+            echo "::error::Self-test FAILED: known-empty HTML was NOT caught"
+            exit 1
+          fi
+          # Missing meta line entirely (structure changed) → must FAIL.
+          if .github/scripts/check_canary.sh "<p>no meta here</p>" "missing-fixture"; then
+            echo "::error::Self-test FAILED: missing meta line was NOT caught"
+            exit 1
+          fi
+          echo "Self-test passed: assertion catches empty + missing, accepts good."
+
+  check-parks-render-rides:
+    needs: selftest-assertion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Curl each park, assert non-zero attractions count
+        run: |
+          set -euo pipefail
+          chmod +x .github/scripts/check_canary.sh
           base="https://magicmonitor.megillini.dev"
           failed=()
           for park in magic_kingdom epcot hollywood_studios animal_kingdom; do
             url="$base/parks/$park"
             html=$(curl --silent --show-error --fail --max-time 30 "$url")
-            # The empty-data shape from a broken SSR read renders
-            # literally "0 attractions · 0 open · 0 down · 0 closed"
-            # in the meta line. Match that exact phrase so we
-            # don't false-alarm on edge cases where one count is
-            # zero but others aren't (e.g., legitimately all-down
-            # late at night).
-            if echo "$html" | grep -q "0 attractions · 0 open ·.*0 down · 0 closed"; then
-              echo "::error::Park $park rendered empty ride list: $url"
-              failed+=("$park")
-            else
+            if .github/scripts/check_canary.sh "$html" "$park"; then
               echo "OK: $park"
+            else
+              echo "::error::Park $park failed canary: $url"
+              failed+=("$park")
             fi
           done
           if [ ${#failed[@]} -gt 0 ]; then

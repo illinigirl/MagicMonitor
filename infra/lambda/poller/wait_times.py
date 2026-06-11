@@ -7,7 +7,7 @@ the previous DynamoDB state.
 """
 
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 # Disney World is in Eastern Time. Used to date-filter the multi-day
@@ -200,36 +200,56 @@ def fetch_park_hours(park_key: str) -> Optional[Tuple[datetime, datetime]]:
 
     data = response.json()
 
-    # Today in Eastern time (Disney World is in Florida; all 4 parks
-    # use the same TZ). Avoids the "is it midnight UTC yet" confusion
-    # at the date-rollover boundary.
-    today_local = datetime.now(_FLORIDA_TZ).date().isoformat()
+    # Eastern time (Disney World is in Florida; all 4 parks use the same
+    # TZ). Avoids the "is it midnight UTC yet" confusion at the date
+    # rollover.
+    now_local = datetime.now(_FLORIDA_TZ)
+    today_local = now_local.date().isoformat()
+    yesterday_local = (now_local.date() - timedelta(days=1)).isoformat()
 
-    open_dt: Optional[datetime] = None
-    close_dt: Optional[datetime] = None
+    def _aggregate(date_iso: str) -> Optional[Tuple[datetime, datetime]]:
+        """Earliest open / latest close across one operating date's entries
+        (OPERATING + EXTRA_HOURS combine into one span — Early Entry and
+        Extended Evening are hours rides go down during and users care
+        about)."""
+        o_min: Optional[datetime] = None
+        c_max: Optional[datetime] = None
+        for entry in data.get("schedule", []):
+            if entry.get("date") != date_iso:
+                continue
+            if entry.get("type") not in ("OPERATING", "EXTRA_HOURS"):
+                continue
+            try:
+                o = datetime.fromisoformat(entry["openingTime"])
+                c = datetime.fromisoformat(entry["closingTime"])
+            except (KeyError, ValueError):
+                continue
+            if o_min is None or o < o_min:
+                o_min = o
+            if c_max is None or c > c_max:
+                c_max = c
+        if o_min is None or c_max is None:
+            return None
+        return (o_min, c_max)
 
-    for entry in data.get("schedule", []):
-        if entry.get("date") != today_local:
-            continue
-        # Treat EXTRA_HOURS (Early Entry, Extended Evening) as part
-        # of the operating window — rides do go down during EEH and
-        # users do care about it.
-        if entry.get("type") not in ("OPERATING", "EXTRA_HOURS"):
-            continue
+    today_window = _aggregate(today_local)
+    yesterday_window = _aggregate(yesterday_local)
 
-        try:
-            o = datetime.fromisoformat(entry["openingTime"])
-            c = datetime.fromisoformat(entry["closingTime"])
-        except (KeyError, ValueError):
-            continue
-
-        if open_dt is None or o < open_dt:
-            open_dt = o
-        if close_dt is None or c > close_dt:
-            close_dt = c
-
-    if open_dt is None or close_dt is None:
-        return None
-    return (open_dt, close_dt)
+    # After-midnight tail: a park-day that closes past midnight (a 1am
+    # close for a party or extended evening, a recurring WDW pattern) is
+    # keyed by themeparks.wiki to its OPENING date — so just after midnight
+    # the in-progress window lives under YESTERDAY's entry, not today's.
+    # Prefer whichever aggregated day-window actually contains "now" so we
+    # don't suppress alerts while the park is genuinely open. (Aggregating
+    # per-day rather than merging the two avoids fabricating a false "open"
+    # span across the gap between a 1am close and a 9am open.)
+    if today_window and today_window[0] <= now_local <= today_window[1]:
+        return today_window
+    if yesterday_window and yesterday_window[0] <= now_local <= yesterday_window[1]:
+        return yesterday_window
+    # Not currently open under either day — report today's hours (upcoming
+    # or already-closed) so the caller's open/close-buffer check behaves as
+    # before; None (no entry for today) still means fail-open upstream.
+    return today_window
 
 

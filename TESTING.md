@@ -22,7 +22,15 @@ Run from the repo root: `pytest infra/lambda/poller`
 
 ### MCP server — `mcp/tests/`
 
-Run from the repo root: `pytest mcp`
+Run with `cd mcp && pytest` (NOT `pytest mcp` from the repo root — that
+bypasses `testpaths` and would collect the paid eval suite; `pytest.ini`
+now also `--ignore=evals` as a backstop). Run the evals deliberately with
+`pytest evals/` from `mcp/`. Test modules: `test_trip_planner` +
+`test_server_http_trip` (plan/trip CRUD, both transports),
+`test_server_http_oauth` (JWT middleware + DCR + registered-client gate),
+`test_jwt_verifier`, `test_dcr_proxy`, `test_calibration`,
+`test_load_vs_forecast`, `test_park_day_window`,
+`test_server_http_analytics`.
 
 | Function under test | What's verified |
 |---|---|
@@ -82,8 +90,10 @@ specific bug):**
 2. **Test-time** — unit tests with a mocked client returning
    paginated responses, asserting the function reads all pages
    and accumulates. The poller test suite uses an in-memory stub
-   table; the web app currently lacks an equivalent (queued as
-   "Web behavioral tests scaffold" follow-up).
+   table; the web app has Vitest coverage in
+   `web/src/lib/dynamodb.test.ts` + `dynamodb-writes.test.ts`
+   (mocking `@aws-sdk/lib-dynamodb`), including explicit
+   pagination-accumulation tests for the read paths.
 3. **Runtime** — synthetic canary against the live URL that
    asserts the response renders non-empty data. Catches the
    failure mode within the canary cadence even when nobody
@@ -107,10 +117,13 @@ drift. The eval framework in `mcp/evals/` exists for this category.
 
 **Defense:** when adding a new MCP tool, changing a docstring, or
 changing the agentic planner's instructions, add an eval case that
-exercises the new behavior. The existing 5 cases cover happy path,
-write-side guardrail, context-reading, personalization, and
-ambiguity resolution; new dimensions deserve new cases. Run
-`pytest evals/` from `mcp/` before merging.
+exercises the new behavior. The existing 10 cases cover the core
+planning flow (happy path, write-side guardrail, context-reading,
+personalization, calibration, ambiguity resolution) plus the M5
+multi-day surface (future trip build, on-the-day activation,
+future-day lookup, single future-dated record, trip deletion); new
+dimensions deserve new cases. Run `pytest evals/` from `mcp/`
+before merging.
 
 ### Multi-source alert dispatch picking the wrong winner
 
@@ -214,7 +227,7 @@ Trade-offs are explicit:
 |---|---|
 | **End-to-end Lambda invocation** | Requires real AWS resources (DDB, SSM, Pushover credentials). Out of scope for CI. Verified post-deploy via `aws lambda invoke` (see RUNBOOK). |
 | **MCP tool routing / FastMCP framework** | Framework integration code; tested by the framework upstream. Manual smoke-test via Claude Desktop after each deploy. |
-| **Web app (Next.js Server Components, route handlers)** | TypeScript side has its own type-checking surface; behavioral tests deferred. The web app's primary verification path is the smoke test in RUNBOOK (`curl` six paths, expect 200). |
+| **Web app (Next.js Server Components, route handlers)** | `tsc --noEmit` typecheck + Vitest unit tests (`web/src/lib/*.test.ts`, run via `pnpm test`) covering the DDB read paths and their pagination. CI runs both in the web-typecheck job. The smoke test in RUNBOOK (`curl` the park paths, expect 200) plus the hourly canary are the runtime layer. |
 | **themeparks.wiki / Open-Meteo fetchers** | External APIs — mocking them tests the mock, not the integration. Real-world validation through production usage. |
 | **Pushover delivery** | External API. Production usage is the validation; the notifier `_send` function is straightforward and would mostly test `requests.post` behavior. |
 | **CDK stack synth** | `cdk diff` before every deploy serves as the regression check. The CDK constructs are short enough that a unit test would add little signal. |
@@ -228,7 +241,7 @@ badge in the README signals current test state.
 | Job | What it does | Why |
 |---|---|---|
 | `python-tests` | pytest both Python suites (poller + MCP) | Pure-function logic that the LLM trusts without re-deriving. The bar from the original test strategy. |
-| `web-typecheck` | `tsc --noEmit` against the Next.js app | Catches type drift before it ships. Cheap to run, catches a real class of regressions. |
+| `web-typecheck` | `tsc --noEmit` against the Next.js app, then `pnpm test` (Vitest) | Catches type drift and read-path regressions (including the data-growth pagination tests) before they ship. |
 | `cdk-synth` | builds the CDK TS + `cdk synth` | Verifies the infrastructure stacks still compile to valid CloudFormation. Catches CDK regressions before deploy. |
 
 The three jobs run in parallel (independent failures, faster

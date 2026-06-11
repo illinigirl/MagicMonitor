@@ -238,12 +238,32 @@ def clear_down_since(ride_id: str) -> None:
 
 # ─── Alert cooldown ─────────────────────────────────────────────────
 # Replaces the in-memory _down_alerted_at dict. TTL on the item means
-# DynamoDB auto-clears it when the cooldown expires — no cleanup code.
+# DynamoDB auto-clears it when the cooldown expires — eventually.
+
+def _cooldown_active(resp: dict) -> bool:
+    """True iff the get_item response holds a cooldown row that has NOT
+    expired yet, comparing the stored ttl to now.
+
+    DynamoDB's TTL reaper is best-effort — AWS documents that deletion can
+    lag expiry by up to ~48h, and expired-but-undeleted items are still
+    returned by GetItem. So presence alone is not "on cooldown": trusting
+    it silently stretches a 15-min cooldown to however long the reaper
+    lags, suppressing a legitimate alert for a second, distinct outage of
+    the same ride later the same day. Compare ttl to now instead.
+    """
+    item = resp.get("Item")
+    if not item:
+        return False
+    ttl = item.get("ttl")
+    if ttl is None:
+        return True  # legacy row without ttl — fall back to presence
+    return int(ttl) > int(time.time())
+
 
 def is_down_alert_on_cooldown(ride_id: str) -> bool:
     """Return True if a DOWN alert was sent for this ride recently."""
     resp = _table.get_item(Key={"PK": f"RIDE#{ride_id}", "SK": "COOLDOWN#DOWN"})
-    return "Item" in resp
+    return _cooldown_active(resp)
 
 
 def mark_down_alert_sent(ride_id: str) -> None:
@@ -270,7 +290,7 @@ def mark_down_alert_sent(ride_id: str) -> None:
 def is_back_up_alert_on_cooldown(ride_id: str) -> bool:
     """Return True if a BACK UP alert was sent for this ride recently."""
     resp = _table.get_item(Key={"PK": f"RIDE#{ride_id}", "SK": "COOLDOWN#BACK_UP"})
-    return "Item" in resp
+    return _cooldown_active(resp)
 
 
 def mark_back_up_alert_sent(ride_id: str) -> None:
@@ -294,7 +314,7 @@ def mark_back_up_alert_sent(ride_id: str) -> None:
 
 def is_low_wait_alert_on_cooldown(ride_id: str) -> bool:
     resp = _table.get_item(Key={"PK": f"RIDE#{ride_id}", "SK": "COOLDOWN#LOW_WAIT"})
-    return "Item" in resp
+    return _cooldown_active(resp)
 
 
 def mark_low_wait_alert_sent(ride_id: str) -> None:
@@ -309,16 +329,49 @@ def mark_low_wait_alert_sent(ride_id: str) -> None:
     )
 
 
+# ─── Still-down (second-alert) cooldown ─────────────────────────────
+# Separate SK from the initial DOWN cooldown so the "still down after N
+# minutes" alert doesn't collide with it. The cooldown window equals the
+# second-alert interval, which is index.py config, so it's passed in.
+
+def is_still_down_alert_on_cooldown(ride_id: str) -> bool:
+    resp = _table.get_item(Key={"PK": f"RIDE#{ride_id}", "SK": "COOLDOWN#STILL_DOWN"})
+    return _cooldown_active(resp)
+
+
+def mark_still_down_alert_sent(ride_id: str, cooldown_secs: int) -> None:
+    _table.put_item(
+        Item={
+            "PK":      f"RIDE#{ride_id}",
+            "SK":      "COOLDOWN#STILL_DOWN",
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "ttl":     int(time.time()) + cooldown_secs,
+        }
+    )
+
+
 # ─── Subscriptions ──────────────────────────────────────────────────
 # PARK#<key> / USER#<id> rows let us fanout alerts efficiently — one
 # Query per park returns every subscriber, no scan needed.
 
 def get_park_subscribers(park_key: str) -> list[str]:
-    """Return the user IDs subscribed to alerts for this park."""
-    resp = _table.query(
-        KeyConditionExpression=Key("PK").eq(f"PARK#{park_key}") & Key("SK").begins_with("USER#"),
-    )
-    return [item["SK"].removeprefix("USER#") for item in resp.get("Items", [])]
+    """Return the user IDs subscribed to alerts for this park.
+
+    Paginated: a park's subscriber rows could in principle exceed a single
+    1MB Query page, and a partial subscriber list silently drops alerts —
+    the project's signature data-growth failure class.
+    """
+    out: list[str] = []
+    kwargs = {
+        "KeyConditionExpression": Key("PK").eq(f"PARK#{park_key}") & Key("SK").begins_with("USER#"),
+    }
+    while True:
+        resp = _table.query(**kwargs)
+        out.extend(item["SK"].removeprefix("USER#") for item in resp.get("Items", []))
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            return out
+        kwargs["ExclusiveStartKey"] = lek
 
 
 def get_user_profile(user_id: str) -> Optional[dict]:
@@ -343,12 +396,19 @@ def get_user_favorites_for_park(user_id: str, park_key: str) -> set[str]:
     fanout filter will skip them entirely. That's the intended behavior
     (matches Phase 3's "default zero rides → zero alerts" spec).
     """
-    resp = _table.query(
-        KeyConditionExpression=Key("PK").eq(f"USER#{user_id}") & Key("SK").begins_with("FAV_RIDE#"),
-        FilterExpression="park_key = :park",
-        ExpressionAttributeValues={":park": park_key},
-    )
-    return {item["SK"].removeprefix("FAV_RIDE#") for item in resp.get("Items", [])}
+    out: set[str] = set()
+    kwargs = {
+        "KeyConditionExpression": Key("PK").eq(f"USER#{user_id}") & Key("SK").begins_with("FAV_RIDE#"),
+        "FilterExpression": "park_key = :park",
+        "ExpressionAttributeValues": {":park": park_key},
+    }
+    while True:
+        resp = _table.query(**kwargs)
+        out.update(item["SK"].removeprefix("FAV_RIDE#") for item in resp.get("Items", []))
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            return out
+        kwargs["ExclusiveStartKey"] = lek
 
 
 # ─── Active plan index (M9 bridge: plan-aware DOWN/UP alerts) ───────
@@ -438,7 +498,12 @@ def build_active_plan_ride_index(
             "IndexName": "planned_for_date-index",
             "KeyConditionExpression": "planned_for_date = :d",
             "FilterExpression": (
-                "outcome_recorded = :false "
+                # Missing outcome_recorded counts as not-recorded (DDB
+                # equality is false on a missing attribute, which would
+                # WRONGLY exclude a legacy row the Python re-guard below
+                # includes via item.get(...)). Match the two so the filter
+                # and the re-guard agree.
+                "(attribute_not_exists(outcome_recorded) OR outcome_recorded = :false) "
                 # Activation gate (M5): a future trip day is written DORMANT
                 # (active=false) and fires no alerts until activate_plan flips
                 # it on its day. Legacy rows predate the field, so missing
@@ -602,7 +667,7 @@ def is_weather_alert_on_cooldown(user_id: str, plan_id: str) -> bool:
             "SK": f"COOLDOWN#WEATHER#{plan_id}",
         }
     )
-    return "Item" in resp
+    return _cooldown_active(resp)
 
 
 def mark_weather_alert_sent(user_id: str, plan_id: str) -> None:

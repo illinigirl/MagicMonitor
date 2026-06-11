@@ -1,0 +1,152 @@
+# Tenth eval case — record a SINGLE future-dated day plan, and verify
+# the planned_for_date is carried through correctly.
+#
+# Why this case exists: every other case stubs record_plan's *response*,
+# so nothing in the suite checks what the planner passes IN — specifically
+# that a future date the user named becomes record_plan's planned_for_date.
+# That argument is load-bearing: server-side, planned_for_date is what
+# decides same-day-active vs future-dormant and what every get_plan_for_day
+# / activation lookup matches on. A planner that drops it or reformats it
+# (e.g. as a datetime) silently writes a plan that never activates and
+# never resolves — the failure mode the 2026-06-11 date-handling fix
+# hardened the write path against. This case guards the planner half.
+#
+# Single-day framing (not "set up a trip") pushes toward record_plan with
+# planned_for_date rather than create_trip. The date is stated explicitly
+# (2026-06-23), so the assertion can match it exactly — static YAML can't
+# express a relative "tomorrow," which is itself why the basic case was
+# changed to "today" instead.
+#
+# What we assert:
+#   - record_plan is called with planned_for_date == "2026-06-23".
+#   - The future day is NOT activated now (activation is on-the-day).
+#
+# What we deliberately do NOT assert:
+#   - Exact ride count (the user didn't specify a headliner list).
+#   - That create_trip isn't called — a single explicit day is
+#     unambiguous enough; over-asserting absence is brittle.
+
+name: plan_single_future_day
+description: >
+  Verifies Claude records a single explicitly-future-dated plan via
+  record_plan with the correct planned_for_date, and does not activate
+  the day early. Guards the planner-side of the date-handling surface.
+
+prompt: >
+  I'll be at Magic Kingdom on June 23, 2026 — it's just that one day,
+  no need to set up a whole trip. Decide the ride order yourself and
+  record it for that date right now so it's saved — I trust your
+  judgment, don't check back with me first. We like thrill rides plus
+  Haunted Mansion and Pirates.
+
+tool_responses:
+  # Session-start calibration check — nothing recorded yet.
+  get_user_plan_history:
+    response:
+      plans: []
+      calibration_summary: null
+
+  # No trip on file — this is a standalone day, not part of a trip.
+  get_upcoming_trip:
+    response:
+      user_id: megan
+      found: false
+      note: "No upcoming trip."
+
+  # If Claude reaches for live context to seed a rough order it gets a
+  # sensible snapshot. Parameter-blind (same response for any park),
+  # which is fine — we're testing the date passed to record_plan, not
+  # per-park ride accuracy.
+  get_planning_context:
+    response:
+      park_key: mk
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "22:00"
+        extra_evening_hours: null
+      weather_summary:
+        forecast_high_f: 91
+        forecast_low_f: 75
+        rain_chance_pct: 30
+      rides:
+        - ride_id: space-mountain
+          ride_name: Space Mountain
+          status: OPERATING
+          wait_mins: 40
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+        - ride_id: big-thunder
+          ride_name: Big Thunder Mountain Railroad
+          status: OPERATING
+          wait_mins: 35
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+        - ride_id: haunted-mansion
+          ride_name: Haunted Mansion
+          status: OPERATING
+          wait_mins: 25
+          forecast:
+            typical_wait_now: 30
+            confidence: high
+        - ride_id: pirates-of-the-caribbean
+          ride_name: Pirates of the Caribbean
+          status: OPERATING
+          wait_mins: 20
+          forecast:
+            typical_wait_now: 25
+            confidence: high
+        - ride_id: seven-dwarfs
+          ride_name: Seven Dwarfs Mine Train
+          status: OPERATING
+          wait_mins: 55
+          forecast:
+            typical_wait_now: 60
+            confidence: high
+      currently_down_in_park: []
+
+  record_plan:
+    response:
+      ok: true
+      plan_id: "PLAN#2026-06-11T15:00:00+00:00"
+      user_id: megan
+      park_key: mk
+      planned_for_date: "2026-06-23"
+      trip_id: null
+      active: false
+      expires_at_epoch: 1750636800
+      next_step_hint: >
+        Future plan saved as DORMANT for 2026-06-23 (no alerts yet). On
+        that day, call activate_plan to re-evaluate against live
+        conditions and start monitoring.
+
+  # Defined defensively so an unexpected create_trip attempt resolves
+  # cleanly rather than raising a fixture error. Not asserted on.
+  create_trip:
+    response:
+      trip_id: "2026-06-23_1750000000"
+      name: "June 23 Magic Kingdom day"
+      start_date: "2026-06-23"
+      end_date: "2026-06-23"
+      days:
+        - date: "2026-06-23"
+          park_key: mk
+          plan_id: "2026-06-11T15:00:00+00:00"
+
+assertions:
+  - tool_called: record_plan
+
+  # The core lock: the user's stated date becomes planned_for_date,
+  # exactly, on the record_plan call.
+  - tool_called_with:
+      tool: record_plan
+      args_equal:
+        planned_for_date: "2026-06-23"
+
+  # A future day is recorded DORMANT — activation is a per-day,
+  # on-the-day action after live re-evaluation, not done at record time.
+  - tool_not_called: activate_plan
+
+  - stop_reason: end_turn

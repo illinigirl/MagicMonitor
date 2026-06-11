@@ -56,6 +56,13 @@ _AGGRESSION_SCORES = {
     "not_aggressive_enough": 1.0,
 }
 
+# Canonical rating enums — the single source of truth for both write-side
+# validation (record_plan_outcome) and read-side aggregation. An off-enum
+# value stored verbatim is silently dropped by the aggregator, so writes
+# must reject anything not in these sets.
+_AGGRESSION_VALUES = frozenset(_AGGRESSION_SCORES)
+_TIMING_VALUES = frozenset({"ran_over", "on_time", "extra_time"})
+
 # Sample-size thresholds for per-ride / per-show bias confidence.
 # Below 3 samples a derived average is essentially noise; treat as
 # directional only or ignore entirely.
@@ -248,6 +255,15 @@ def _park_day_window_utc(days_back: int) -> tuple[datetime, datetime, str]:
     park-day's 4am-ET-rendered-as-UTC won't double-count.
     """
     now_et = datetime.now(_EASTERN)
+    # Anchor on the CURRENT park-day, not the calendar day. Before the 4am
+    # boundary we're still inside the previous calendar day's park-day (a
+    # 2am poll belongs to yesterday's 4am→4am window). Without this shift,
+    # days_back=0 between midnight and 4am ET builds a window that is
+    # entirely in the future, the HIST# BETWEEN query returns nothing, and
+    # get_ride_downtime_today reports "0 down today" after an evening of
+    # breakdowns. Matches tools/aggregate-analytics.py _park_day_iso.
+    if now_et.hour < _PARK_DAY_BOUNDARY_HOUR:
+        now_et -= timedelta(days=1)
     target_date = (now_et - timedelta(days=days_back)).date()
     start_et = datetime.combine(
         target_date, time(_PARK_DAY_BOUNDARY_HOUR, 0), tzinfo=_EASTERN
@@ -2297,7 +2313,7 @@ def _compute_calibration_summary(
         aggression = None
 
     # ── Timing aggregate ──
-    timing_buckets = {"ran_over": 0, "on_time": 0, "extra_time": 0}
+    timing_buckets = {k: 0 for k in ("ran_over", "on_time", "extra_time")}
     extra_times: list[float] = []
     for p in plans:
         t = p.get("timing_rating")

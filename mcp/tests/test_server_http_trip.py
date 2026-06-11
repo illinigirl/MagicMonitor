@@ -156,9 +156,11 @@ class TestSharedWrites:
 
 
 class TestActivateAndRead:
-    def test_activate_future_plan(self, stub, as_user):
+    def test_activate_today_plan(self, stub, as_user):
+        # Activation is on-the-day, so the dormant plan is dated today.
         as_user("sub-megan")
-        rec = s.record_plan("EPCOT", [], planned_for_date="2099-07-01", active=False)
+        rec = s.record_plan("EPCOT", [], planned_for_date=s._today_et_date_iso(),
+                            active=False)
         assert rec["active"] is False
         out = s.activate_plan(plan_id=rec["plan_id"],
                               ride_sequence=[{"ride_name": "TT", "ride_id": "tt"}],
@@ -166,6 +168,13 @@ class TestActivateAndRead:
         assert out["active"] is True
         assert out["ride_count"] == 1
         assert stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]["active"] is True
+
+    def test_refuses_to_activate_future_plan(self, stub, as_user):
+        as_user("sub-megan")
+        rec = s.record_plan("EPCOT", [], planned_for_date="2099-07-01", active=False)
+        out = s.activate_plan(plan_id=rec["plan_id"])
+        assert out["error"] == "Plan is future-dated"
+        assert stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]["active"] is False
 
     def test_get_plan_for_day_today(self, stub, as_user):
         as_user("sub-megan")

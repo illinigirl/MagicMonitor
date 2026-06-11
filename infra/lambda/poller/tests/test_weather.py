@@ -55,6 +55,23 @@ class TestDetectStormShift:
         """Storm was already known → don't re-alert. Deliberate asymmetry."""
         assert weather.detect_storm_shift(STORM_FORECAST, STORM_FORECAST) is None
 
+    def test_fresh_stormy_prior_suppresses(self):
+        """A recently-fetched stormy prior is a valid baseline → suppress."""
+        from datetime import datetime, timezone
+        prior = {**STORM_FORECAST, "fetched_at": datetime.now(timezone.utc).isoformat()}
+        assert weather.detect_storm_shift(prior, STORM_FORECAST) is None
+
+    def test_stale_stormy_prior_does_not_suppress(self):
+        """The 2026-06-11 fix: on a multi-day trip the snapshot freezes
+        overnight, so a 12h-old stormy prior must NOT suppress a genuinely
+        new next-day storm. A stale prior is treated as 'no baseline'."""
+        from datetime import datetime, timedelta, timezone
+        stale_ts = (datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()
+        prior = {**STORM_FORECAST, "fetched_at": stale_ts}
+        shift = weather.detect_storm_shift(prior, STORM_FORECAST)
+        assert shift is not None
+        assert shift["first_storm_code"] == 95
+
     def test_none_prior_treats_storm_as_new(self):
         """Fresh deploy / TTL'd snapshot: no prior = treat storm as new.
         Accepts at most one spurious alert per cold-start, contained by

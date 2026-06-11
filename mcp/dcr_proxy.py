@@ -153,18 +153,32 @@ def _validate(payload: Any) -> None:
             )
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
 def _is_acceptable_redirect_uri(uri: Any) -> bool:
-    """Accept https://* and http://localhost / http://127.0.0.1 only.
+    """Accept https://* and http://<loopback> only.
 
     Localhost HTTP is allowed because desktop OAuth clients commonly
     use the loopback redirect pattern (RFC 8252 §7.3). Every other
     http:// scheme is rejected — there's no legitimate reason a remote
     client would callback over cleartext.
+
+    Parse the URL and check the exact hostname — a prefix match on
+    "http://localhost" would accept http://localhost.evil.com,
+    http://localhostevil.com, and http://localhost@evil.com (where the
+    real host is evil.com via the userinfo trick).
     """
     if not isinstance(uri, str):
         return False
-    if uri.startswith("https://"):
-        return True
-    if uri.startswith("http://localhost") or uri.startswith("http://127.0.0.1"):
-        return True
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(uri)
+    except ValueError:
+        return False
+    if parts.scheme == "https":
+        return bool(parts.hostname)
+    if parts.scheme == "http":
+        return parts.hostname in _LOOPBACK_HOSTS
     return False

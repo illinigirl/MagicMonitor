@@ -38,6 +38,15 @@ _WDW_LON = -81.5639
 # this set means Disney will halt outdoor rides for lightning.
 _STORM_CODES = frozenset({95, 96, 99})
 
+# A prior snapshot older than this can't suppress a new-storm alert. The
+# snapshot only updates while a plan is active, so on a multi-day trip it
+# freezes overnight — a 12h-old prior still showing yesterday's storm
+# would otherwise classify a genuinely new next-day storm as "already
+# known" and suppress it. 20 min is far beyond the 2-min active-poll
+# cadence, so consecutive-poll comparisons are unaffected; the per-plan
+# weather cooldown backstops any over-eager re-alert.
+_PRIOR_FRESHNESS_SECS = 20 * 60
+
 # Bound the comparison window. Open-Meteo returns 6 hours by default;
 # we use the same window for shift detection so the alert reflects
 # something within the user's plan day.
@@ -122,6 +131,30 @@ def _storm_hours(forecast: Optional[dict]) -> list[dict]:
     return hits
 
 
+def _prior_is_stale(prior: Optional[dict]) -> bool:
+    """True if the prior snapshot is too old to be a meaningful baseline
+    (see _PRIOR_FRESHNESS_SECS). A stale prior is treated as "no baseline"
+    so a new storm still fires rather than being suppressed by yesterday's."""
+    if not prior:
+        return False
+    fetched_at = prior.get("fetched_at")
+    if not fetched_at:
+        # No timestamp → can't prove staleness. Behave as a valid baseline
+        # (suppress) rather than re-alert; production snapshots always set
+        # fetched_at, so this only guards malformed/legacy rows.
+        return False
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(fetched_at)
+    except (ValueError, TypeError):
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - dt).total_seconds()
+    return age > _PRIOR_FRESHNESS_SECS
+
+
 def detect_storm_shift(
     prior: Optional[dict], current: Optional[dict]
 ) -> Optional[dict]:
@@ -156,8 +189,11 @@ def detect_storm_shift(
     current_storms = _storm_hours(current)
     if not current_storms:
         return None
+    # A prior that still shows storms suppresses the alert — UNLESS the
+    # prior is stale (frozen overnight on a multi-day trip), in which case
+    # it's not a valid baseline and a current storm counts as new.
     prior_storms = _storm_hours(prior)
-    if prior_storms:
+    if prior_storms and not _prior_is_stale(prior):
         return None
 
     first = current_storms[0]

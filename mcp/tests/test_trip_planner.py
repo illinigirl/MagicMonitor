@@ -161,6 +161,140 @@ class TestRecordPlan:
         stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]
         assert stored["created_by"] == "jim"
 
+    def test_upsert_preserves_completed_rides(self, stub):
+        # Re-recording a same-day plan must NOT wipe execution state
+        # captured by mark_ride_complete. The upsert reuses the SK and
+        # does a full put_item; without the merge, the completed ride and
+        # its actual_wait_min (the strongest calibration signal) vanish.
+        out = server.record_plan("MK", [
+            {"ride_name": "Space Mountain", "ride_id": "sm"},
+            {"ride_name": "Pirates", "ride_id": "pi"},
+        ])
+        plan_id = out["plan_id"]
+        server.mark_ride_complete(plan_id, "sm", "Space Mountain", actual_wait_min=35)
+        assert len(stub.items[("USER#megan", f"PLAN#{plan_id}")]["completed_rides"]) == 1
+
+        # Re-record the same day (same trip_id=None) → upsert in place.
+        out2 = server.record_plan("MK", [{"ride_name": "Pirates", "ride_id": "pi"}])
+        assert out2["plan_id"] == plan_id  # same row, not a duplicate
+        stored = stub.items[("USER#megan", f"PLAN#{plan_id}")]
+        assert len(stored["completed_rides"]) == 1
+        assert stored["completed_rides"][0].get("actual_wait_min") == 35
+
+    def test_upsert_preserves_plan_window_when_not_respecified(self, stub):
+        # An already-resolved plan_window survives a re-record that doesn't
+        # pass one; a re-record that DOES pass one overrides it.
+        out = server.record_plan("MK", [], plan_window={"open": "09:00", "close": "22:00"})
+        plan_id = out["plan_id"]
+        server.record_plan("MK", [])  # no plan_window passed
+        assert stub.items[("USER#megan", f"PLAN#{plan_id}")]["plan_window"] == {
+            "open": "09:00", "close": "22:00",
+        }
+
+    def test_naive_planned_at_normalized_to_aware(self, stub):
+        # A naive timestamp (plausible model output) must be coerced to an
+        # aware UTC SK so downstream aware-minus-naive date math can't crash.
+        out = server.record_plan("MK", [], context={"planned_at": "2026-06-09T18:00"})
+        assert "error" not in out
+        parsed = datetime.fromisoformat(out["plan_id"])
+        assert parsed.tzinfo is not None
+
+    def test_unparseable_planned_at_fails_loud(self, stub):
+        out = server.record_plan("MK", [], context={"planned_at": "sometime tuesday"})
+        assert out["error"] == "Invalid context.planned_at"
+        assert stub.items == {}  # nothing written
+
+    def test_datetime_form_planned_for_date_normalized(self, stub):
+        # A datetime-shaped date must be stored as bare YYYY-MM-DD, or it
+        # would silently never match the date string-equality used for
+        # activation + get_plan_for_day.
+        out = server.record_plan(
+            "MK", [], planned_for_date="2026-12-23T09:00:00"
+        )
+        assert out["planned_for_date"] == "2026-12-23"
+        stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]
+        assert stored["planned_for_date"] == "2026-12-23"
+        # ...and it's now findable by the bare date.
+        found = server.get_plan_for_day("2026-12-23")
+        assert found["found"] is True
+
+    def test_get_plan_for_day_normalizes_datetime_arg(self, stub):
+        server.record_plan("MK", [], planned_for_date="2026-12-23")
+        found = server.get_plan_for_day("2026-12-23T15:00:00")
+        assert found["found"] is True
+
+
+class TestRecordPlanDedupWarning:
+    def test_warns_when_dedup_read_fails(self, stub, monkeypatch):
+        def _boom(*a, **k):
+            raise RuntimeError("ddb blip")
+
+        monkeypatch.setattr(server, "_query_user_prefix", _boom)
+        out = server.record_plan("MK", [{"ride_name": "Space", "ride_id": "sm"}])
+        # Plan still written, but the response flags the possible duplicate.
+        assert "warning" in out
+        assert ("USER#megan", f"PLAN#{out['plan_id']}") in stub.items
+
+
+class TestRecordOutcomeValidation:
+    def test_invalid_aggression_rating_rejected(self, stub):
+        out = server.record_plan_outcome("PLAN#x", aggression_rating="slightly_aggressive")
+        assert out["error"] == "Invalid aggression_rating"
+        assert stub.items == {}  # rejected before any write
+
+    def test_invalid_timing_rating_rejected(self, stub):
+        out = server.record_plan_outcome("PLAN#x", timing_rating="overran")
+        assert out["error"] == "Invalid timing_rating"
+
+    def test_valid_ratings_accepted(self, stub):
+        plan = server.record_plan("MK", [{"ride_name": "Space", "ride_id": "sm"}])
+        out = server.record_plan_outcome(
+            plan["plan_id"], aggression_rating="about_right", timing_rating="on_time"
+        )
+        assert "error" not in out
+        stored = stub.items[("USER#megan", f"PLAN#{plan['plan_id']}")]
+        assert stored["aggression_rating"] == "about_right"
+        assert stored["timing_rating"] == "on_time"
+
+
+class TestPlanHistory:
+    def test_tolerates_legacy_naive_planned_at(self, stub):
+        # A legacy row whose planned_at is naive (written before
+        # normalization) must not crash the whole history read with an
+        # uncaught aware-minus-naive TypeError.
+        stub.put_item(Item={
+            "PK": "USER#megan", "SK": "PLAN#2026-06-09T18:00",
+            "planned_at": "2026-06-09T18:00",  # naive, pre-normalization
+            "planned_for_date": "2026-06-09", "outcome_recorded": False,
+            "ride_sequence": [], "park_key": "magic_kingdom",
+        })
+        out = server.get_user_plan_history()
+        assert "error" not in out
+        assert out["count"] == 1
+        assert out["plans"][0]["days_since_plan"] is not None
+
+    def test_unrecorded_only_finds_old_plan_behind_newer_recorded(self, stub):
+        # include_unrecorded_only must filter BEFORE the limit. With limit=2
+        # and three NEWER recorded plans ahead of one OLDER unrecorded plan,
+        # the pre-fix behavior (Limit=2 then filter) returned nothing; the
+        # fix paginates and surfaces the old unrecorded plan.
+        def put(ts, recorded):
+            stub.put_item(Item={
+                "PK": "USER#megan", "SK": f"PLAN#{ts}",
+                "planned_at": ts, "planned_for_date": ts[:10],
+                "outcome_recorded": recorded, "ride_sequence": [],
+                "park_key": "magic_kingdom",
+            })
+        put("2026-06-10T10:00:00+00:00", True)
+        put("2026-06-09T10:00:00+00:00", True)
+        put("2026-06-08T10:00:00+00:00", True)
+        put("2026-06-01T10:00:00+00:00", False)  # older, unrecorded
+
+        out = server.get_user_plan_history(include_unrecorded_only=True, limit=2)
+        ids = [p["plan_id"] for p in out["plans"]]
+        assert "2026-06-01T10:00:00+00:00" in ids
+        assert all(not p["outcome_recorded"] for p in out["plans"])
+
 
 # ─── create_trip ────────────────────────────────────────────────────
 
@@ -268,10 +402,11 @@ class TestGetUpcomingTrip:
 
 
 class TestActivatePlan:
-    def test_activates_dormant_future_plan_by_date(self, stub):
-        d = _future(15)
+    def test_activates_dormant_today_plan_by_date(self, stub):
+        # Activation is an ON-THE-DAY action, so the dormant plan is dated
+        # today (create_trip always writes dormant). Activating it works.
+        d = _today()
         server.create_trip("Trip", [{"date": d, "park": "MK"}])
-        # The day-plan is dormant; activate it by date.
         out = server.activate_plan(date=d, ride_sequence=[{"ride_name": "Space", "ride_id": "sm"}],
                                    plan_window={"open": "10:00", "close": "22:00"})
         assert out["active"] is True
@@ -283,11 +418,20 @@ class TestActivatePlan:
         assert stub.items[pk_sk]["active"] is True
         assert len(stub.items[pk_sk]["ride_sequence"]) == 1
 
-    def test_activate_by_plan_id(self, stub):
-        rec = server.record_plan("MK", [], planned_for_date=_future(5), active=False)
+    def test_activate_by_plan_id_today(self, stub):
+        rec = server.record_plan("MK", [], planned_for_date=_today(), active=False)
         out = server.activate_plan(plan_id=rec["plan_id"])
         assert out["active"] is True
         assert stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]["active"] is True
+
+    def test_refuses_to_activate_a_future_plan(self, stub):
+        # The guard: a future-dated dormant plan must NOT activate early —
+        # it would fire disruption alerts weeks ahead. Activate on the day.
+        rec = server.record_plan("MK", [], planned_for_date=_future(10),
+                                  trip_id="t", active=False)
+        out = server.activate_plan(plan_id=rec["plan_id"])
+        assert out["error"] == "Plan is future-dated"
+        assert stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]["active"] is False
 
     def test_activate_no_plan_for_day(self, stub):
         out = server.activate_plan(date=_future(77))

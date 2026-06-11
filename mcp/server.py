@@ -32,6 +32,7 @@ from mcp.server.fastmcp import FastMCP
 # call sites are unchanged.
 import _tool_impls
 from _tool_impls import (
+    _AGGRESSION_VALUES,
     _DOW_INDEX,
     _DOW_NAMES,
     _EASTERN,
@@ -49,6 +50,7 @@ from _tool_impls import (
     _SHOW_PARK_IDS,
     _SPECTACULAR_RX,
     _STAGE_RX,
+    _TIMING_VALUES,
     _TRIP_BUFFER_DAYS,
     _WDW_LAT,
     _WDW_LON,
@@ -1498,13 +1500,41 @@ def record_plan(
     except ValueError as e:
         return {"error": "Invalid park", "error_message": str(e)}
     now_utc = datetime.now(timezone.utc)
-    plan_ts = (context or {}).get("planned_at") or now_utc.isoformat()
+    # Normalize context.planned_at before it becomes the PLAN# sort key.
+    # Whatever string the model puts here becomes the SK suffix AND the
+    # planned_at attr. An unvalidated NAIVE timestamp (e.g. "2026-06-09T18:00",
+    # very plausible model output) parses fine but later crashes
+    # get_user_plan_history's aware-minus-naive date math with TypeError —
+    # taking down the session-start entry point for the whole partition. A
+    # reused snapshot across two days also collides SKs. Require an aware
+    # ISO-8601 datetime (coerce naive → UTC), reject anything unparseable.
+    raw_planned_at = (context or {}).get("planned_at")
+    if raw_planned_at:
+        try:
+            parsed_planned_at = datetime.fromisoformat(raw_planned_at)
+        except (ValueError, TypeError):
+            return {
+                "error": "Invalid context.planned_at",
+                "error_message": (
+                    f"Could not parse planned_at {raw_planned_at!r}. Use an "
+                    "ISO-8601 timestamp like 2026-06-09T18:00:00+00:00."
+                ),
+            }
+        if parsed_planned_at.tzinfo is None:
+            parsed_planned_at = parsed_planned_at.replace(tzinfo=timezone.utc)
+        plan_ts = parsed_planned_at.isoformat()
+    else:
+        plan_ts = now_utc.isoformat()
 
     pfd = planned_for_date or _today_et_date_iso()
-    # Validate an explicitly-passed date so a typo fails loudly rather
-    # than writing a row that never matches a get_plan_for_day lookup.
+    # Validate AND normalize to a bare YYYY-MM-DD. fromisoformat also
+    # accepts datetime forms ("2026-06-23T09:00"), and storing such a value
+    # verbatim would silently never match the YYYY-MM-DD string-equality
+    # used for activation (active = pfd == today) and get_plan_for_day — the
+    # plan would stay dormant or be invisible to lookups. Normalizing the
+    # date part fixes that; a true typo still fails loudly.
     try:
-        datetime.fromisoformat(pfd)
+        pfd = datetime.fromisoformat(pfd).date().isoformat()
     except ValueError:
         return {
             "error": "Invalid planned_for_date",
@@ -1536,14 +1566,23 @@ def record_plan(
             and r.get("trip_id") == trip_id
             and not r.get("outcome_recorded")
         ]
+        dedup_unchecked = False
     except Exception:
-        existing = []  # read failed → fall through to an insert
+        # The dedup read failed — we can't tell whether a row for this day
+        # already exists, so we fall through to an insert. That can create a
+        # duplicate day row (the exact thing the upsert prevents); surface a
+        # warning in the response instead of doing it silently. (/trips
+        # collapses same-date dups on read, so this degrades, not breaks.)
+        existing = []
+        dedup_unchecked = True
+    prior = None
     if existing:
         existing.sort(
             key=lambda r: (bool(r.get("active")), r.get("planned_at") or r["SK"]),
             reverse=True,
         )
-        plan_ts = existing[0]["SK"][len("PLAN#"):]  # reuse SK → update in place
+        prior = existing[0]
+        plan_ts = prior["SK"][len("PLAN#"):]  # reuse SK → update in place
 
     # Same-day plans auto-activate; future-dated plans stay dormant
     # until activate_plan flips them on their day.
@@ -1566,6 +1605,22 @@ def record_plan(
         activated_at=activated_at,
         created_by=created_by,
     )
+
+    if prior is not None:
+        # Upsert means "set this day's plan" — but put_item replaces the
+        # whole row, and _build_plan_item hardcodes completed_rides /
+        # dropped_rides to []. Without this merge, re-recording a day after
+        # the user has been marking rides complete (the strongest calibration
+        # signal) silently wipes every actual_wait_min and drop reason. Carry
+        # the prior row's mid-trip execution state forward, plus an already-
+        # resolved plan_window / activation timestamp the caller didn't
+        # re-specify on this call.
+        item["completed_rides"] = prior.get("completed_rides") or []
+        item["dropped_rides"] = prior.get("dropped_rides") or []
+        if plan_window is None and prior.get("plan_window") is not None:
+            item["plan_window"] = prior.get("plan_window")
+        if active and prior.get("active") and prior.get("activated_at"):
+            item["activated_at"] = prior.get("activated_at")
 
     try:
         table.put_item(Item=_floats_to_decimals(item))
@@ -1590,7 +1645,7 @@ def record_plan(
             f"conditions and start disruption monitoring."
         )
 
-    return {
+    result = {
         "plan_id": plan_ts,
         "user_id": user_id,
         "park_key": park_key,
@@ -1600,6 +1655,13 @@ def record_plan(
         "expires_at_epoch": item["ttl"],
         "next_step_hint": next_hint,
     }
+    if dedup_unchecked:
+        result["warning"] = (
+            "Couldn't check for an existing plan on this day (read failed), "
+            "so this was inserted as a new row — a duplicate day is possible. "
+            "Re-check with get_plan_for_day if it matters."
+        )
+    return result
 
 
 @mcp.tool()
@@ -1655,7 +1717,9 @@ def create_trip(
                 "error_message": f"day index {i} missing date/park: {day!r}",
             }
         try:
-            datetime.fromisoformat(date_str)
+            # Normalize to bare YYYY-MM-DD (see record_plan) so day dates,
+            # the derived start/end, and trip_id are always pure dates.
+            date_str = datetime.fromisoformat(date_str).date().isoformat()
         except ValueError:
             return {
                 "error": "Invalid day date",
@@ -1785,7 +1849,9 @@ def get_plan_for_day(
     """
     target = date or _today_et_date_iso()
     try:
-        datetime.fromisoformat(target)
+        # Normalize so a datetime-form arg still matches the YYYY-MM-DD
+        # stored on PLAN# rows (the lookup is string equality on target).
+        target = datetime.fromisoformat(target).date().isoformat()
     except ValueError:
         return {
             "error": "Invalid date",
@@ -2191,6 +2257,7 @@ def activate_plan(
         plan_window, ride_count. Error payload if the plan isn't found.
     """
     # Resolve plan_id from the date if not given explicitly.
+    planned_for_date = None
     if not plan_id:
         lookup = get_plan_for_day(date=date, user_id=user_id)
         if lookup.get("error"):
@@ -2201,8 +2268,37 @@ def activate_plan(
                 "error_message": lookup.get("note") or f"No plan for {date or 'today'}.",
             }
         plan_id = lookup["plan_id"]
+        planned_for_date = lookup.get("planned_for_date")
 
     sk = _coerce_plan_id_to_sk(plan_id)
+
+    # Refuse to activate a FUTURE-dated plan early — it would turn on
+    # disruption alerts for rides days/weeks out. The docstring and
+    # _build_plan_item's contract both say a dormant future plan must stay
+    # inactive until its day; enforce it in code, not just prose. When
+    # plan_id was passed directly we don't yet know the date — best-effort
+    # read it (a read failure skips the guard rather than blocking a legit
+    # activation). On the actual day planned_for_date == today, so normal
+    # activation and same-day re-activation are unaffected.
+    if planned_for_date is None:
+        try:
+            row = _ddb_table().get_item(
+                Key={"PK": f"USER#{user_id}", "SK": sk}
+            ).get("Item")
+            if row:
+                planned_for_date = _convert_decimals(row).get("planned_for_date")
+        except Exception:
+            planned_for_date = None
+    if planned_for_date and planned_for_date > _today_et_date_iso():
+        return {
+            "error": "Plan is future-dated",
+            "error_message": (
+                f"This plan is for {planned_for_date}, not today "
+                f"({_today_et_date_iso()}). Activate it on the day so "
+                f"monitoring doesn't start firing weeks early."
+            ),
+        }
+
     now_iso = datetime.now(timezone.utc).isoformat()
 
     set_parts = ["active = :a", "activated_at = :at"]
@@ -2312,6 +2408,28 @@ def record_plan_outcome(
         Dict with the updated plan_id, outcome_recorded=true, and
         the new TTL (1 year out). On error, returns an error payload.
     """
+    # Validate the rating enums BEFORE writing. An off-enum value (classic
+    # near-miss model output like "slightly_aggressive") would otherwise be
+    # stored verbatim, mark the outcome recorded, and then be silently
+    # dropped by the calibration aggregator (which only counts known
+    # values) — the feedback is lost with no error. Reject loudly instead.
+    if aggression_rating is not None and aggression_rating not in _AGGRESSION_VALUES:
+        return {
+            "error": "Invalid aggression_rating",
+            "error_message": (
+                f"{aggression_rating!r} is not valid. Use one of: "
+                f"{sorted(_AGGRESSION_VALUES)}."
+            ),
+        }
+    if timing_rating is not None and timing_rating not in _TIMING_VALUES:
+        return {
+            "error": "Invalid timing_rating",
+            "error_message": (
+                f"{timing_rating!r} is not valid. Use one of: "
+                f"{sorted(_TIMING_VALUES)}."
+            ),
+        }
+
     sk = _coerce_plan_id_to_sk(plan_id)
     now_iso = datetime.now(timezone.utc).isoformat()
     new_ttl = _epoch_now() + _PLAN_RECORDED_TTL_SECS
@@ -2441,6 +2559,15 @@ def mark_ride_complete(
         remaining_rides (still in ride_sequence), total_completed.
         Error payload on plan-not-found / AWS auth / DDB issues.
     """
+    # CONCURRENCY (accepted limitation, not a bug): this and the other
+    # plan-edit tools (remove_ride_from_plan, add_ride_to_plan) read the
+    # row, mutate the full lists in Python, and write them back with no
+    # optimistic-concurrency version check. The trip space is shared, so two
+    # family members editing the SAME day-plan within the same ~second would
+    # last-write-wins one edit. Deliberately left as-is: the window is tiny,
+    # the cost is a re-done edit, and version+retry across all the edit tools
+    # isn't worth it for a 2-person family (decision 2026-06-11). Don't
+    # "fix" this without revisiting that call.
     sk = _coerce_plan_id_to_sk(plan_id)
     try:
         table = _ddb_table()
@@ -2892,16 +3019,34 @@ def get_user_plan_history(
     limit = max(1, min(limit, 50))
     try:
         table = _ddb_table()
-        resp = table.query(
-            KeyConditionExpression="PK = :pk AND begins_with(SK, :sk)",
-            ExpressionAttributeValues={
-                ":pk": f"USER#{user_id}",
-                ":sk": "PLAN#",
-            },
-            ScanIndexForward=False,  # newest first (PLAN# sorts by iso ts)
-            Limit=limit,
-        )
-        items = [_convert_decimals(it) for it in resp.get("Items", [])]
+        base_kwargs = {
+            "KeyConditionExpression": "PK = :pk AND begins_with(SK, :sk)",
+            "ExpressionAttributeValues": {":pk": f"USER#{user_id}", ":sk": "PLAN#"},
+            "ScanIndexForward": False,  # newest first (PLAN# sorts by iso ts)
+        }
+        if include_unrecorded_only:
+            # Filter BEFORE the limit: paginate and accumulate up to `limit`
+            # UNRECORDED plans. Applying Limit first (newest `limit` rows,
+            # then filter) silently hid an older unrecorded plan behind a
+            # batch of newer recorded/dormant ones — e.g. a pre-built
+            # multi-day trip's future days push the 1-14-day-old plan the
+            # "anything to ask about?" check exists to surface out of range.
+            items = []
+            kwargs = dict(base_kwargs)
+            while len(items) < limit:
+                resp = table.query(**kwargs)
+                for raw in resp.get("Items", []):
+                    it = _convert_decimals(raw)
+                    if not it.get("outcome_recorded"):
+                        items.append(it)
+                        if len(items) >= limit:
+                            break
+                if "LastEvaluatedKey" not in resp:
+                    break
+                kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        else:
+            resp = table.query(Limit=limit, **base_kwargs)
+            items = [_convert_decimals(it) for it in resp.get("Items", [])]
     except Exception as e:
         err = _aws_error_payload(e)
         return err if err is not None else {
@@ -2917,8 +3062,13 @@ def get_user_plan_history(
         plan_ts = it.get("planned_at") or it["SK"][len("PLAN#"):]
         try:
             plan_dt = datetime.fromisoformat(plan_ts)
+            # A legacy naive planned_at (pre-normalization rows) would make
+            # now_utc - plan_dt raise TypeError, not ValueError — catch both
+            # so one bad row can't take down the whole history read.
+            if plan_dt.tzinfo is None:
+                plan_dt = plan_dt.replace(tzinfo=timezone.utc)
             days_since = (now_utc - plan_dt).days
-        except ValueError:
+        except (ValueError, TypeError):
             days_since = None
         plans.append({
             "plan_id": it["SK"][len("PLAN#"):],
