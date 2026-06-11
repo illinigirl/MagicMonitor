@@ -24,11 +24,10 @@ import {
   UpdateCommand,
   DeleteCommand,
   GetCommand,
-  ScanCommand,
   QueryCommand,
 } from "@aws-sdk/lib-dynamodb";
 
-import type { ParkKey } from "./parks";
+import { PARKS, type ParkKey } from "./parks";
 
 // Same region/table conventions as dynamodb.ts. AWS_REGION is
 // unreliable on Amplify SSR (see comment in dynamodb.ts), so we pin
@@ -155,37 +154,37 @@ export async function setParkSubscription(
   }
 }
 
-interface ParkSubRow {
-  PK: string;
-  SK: string;
-  subscribed_at?: string;
-}
-
 /**
  * Return the set of park keys the current user is subscribed to.
  *
- * Used by the /me page to render the toggle state. Implemented as a
- * Scan with filter at this scale — 4 parks × N users is small enough
- * that adding a GSI for "all subscriptions for one user" isn't worth
- * the cost. If user count grows past ~hundreds, add a GSI on USER#<sub>
- * and switch to Query.
+ * Used by the /me page to render the toggle state — and by
+ * saveSettings to diff against, so a wrong answer here silently
+ * breaks unsubscription, not just the display.
+ *
+ * One GetItem per park, in parallel: the full key
+ * `PARK#<key>/USER#<sub>` is known, so this is O(parks) reads and
+ * structurally independent of table size. The previous
+ * implementation was a single-page Scan + FilterExpression — the
+ * same shape as the 2026-05-24 getParkRides regression — which
+ * silently returns nothing once the table outgrows one ~1MB scan
+ * page (the table is multi-GB now; see TESTING.md "Silent
+ * regressions from data growth").
  */
 export async function getUserParkSubscriptions(
   sub: string,
 ): Promise<Set<ParkKey>> {
-  const resp = await client.send(
-    new ScanCommand({
-      TableName: tableName,
-      FilterExpression: "SK = :sk AND begins_with(PK, :pk)",
-      ExpressionAttributeValues: { ":sk": `USER#${sub}`, ":pk": "PARK#" },
+  const found = await Promise.all(
+    PARKS.map(async (park) => {
+      const resp = await client.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { PK: `PARK#${park.key}`, SK: `USER#${sub}` },
+        }),
+      );
+      return resp.Item ? park.key : null;
     }),
   );
-  const out = new Set<ParkKey>();
-  for (const row of (resp.Items ?? []) as ParkSubRow[]) {
-    const parkKey = row.PK.replace(/^PARK#/, "") as ParkKey;
-    out.add(parkKey);
-  }
-  return out;
+  return new Set(found.filter((k): k is ParkKey => k !== null));
 }
 
 // ─── Favorite rides (M3 Phase 2) ─────────────────────────────────────
