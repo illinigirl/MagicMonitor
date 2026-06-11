@@ -60,11 +60,21 @@ setting; we pass it at construction.
 
 import contextvars
 import json
+import logging
 import os
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+# Module logger. The auth middleware below logs verification outcomes
+# here (WARNING for a rejected token, ERROR for an unexpected verify-side
+# failure). In Lambda these land in the function's CloudWatch log group.
+# Previously the middleware comments claimed "the verifier logs the
+# detail server-side" but NO logging existed anywhere on the auth path —
+# a missing-diagnostics gap that conflicts with the project's
+# "log at each boundary first" debugging doctrine (CLAUDE.md).
+_logger = logging.getLogger("magicmonitor.mcp.auth")
 
 from mcp.server.fastmcp import FastMCP
 
@@ -2699,13 +2709,20 @@ class _CognitoJwtMiddleware(BaseHTTPMiddleware):
             _authenticated_sub.set(
                 claims.get("sub") if isinstance(claims, dict) else None
             )
-        except jwt_verifier.VerifyError:
-            # Don't leak which check failed — verifier logs the detail
-            # server-side; client sees a generic 401.
+        except jwt_verifier.VerifyError as e:
+            # The detailed reason is safe to log server-side (it never
+            # reaches the client, which only sees a generic 401). WARNING,
+            # not ERROR: a rejected token is expected operational noise,
+            # not a system fault.
+            _logger.warning("token rejected for %s %s: %s", method, path, e)
             return JSONResponse({"error": "invalid token"}, status_code=401)
         except Exception:
             # Defensive: any unexpected verify-side error (e.g., JWKS
-            # network failure) becomes a 503 so the client can retry.
+            # network failure or missing pool config) becomes a 503 so the
+            # client can retry. Log with traceback at ERROR — without this
+            # a JWKS outage 503s every request with no CloudWatch evidence
+            # of why.
+            _logger.exception("unexpected auth verification failure")
             return JSONResponse(
                 {"error": "auth verification failed"},
                 status_code=503,

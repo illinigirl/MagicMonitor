@@ -18,6 +18,7 @@ single `/mcp/echo` route so we don't have to spin up the full FastMCP
 streamable-HTTP machinery.
 """
 
+import logging
 import os
 from unittest.mock import MagicMock, patch
 
@@ -198,6 +199,25 @@ class TestMiddlewareAuthGate:
         # Generic error — middleware must not leak which check failed
         assert resp.json()["error"] == "invalid token"
 
+    def test_verify_error_is_logged_but_not_leaked(self, caplog):
+        # The reason must reach server-side logs (for debugging) but never
+        # the client (an attacker shouldn't learn which check failed).
+        def reject(token):
+            raise jwt_verifier.VerifyError("sub abc-123 not in allowlist")
+
+        client = _make_test_client(verifier=reject)
+        with caplog.at_level(logging.WARNING, logger="magicmonitor.mcp.auth"):
+            resp = client.get(
+                "/mcp/echo",
+                headers={"authorization": "Bearer some.jwt.token"},
+            )
+        assert resp.status_code == 401
+        assert "not in allowlist" not in resp.text  # not leaked to client
+        assert any(
+            r.levelno == logging.WARNING and "not in allowlist" in r.getMessage()
+            for r in caplog.records
+        )  # but present server-side
+
     def test_unexpected_verifier_exception_returns_503(self):
         def jwks_blip(token):
             raise RuntimeError("connection reset to JWKS endpoint")
@@ -208,6 +228,21 @@ class TestMiddlewareAuthGate:
             headers={"authorization": "Bearer some.jwt.token"},
         )
         assert resp.status_code == 503
+
+    def test_unexpected_verifier_exception_is_logged_at_error(self, caplog):
+        # A JWKS outage / misconfig must leave CloudWatch evidence — the
+        # gap that previously made a 503-storm undiagnosable.
+        def jwks_blip(token):
+            raise RuntimeError("connection reset to JWKS endpoint")
+
+        client = _make_test_client(verifier=jwks_blip)
+        with caplog.at_level(logging.ERROR, logger="magicmonitor.mcp.auth"):
+            resp = client.get(
+                "/mcp/echo",
+                headers={"authorization": "Bearer some.jwt.token"},
+            )
+        assert resp.status_code == 503
+        assert any(r.levelno >= logging.ERROR for r in caplog.records)
 
     def test_valid_token_reaches_app(self):
         def accept(token):

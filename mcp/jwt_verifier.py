@@ -40,7 +40,9 @@ class VerifyError(Exception):
 
     Callers should map this to HTTP 401 without leaking the message to
     the client (the message is for server-side logs only; an attacker
-    probing the auth gate shouldn't learn which check failed).
+    probing the auth gate shouldn't learn which check failed). The HTTP
+    middleware in server_http.py logs str(this) at WARNING and returns a
+    generic 401 body.
     """
 
 
