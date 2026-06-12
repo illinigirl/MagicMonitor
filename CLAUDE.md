@@ -160,6 +160,33 @@ regression in minutes instead of days.
   job also runs `pnpm test` after typecheck. Plus a separate
   canary workflow that runs hourly against the live site.
 
+### Test coverage standing orders (added 2026-06-11)
+
+A cross-repo audit showed agent-written coverage has a predictable
+fingerprint: pure helpers near 100%, the same gaps everywhere else.
+Before calling any feature done, check every dimension — each is the
+negative space agents skip by default:
+
+- **Empty / degenerate:** the zero-state case is tested (no rows,
+  empty plan, fresh table).
+- **Boundary:** limits tested *at* the boundary (0, 1, exactly-at-cap).
+- **Error paths:** every defensive branch executes in at least one
+  test — GSI-query fallback, corrupt snapshot, unknown disruption
+  type. If the code handles it, a test proves it.
+- **Scale:** any `LastEvaluatedKey`/`ExclusiveStartKey` loop gets a
+  test that forces >1 page (the poller `_StubTable.page_size` knob is
+  the pattern; the MCP-side stubs still need this — known gap, 24+
+  unpaginated-in-tests loops as of the 2026-06-11 audit).
+- **Time:** no direct `datetime.now()`/`date.today()` in logic under
+  test — inject the clock (the `forecast_signal` pattern).
+- **Adapters / entry points:** `index.py`-style orchestration gets its
+  decision logic extracted into testable functions; web write helpers
+  get the same vi.mock treatment as the read path.
+- **Tests must be able to fail:** no assertions that survive deleting
+  the behavior; if a test has never been red, prove it can be.
+
+Run `/coverage-audit` before calling a surface ship-ready.
+
 ### Alert routing (added 2026-05-24)
 
 `infra/lambda/poller/alert_routing.py` is the resolver pattern for
