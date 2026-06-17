@@ -564,6 +564,16 @@ def handler(event, context):
                 # the favorite / plan mid-window.
                 db.mark_back_up_alert_sent(ride_id)
 
+                # NOTE (2026-06-17, deliberate — don't "fix"): a plan
+                # watcher who ACTIVATED their plan after the ride went down
+                # gets this BACK UP without ever having received the
+                # matching DOWN (they weren't in the active set at
+                # down-time). Accepted: it provides useful context ("a ride
+                # in your plan had a hiccup but it's operational now") as
+                # they head in. Suppressing it would need per-user
+                # down-notified tracking — not worth the small noise it'd
+                # remove.
+
                 # Mirror of the DOWN path's resolver-based dispatch.
                 # Plan-aware alert (priority 100) beats generic
                 # favoriter alert (priority 50) when a user matches
