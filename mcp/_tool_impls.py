@@ -1072,7 +1072,13 @@ def get_planning_context(
        - Individual Lightning Lane / ILL (paid per-ride for top-tier
          attractions like TRON or Guardians; same 1-hour shape)
        - Virtual queue boarding groups (TRON, Tiana's, etc. — return
-         window is set when the boarding group is called)
+         window is set when the boarding group is called). NOTE:
+         Guardians of the Galaxy: Cosmic Rewind is NO LONGER
+         virtual-queue-only — it now runs a standard STANDBY queue (plus
+         paid ILL). Older training data says VQ-only; that's stale. Treat
+         it as a normal standby ride: it has a live wait time, can be
+         sequenced like any other ride, and does NOT require a boarding
+         group.
        - Shows worth planning around. The top-level `showtimes` field
          lists today's headliner spectaculars / parades / stage shows
          that haven't started yet. If any look marquee (Happily Ever
