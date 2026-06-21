@@ -9,8 +9,8 @@
 //   python3 tools/aggregate-analytics.py
 //
 // 73 rides × hourly + per-park hour×day heatmaps,
-// aggregated from 3,195,309 polls spanning
-// 2026-03-10 → 2026-06-20.
+// aggregated from 3,219,154 polls spanning
+// 2026-03-10 → 2026-06-21.
 
 import type { AnalyticsSnapshot } from "@/lib/analytics";
 import data from "./analytics-snapshot.json";
