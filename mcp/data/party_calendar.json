@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-05-11",
+  "updated_at": "2026-06-24",
   "source_hint": "https://disneyworld.disney.go.com/events-tours/",
   "maintenance_note": "Disney publishes the official party calendar in spring (Halloween) and summer (Christmas) each year. Replace the `dates` arrays with the actual published schedule when Disney announces (~10 min of manual work per season). Look for 'After Hours' or 'Special Events' at the source URL above. Flip each party's dates_status to verified_from_disney_calendar once updated.",
   "parties": {
@@ -42,8 +42,8 @@
       "park_closes_early_for_non_party": "18:00",
       "party_hours": {"start": "19:00", "end": "00:00"},
       "ticketed_separately": true,
-      "dates_status": "estimated_from_typical_pattern_for_2026",
-      "dates_caveat": "Replace with verified 2026 dates from disneyworld.com/events. Disney usually announces in Apr-May.",
+      "dates_status": "verified_from_disney_calendar",
+      "dates_caveat": "Verified from Disney's official 2026 party calendar graphic on 2026-06-24. 25 party nights, Nov 8 - Dec 22 (none during Christmas week).",
       "crowd_effects": {
         "daytime_at_host_park": "lighter than typical",
         "reason_daytime_lighter": "Same as MNSSHP — 6pm closure drives locals away from MK on these days",
@@ -56,22 +56,23 @@
         "December non-party days are some of the highest-crowd days of the year — if user has any flexibility, party days can be a better choice for actually riding things even without a party ticket (use the daytime, leave by 6pm)"
       ],
       "dates": [
-        "2026-11-14", "2026-11-16", "2026-11-19", "2026-11-20", "2026-11-23",
-        "2026-11-26", "2026-11-30",
-        "2026-12-01", "2026-12-03", "2026-12-04", "2026-12-07", "2026-12-08",
-        "2026-12-10", "2026-12-11", "2026-12-14", "2026-12-15", "2026-12-17",
-        "2026-12-18", "2026-12-21", "2026-12-22"
+        "2026-11-08", "2026-11-09", "2026-11-12", "2026-11-13", "2026-11-15",
+        "2026-11-17", "2026-11-19", "2026-11-20", "2026-11-24", "2026-11-25",
+        "2026-11-27", "2026-11-29",
+        "2026-12-01", "2026-12-03", "2026-12-04", "2026-12-06", "2026-12-08",
+        "2026-12-10", "2026-12-11", "2026-12-13", "2026-12-15", "2026-12-17",
+        "2026-12-18", "2026-12-20", "2026-12-22"
       ]
     },
     "JOLLYWOOD_NIGHTS": {
       "full_name": "Jollywood Nights",
       "park": "hollywood_studios",
-      "typical_season": "mid-November through mid-December",
+      "typical_season": "early November through early January",
       "park_closes_early_for_non_party": "18:30",
-      "party_hours": {"start": "20:00", "end": "00:00"},
+      "party_hours": {"start": "19:30", "end": "00:30"},
       "ticketed_separately": true,
-      "dates_status": "pending_disney_announcement",
-      "dates_caveat": "Disney has not yet published the 2026 Jollywood Nights schedule. Update when announced — typically Apr-May for the same year. Past seasons ran ~6-10 nights spread across November-December at Hollywood Studios.",
+      "dates_status": "verified_from_disney_calendar",
+      "dates_caveat": "Dates verified from Disney's official 2026 Jollywood Nights calendar graphic on 2026-06-24 — 15 nights, Nov 7 2026 through Jan 5 2027 (first year extending into January). Party hours (19:30-00:30) and the 18:30 non-party close are from Disney's announcement, not the dated graphic; confirm if precision matters.",
       "crowd_effects": {
         "daytime_at_host_park": "lighter than typical",
         "reason_daytime_lighter": "Hollywood Studios closes at 6:30pm for non-party guests on party nights, driving locals and AP holders away from HS that day",
@@ -83,7 +84,13 @@
         "Jollywood-exclusive entertainment: vintage Hollywood holiday vibes, exclusive character meets, holiday-themed dance party, special food/drink offerings",
         "If user is at HS on a Jollywood night WITHOUT a party ticket: warn about the 6:30pm closure upfront. Recommend front-loading Rise of the Resistance + Slinky Dog + Tower of Terror in the morning since you'll lose the evening window"
       ],
-      "dates": []
+      "dates": [
+        "2026-11-07", "2026-11-14", "2026-11-16", "2026-11-21", "2026-11-23",
+        "2026-11-28",
+        "2026-12-05", "2026-12-07", "2026-12-12", "2026-12-14", "2026-12-19",
+        "2026-12-21", "2026-12-23",
+        "2027-01-03", "2027-01-05"
+      ]
     }
   }
 }
