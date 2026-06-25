@@ -276,6 +276,45 @@ def _park_day_window_utc(days_back: int) -> tuple[datetime, datetime, str]:
     )
 
 
+_PARK_KEY_SK_INDEX = "park_key-SK-index"
+
+
+def _park_state_rows_via_gsi(table, park_key: str) -> list[dict]:
+    """All STATE rows for one park, via the park_key-SK-index GSI — a
+    partition Query (`park_key=:p AND SK="STATE"`), NOT a full-table Scan.
+
+    O(rides-in-park), independent of table size. The live read tools used
+    Scan+FilterExpression, which pages the entire multi-GB table to return
+    ~30 STATE rows (~20s and climbing toward the 30s API Gateway cap by
+    mid-2026). Same index + fix the web getParkRides path took on
+    2026-05-25.
+    """
+    items: list[dict] = []
+    kwargs = {
+        "IndexName": _PARK_KEY_SK_INDEX,
+        "KeyConditionExpression": "park_key = :p AND SK = :sk",
+        "ExpressionAttributeValues": {":p": park_key, ":sk": "STATE"},
+    }
+    while True:
+        resp = table.query(**kwargs)
+        items.extend(resp.get("Items", []))
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            return items
+        kwargs["ExclusiveStartKey"] = lek
+
+
+def _all_park_state_rows_via_gsi(table) -> list[dict]:
+    """Every ride's STATE row across the parks (~150 total) via one small
+    GSI partition Query per park — replaces a full-table Scan for the
+    by-name resolvers (park unknown). sorted() so the "first name match
+    wins" resolution is deterministic across runs (PARK_KEYS is a set)."""
+    items: list[dict] = []
+    for pk in sorted(_PARK_KEYS):
+        items.extend(_park_state_rows_via_gsi(table, pk))
+    return items
+
+
 def _fetch_park_currently_down(table, park_key: str) -> list[dict] | None:
     """Return every DOWN ride in the park with its down-since timing.
 
@@ -294,24 +333,13 @@ def _fetch_park_currently_down(table, park_key: str) -> list[dict] | None:
     if table is None:
         return None
     try:
-        items = []
-        scan_kwargs = {
-            "FilterExpression": "SK = :sk AND park_key = :pk AND #s = :down",
-            "ExpressionAttributeNames": {"#s": "status"},
-            "ExpressionAttributeValues": {
-                ":sk": "STATE", ":pk": park_key, ":down": "DOWN",
-            },
-        }
-        while True:
-            resp = table.scan(**scan_kwargs)
-            items.extend(resp.get("Items", []))
-            if "LastEvaluatedKey" not in resp:
-                break
-            scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        rows = _park_state_rows_via_gsi(table, park_key)
     except Exception:
         return None
 
-    items = _convert_decimals(items)
+    # The GSI Query returns this park's STATE rows (~30); filter to DOWN
+    # in Python rather than a FilterExpression — the set is tiny.
+    items = _convert_decimals([r for r in rows if r.get("status") == "DOWN"])
     out: list[dict] = []
     for item in items:
         rid = item.get("ride_id")

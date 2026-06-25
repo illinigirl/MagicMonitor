@@ -73,6 +73,7 @@ from _tool_impls import (
     _next_upcoming_showtime,
     _normalize_park,
     _park_day_window_utc,
+    _park_state_rows_via_gsi,
     _plan_pending_ttl,
     _pop_ride_from_sequence,
     _today_et_date_iso,
@@ -792,28 +793,11 @@ def get_park_live_status(
 
     try:
         table = _ddb_table()
-        # Scan all STATE rows for this park. begins_with on PK isn't
-        # supported by Scan (PK isn't an index here), but FilterExpression
-        # on park_key + SK works and at our scale fits in one page.
-        # Pagination defensively: if MM ever grows past 1MB of STATE
-        # rows we'll see truncation rather than silently dropping rides.
-        #
-        # Perf follow-up: web/ switched to a GSI Query on park_key+SK
-        # on 2026-05-25 (commit 4fd17bc3) — drops per-call cost ~300×.
-        # MCP could follow the same path; not done yet because the
-        # paginated Scan is correct (the 2026-05-24 web bug was the
-        # un-paginated single-page version, not this shape).
-        items: list[dict] = []
-        scan_kwargs = {
-            "FilterExpression": "SK = :sk AND park_key = :pk",
-            "ExpressionAttributeValues": {":sk": "STATE", ":pk": park_key},
-        }
-        while True:
-            resp = table.scan(**scan_kwargs)
-            items.extend(resp.get("Items", []))
-            if "LastEvaluatedKey" not in resp:
-                break
-            scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        # GSI Query on park_key+SK="STATE" — the per-park partition read the
+        # web getParkRides path switched to on 2026-05-25. Replaces the
+        # paginated full-table Scan (correct but O(table size) — ~20s once
+        # the table passed ~3M rows / 0.69GB in mid-2026).
+        items = _park_state_rows_via_gsi(table, park_key)
     except Exception as e:
         err = _aws_error_payload(e)
         if err is not None:
