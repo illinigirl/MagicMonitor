@@ -111,6 +111,7 @@ from _tool_impls import (
     _TRIP_BUFFER_DAYS,
     _WDW_LAT,
     _WDW_LON,
+    _all_park_state_rows_via_gsi,
     _aws_error_payload,
     _bias_confidence,
     _build_plan_item,
@@ -130,6 +131,7 @@ from _tool_impls import (
     _next_upcoming_showtime,
     _normalize_park,
     _park_day_window_utc,
+    _park_state_rows_via_gsi,
     _plan_pending_ttl,
     _pop_ride_from_sequence,
     _today_et_date_iso,
@@ -273,19 +275,10 @@ def _resolve_ride_via_ddb(ride_name: str) -> dict[str, Any] | None:
     q = (ride_name or "").strip().lower()
     if not q:
         return None
-    table = _ddb_table()
-    items: list[dict] = []
-    scan_kwargs = {
-        "FilterExpression": "SK = :sk",
-        "ExpressionAttributeValues": {":sk": "STATE"},
-    }
-    while True:
-        resp = table.scan(**scan_kwargs)
-        items.extend(resp.get("Items", []))
-        if "LastEvaluatedKey" not in resp:
-            break
-        scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
-    items = _convert_decimals(items)
+    # GSI partition Queries (one per park) instead of a full-table Scan —
+    # ~150 STATE rows total, independent of table size. See
+    # _all_park_state_rows_via_gsi.
+    items = _convert_decimals(_all_park_state_rows_via_gsi(_ddb_table()))
     return next((r for r in items if q in (r.get("name") or "").lower()), None)
 
 
@@ -472,25 +465,12 @@ def get_live_ride_status(ride_name: str) -> dict[str, Any]:
         return {"error": "ride_name cannot be empty"}
 
     try:
-        table = _ddb_table()
-        # The HTTP v1 doesn't ship the analytics snapshot to Lambda
-        # (cuts the asset by ~1.1MB), so we resolve ride_name by
-        # scanning STATE rows for a substring match on `name`. At ~88
-        # rides × ~500 bytes per STATE row this fits one scan page.
-        # If snapshot-side resolution ever becomes necessary
-        # (offline-friendly behavior, better disambiguation), ship
-        # the snapshot in session 2 and switch the resolver.
-        items: list[dict] = []
-        scan_kwargs = {
-            "FilterExpression": "SK = :sk",
-            "ExpressionAttributeValues": {":sk": "STATE"},
-        }
-        while True:
-            resp = table.scan(**scan_kwargs)
-            items.extend(resp.get("Items", []))
-            if "LastEvaluatedKey" not in resp:
-                break
-            scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        # The HTTP v1 doesn't ship the analytics snapshot to Lambda, so we
+        # resolve ride_name against live STATE rows. Fetch them via GSI
+        # partition Queries (one per park, ~150 rows total) — NOT a
+        # full-table Scan, which pages the whole multi-GB table (~20s by
+        # mid-2026) to find them.
+        items = _all_park_state_rows_via_gsi(_ddb_table())
     except Exception as e:
         err = _aws_error_payload(e)
         if err is not None:
@@ -565,22 +545,11 @@ def get_park_live_status(
 
     try:
         table = _ddb_table()
-        # Paginated Scan — same shape server.py uses post the
-        # 2026-05-24 silent-regression fix. Web/ moved to a GSI Query
-        # on 2026-05-25 (commit 4fd17bc3); MCP could follow but
-        # session 1's "verbatim copy" rule means we ship the Scan
-        # version here and follow up in a later session.
-        items: list[dict] = []
-        scan_kwargs = {
-            "FilterExpression": "SK = :sk AND park_key = :pk",
-            "ExpressionAttributeValues": {":sk": "STATE", ":pk": park_key},
-        }
-        while True:
-            resp = table.scan(**scan_kwargs)
-            items.extend(resp.get("Items", []))
-            if "LastEvaluatedKey" not in resp:
-                break
-            scan_kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+        # GSI Query on park_key+SK="STATE" — the per-park partition read web
+        # getParkRides moved to on 2026-05-25. Replaces the paginated
+        # full-table Scan (correct but O(table size) — ~20s once the table
+        # passed ~3M rows / 0.69GB in mid-2026).
+        items = _park_state_rows_via_gsi(table, park_key)
     except Exception as e:
         err = _aws_error_payload(e)
         if err is not None:
