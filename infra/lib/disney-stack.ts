@@ -317,6 +317,13 @@ export class DisneyStack extends cdk.Stack {
         // (tools/backfill-pi-to-ddb.py --mode hist) stamps the same
         // TTL on imported rows.
         HISTORY_RETENTION_DAYS: "1825",
+        // Raw WAIT# observations: 180 days (down from the 365-day default).
+        // Only the nightly aggregator reads raw WAIT#, and it's ~85% of the
+        // table — 180d keeps two seasons while ~halving the dominant growth
+        // component (DATA-GROWTH-MODEL.md, decided 2026-07-01). TTL is
+        // stamped at write time, so the table converges over ~180 days as
+        // existing 365-day rows age out.
+        WAIT_OBSERVATION_RETENTION_DAYS: "180",
       },
       // No reserved concurrency — account-wide cap is 10 and
       // an earlier project already uses ~3-4 concurrent slots. The poller
