@@ -34,6 +34,14 @@ jobs:
           python-version: '3.12'
           cache: pip
 
+      # ── Data-growth invariants (fast-fail, no deps) ──────────────
+      # Fails the build on a new interactive table.scan() without a
+      # justification, or an unbounded-SK write without a ttl. Keeps the
+      # silent-data-growth failure class un-introducible. See
+      # DATA-GROWTH-MODEL.md.
+      - name: Check data-growth invariants
+        run: python tools/check_growth_invariants.py
+
       # ── Poller test suite ────────────────────────────────────────
       # Install the poller's runtime deps + pytest in an isolated
       # step. The poller doesn't pull in the MCP SDK so this stage

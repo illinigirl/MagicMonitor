@@ -69,6 +69,14 @@ roughly 7 days before being caught accidentally.
    layer (a canary that asserts non-empty response) as a stop-loss,
    in addition to whatever pre-deploy tests you write.
 
+**The written model + enforced invariants (added 2026-07-01):**
+`DATA-GROWTH-MODEL.md` enumerates every unbounded SK type
+(`WAIT#`/`HIST#`/`FORECAST#`), its TTL, and its readers — so we don't
+re-discover what grows. `tools/check_growth_invariants.py` runs in CI and
+fails the build on a new interactive `table.scan(` without a
+`# bounded-scan:` justification, or an unbounded-SK write without a `ttl`.
+This is the class made *un-introducible*, not just watched for.
+
 **Three-layer defense to apply for this category:**
 
 - **Code-time:** explicit comments that name when the assumption
