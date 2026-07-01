@@ -1127,7 +1127,7 @@ def get_ride_downtime_today(
         ride_name: Substring match (case-insensitive). 'big thunder'
             matches 'Big Thunder Mountain Railroad'.
         days_back: 0 = today (default), 1 = yesterday, etc. Capped at
-            90 (HIST# rows TTL after 90 days).
+            the HIST# retention window (~5 years).
 
     Returns:
         Dict with ride_name, ride_id, park_day (ISO date), down_count,

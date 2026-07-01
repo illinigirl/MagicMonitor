@@ -16,12 +16,13 @@ Every row's SK prefix places it in one of two buckets.
 
 | SK type | PK | Written by | Rate | Prod TTL | Read by |
 |---|---|---|---|---|---|
-| `WAIT#<iso>` | `RIDE#<id>` | poller, per operating ride per poll | ~150 rides × ~30/hr × ~13 park-hrs/day | **365d** (`WAIT_OBSERVATION_RETENTION_DAYS`) | **only the nightly aggregator** (`tools/aggregate-analytics.py`, full sweep — no date bound) |
+| `WAIT#<iso>` | `RIDE#<id>` | poller, per operating ride per poll | ~150 rides × ~30/hr × ~13 park-hrs/day | **180d** (`WAIT_OBSERVATION_RETENTION_DAYS`, set in `disney-stack.ts`) | **only the nightly aggregator** (`tools/aggregate-analytics.py`, full sweep — no date bound) |
 | `HIST#<iso>` | `RIDE#<id>` | poller, per status transition | ~a few / ride / day | **1825d / 5yr** (`HISTORY_RETENTION_DAYS`, set in `disney-stack.ts`) | aggregator (full sweep) + `get_ride_downtime_today` (recent park-days only) |
 | `FORECAST#<iso>` | `RIDE#<id>` | poller, per poll (when a forecast is present) | ~150 × ~30/hr | **7d** (`FORECAST_RETENTION_DAYS`) | aggregator |
 
 Approximate steady-state ceilings (150 rides, ~30 obs/hr, ~13 park-hrs/day):
-- `WAIT#` @ 365d → **~20M rows** (the dominant component; ~85% of the table).
+- `WAIT#` @ 180d → **~10M rows** (still the dominant component; was ~20M at
+  365d before the 2026-07-01 cut).
 - `HIST#` @ 1825d → ~1M rows.
 - `FORECAST#` @ 7d → ~0.4M rows (self-limiting).
 
@@ -53,19 +54,19 @@ The CI check (`tools/check_growth_invariants.py`) greps for new
 `table.scan(` without that justification and for unbounded-SK writes
 missing a `ttl`.
 
-## Retention rationale + open decisions
+## Retention rationale + decisions
 
-- **`WAIT#` (currently 365d) is the lever.** It's ~85% of the table and the
-  *only* reader is the nightly aggregator (the MCP forecast/baseline tools
-  read the aggregated **snapshot**, not raw `WAIT#`). So the retention
-  window is purely "how much raw history the aggregator needs for good wait
-  baselines." Tradeoff: shorter = smaller table + faster aggregator;
-  longer = more seasonality coverage.
-  **Decision (pending): target 180d** (keeps two seasons, ~2× smaller).
-- **`HIST#` retention is internally inconsistent** — the poller keeps it
-  **1825d**, but `mcp/_tool_impls.py` (`_HIST_RETENTION_DAYS = 90`) believes
-  90d and caps `get_ride_downtime_today`'s `days_back` accordingly. Reconcile
-  the MCP constant + cap to the real retention. **Decision pending.**
+- **`WAIT#`: 180d (decided 2026-07-01, was 365d).** It's the dominant growth
+  component and the *only* reader is the nightly aggregator (the MCP
+  forecast/baseline tools read the aggregated **snapshot**, not raw `WAIT#`).
+  180d keeps two seasons of raw for the aggregator's baselines while ~halving
+  the component. TTL is stamped at write time, so the table converges to the
+  new ceiling over ~180d as existing 365d rows age out (no re-stamp done).
+- **`HIST#`: kept at 1825d (5yr); MCP reconciled up to match.** The poller's
+  5-year retention is intentional for the aggregator's downtime
+  reconstruction. `mcp/_tool_impls.py` (`_HIST_RETENTION_DAYS`) was stalely
+  90d, needlessly capping `get_ride_downtime_today`'s `days_back` — fixed to
+  1825 (2026-07-01).
 - **Trends vs. raw:** raw `WAIT#` is short-lived by design. Long-term
   wait-time *trends* (multi-year seasonality) are NOT retained today — the
   snapshot is recomputed nightly and overwritten. If long-term trends become

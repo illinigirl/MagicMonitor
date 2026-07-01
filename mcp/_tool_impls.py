@@ -90,9 +90,13 @@ _PARK_DAY_BOUNDARY_HOUR = 4
 _EASTERN = ZoneInfo("America/New_York")
 
 
-# HIST# row TTL in the poller. Tools that look further back than this
-# will return empty results — make that explicit rather than silent.
-_HIST_RETENTION_DAYS = 90
+# HIST# row TTL in the poller — must track the poller's
+# HISTORY_RETENTION_DAYS (set to 1825 / 5yr in disney-stack.ts for the
+# analytics aggregator; see DATA-GROWTH-MODEL.md). Tools that look further
+# back than this return empty, so we reject it explicitly. Was stalely 90
+# here while the poller kept 1825, needlessly capping get_ride_downtime_today
+# (reconciled 2026-07-01).
+_HIST_RETENTION_DAYS = 1825
 
 
 # Walt Disney World coordinates (entrance plaza). Used to fetch a

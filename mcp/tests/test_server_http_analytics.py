@@ -324,8 +324,11 @@ class TestLiveToolValidation:
             server_http.get_ride_downtime_today("space", days_back=-1)
 
     def test_downtime_beyond_retention_raises(self):
+        # Beyond the HIST# retention window → rejected (would return empty).
+        # Keyed to the constant so it tracks retention changes.
+        from _tool_impls import _HIST_RETENTION_DAYS
         with pytest.raises(ValueError):
-            server_http.get_ride_downtime_today("space", days_back=999)
+            server_http.get_ride_downtime_today("space", days_back=_HIST_RETENTION_DAYS + 1)
 
     def test_forecast_no_ride_match(self, monkeypatch):
         monkeypatch.setattr(server_http, "_resolve_ride_via_ddb", lambda n: None)
