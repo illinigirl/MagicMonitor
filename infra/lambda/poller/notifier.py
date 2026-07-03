@@ -359,6 +359,61 @@ def alert_plan_disruption(
     return _send(user_key, title, body, priority=priority, url=url, url_title=url_title)
 
 
+def _done_url(plan_id: str, ride_id: str, done_token: str | None) -> str | None:
+    """One-tap ✓-Done capability link (/done, sessionless — the token IS
+    the auth, so it works in Pushover's in-app browser). None without a
+    token; callers fall back to the /replan deep-link."""
+    if not (plan_id and ride_id and done_token):
+        return None
+    from urllib.parse import quote
+
+    return (
+        f"{_APP_BASE_URL}/done?plan={quote(plan_id, safe='')}"
+        f"&ride={quote(ride_id, safe='')}&t={quote(done_token, safe='')}"
+    )
+
+
+def alert_next_up_nudge(
+    user_key: str,
+    ride_name: str,
+    park_name: str,
+    park_key: str,
+    plan_id: str,
+    ride_id: str,
+    done_token: str | None = None,
+    ll_ride_name: str | None = None,
+    ll_return_start: str | None = None,
+    ll_price: str | None = None,
+) -> bool:
+    """The combined "off the ride?" nudge (M10): enough time has passed
+    since `ride_name` became next_up that the party has plausibly ridden
+    it. One push: mark it ✓ done (tap-through = the sessionless /done
+    link) and, when the rules found one, the next Lightning Lane worth
+    grabbing among the plan's remaining rides. Priority 0 — a question,
+    not a disruption; the per-(plan, ride) cooldown means it asks once.
+    """
+    emoji = PARK_EMOJI.get(park_key, "🎢")
+    title = f"{emoji} Off {ride_name}?"
+    parts = [f"Probably finished {ride_name} by now — tap to mark it done."]
+    if ll_ride_name and ll_return_start:
+        t = _fmt_return_time(ll_return_start) or "soon"
+        ll_bit = f"Next LL worth grabbing: {ll_ride_name}, returns {t}"
+        if ll_price:
+            ll_bit += f" ({ll_price})"
+        parts.append(ll_bit + ".")
+    body = f"{park_name}\n" + " ".join(parts)
+    url = _done_url(plan_id, ride_id, done_token)
+    url_title = f"✓ Mark {ride_name} done"
+    if url is None:
+        # No capability token minted yet — /replan still gets it done.
+        url = _replan_url(plan_id, ride_id, "next")
+        url_title = "Open today's schedule"
+    return _send(
+        user_key, title, body, priority=0, url=url,
+        url_title=url_title if url else None,
+    )
+
+
 def alert_plan_drift(
     user_key: str,
     park_name: str,

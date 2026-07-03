@@ -350,6 +350,33 @@ def mark_still_down_alert_sent(ride_id: str, cooldown_secs: int) -> None:
     )
 
 
+# ─── Next-up nudge cooldown (M10) ────────────────────────────────────
+# One "off the ride? mark it done" push per (plan, next_up ride) — the
+# nudge is a question, and asking it twice is nagging. Keyed on the PLAN
+# (not the user): every recipient hears it once, same as DOWN's per-ride
+# semantics. TTL default 6h ≈ once per park day.
+
+NUDGE_COOLDOWN_SECS = int(os.environ.get("NUDGE_COOLDOWN_SECS", "21600"))
+
+
+def is_nudge_on_cooldown(plan_id: str, ride_id: str) -> bool:
+    resp = _table.get_item(
+        Key={"PK": f"PLAN#{plan_id}", "SK": f"COOLDOWN#NUDGE#{ride_id}"}
+    )
+    return _cooldown_active(resp)
+
+
+def mark_nudge_sent(plan_id: str, ride_id: str) -> None:
+    _table.put_item(
+        Item={
+            "PK":      f"PLAN#{plan_id}",
+            "SK":      f"COOLDOWN#NUDGE#{ride_id}",
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "ttl":     int(time.time()) + NUDGE_COOLDOWN_SECS,
+        }
+    )
+
+
 # ─── Subscriptions ──────────────────────────────────────────────────
 # PARK#<key> / USER#<id> rows let us fanout alerts efficiently — one
 # Query per park returns every subscriber, no scan needed.
@@ -626,6 +653,12 @@ def build_active_plan_ride_index(
                     # drift + LL checks dedupe by plan_id before using them.
                     "rides":     plan_rides,
                     "ll_holds":  dict(held_ll),
+                    # Next-up nudge inputs (M10): what's being ridden now,
+                    # since when, and the /done capability token so the
+                    # nudge's tap-through can mark it complete sessionless.
+                    "next_up":       item.get("next_up"),
+                    "next_up_since": item.get("next_up_since"),
+                    "done_token":    item.get("done_token"),
                 })
             for ride in item.get("ride_sequence", []) or []:
                 ride_id = ride.get("ride_id")

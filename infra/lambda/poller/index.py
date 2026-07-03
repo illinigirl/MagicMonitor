@@ -38,6 +38,7 @@ import notifier
 import weather
 import alert_routing
 import forecast_signal
+import nudge
 
 PARK_KEYS = os.environ["PARK_KEYS"].split(",")
 
@@ -137,6 +138,10 @@ PLAN_DRIFT_THRESHOLD_MIN = int(os.environ.get("PLAN_DRIFT_THRESHOLD_MIN", "30"))
 # in that ride's standby line, so its standby wait isn't drift). The env
 # gate stays as an ops kill switch; the stack sets it "true".
 PLAN_DRIFT_ENABLED = os.environ.get("PLAN_DRIFT_ENABLED", "false").lower() == "true"
+
+# Next-up nudge (M10) kill switch — decision logic + knobs live in
+# nudge.py; the sweep itself is at the bottom of handler().
+NUDGE_ENABLED = os.environ.get("NUDGE_ENABLED", "true").lower() == "true"
 
 
 def _compute_plan_drift(
@@ -386,6 +391,10 @@ def handler(event, context):
     # the post-loop plan-drift check (planned rides now vs prediction).
     current_waits: dict[str, int] = {}
 
+    # ride_id → current LL offer dict (has return_start), accumulated
+    # across all parks for the post-loop next-up nudge sweep.
+    current_lls: dict[str, dict] = {}
+
     for park_key in PARK_KEYS:
         try:
             attractions = wait_times.fetch_live_data(park_key)
@@ -466,6 +475,12 @@ def handler(event, context):
                         )
                     except Exception as e:
                         print(f"[poller] wait observation write failed for {attr['name']}: {e}")
+
+                # Current LL offer, accumulated across parks for the
+                # post-loop next-up nudge (pick the next LL worth
+                # grabbing). `or {}` — ll can be present-but-None.
+                if (attr.get("ll") or {}).get("return_start"):
+                    current_lls[ride_id] = attr["ll"]
 
                 # First time we've seen this ride — record state, no alert.
                 if old_status is None:
@@ -940,6 +955,72 @@ def handler(event, context):
             if notifier.alert_plan_drift(
                 key, park_name=park_name, park_key=park_key,
                 net_minutes=net, plan_id=plan_id,
+            ):
+                total_alerts += 1
+
+    # ── Next-up nudge sweep (M10): "probably off the ride?" ───────
+    # When enough time has passed since a plan's next_up was set that
+    # the party has plausibly ridden it, send ONE combined push per
+    # (plan, ride): mark it ✓ done (tap-through = the sessionless /done
+    # capability link) + the next Lightning Lane worth grabbing among
+    # the plan's remaining rides (deterministic rules — the LLM re-plan
+    # is behind the tap, per the poller-rules/Claude-on-tap split).
+    now_utc = datetime.now(timezone.utc)
+    seen_nudge_plans: set[str] = set()
+    for plan in (active_plans if NUDGE_ENABLED else []):
+        plan_id = plan["plan_id"]
+        next_up = plan.get("next_up")
+        if not next_up or plan_id in seen_nudge_plans:
+            continue
+        seen_nudge_plans.add(plan_id)
+        rides = plan.get("rides") or []
+        # next_up must still be a REMAINING ride — `rides` excludes
+        # done/dropped, so a stale pointer at a completed ride never
+        # nudges (marking done via /done also advances the pointer).
+        ride = next((r for r in rides if r.get("ride_id") == next_up), None)
+        if ride is None:
+            continue
+        park_key = plan.get("park_key") or "magic_kingdom"
+        if not alerts_allowed(park_key):
+            continue
+        holds = plan.get("ll_holds") or {}
+        if not nudge.should_nudge(
+            plan.get("next_up_since"),
+            ride.get("predicted_wait_min"),
+            next_up in holds,
+            now_utc,
+        ):
+            continue
+        if db.is_nudge_on_cooldown(plan_id, next_up):
+            continue
+        # Cooldown BEFORE fanout, same rationale as DOWN: even a
+        # zero-recipient window must not re-ask next poll.
+        db.mark_nudge_sent(plan_id, next_up)
+        cand = nudge.pick_ll_candidate(rides, holds, current_lls, next_up, now_utc)
+        park_name = PARK_NAMES.get(park_key, park_key.replace("_", " ").title())
+        print(
+            f"[poller] Next-up nudge for plan {plan_id}: {ride.get('ride_name')}"
+            + (f" (LL candidate: {cand['ride_name']})" if cand else " (no LL candidate)")
+        )
+        seen_nudge_keys: set[str] = set()
+        for p in active_plans:
+            if p["plan_id"] != plan_id:
+                continue
+            key = get_user_key(p["user_id"])
+            if not key or key in seen_nudge_keys:
+                continue
+            seen_nudge_keys.add(key)
+            if notifier.alert_next_up_nudge(
+                key,
+                ride_name=ride.get("ride_name") or next_up,
+                park_name=park_name,
+                park_key=park_key,
+                plan_id=plan_id,
+                ride_id=next_up,
+                done_token=plan.get("done_token"),
+                ll_ride_name=cand["ride_name"] if cand else None,
+                ll_return_start=cand["return_start"] if cand else None,
+                ll_price=cand.get("price") if cand else None,
             ):
                 total_alerts += 1
 
