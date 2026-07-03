@@ -55,59 +55,59 @@ export default async function ReplanPage({
 
   const affected = ctx.rides.find((r) => r.ride_id === rideId);
   const droppedSet = new Set(ctx.dropped_ride_ids);
-  const remaining = ctx.rides.filter(
-    (r) => r.ride_id !== rideId && !droppedSet.has(r.ride_id),
-  );
 
   return (
     <div className="mx-auto max-w-md px-6 py-12">
-      <p className="label-meta">Re-plan · {ctx.park_name}</p>
+      <p className="label-meta">Adjust plan · {ctx.park_name}</p>
       <h2 className="display text-2xl font-medium mt-2">
-        {affected ? `${affected.ride_name} was disrupted` : "Adjust today’s plan"}
+        {affected ? `${affected.ride_name} was disrupted` : "Today’s plan"}
       </h2>
+      <p className="text-fg-2 text-sm mt-2">
+        {affected
+          ? "Drop it so you stop getting alerts and it’s out of your sequence, or leave it — it may come back up. You can adjust any other ride too."
+          : "Drop any ride you’re skipping — it leaves your sequence and stops alerting. Undo anytime."}
+      </p>
 
-      {affected ? (
-        <div className="mt-5 rounded-lg border border-line bg-bg-1 p-4 shadow-[var(--shadow-card)]">
-          <p className="text-fg-1 text-sm mb-3">
-            {affected.ride_name} is in today’s plan. Drop it so you stop
-            getting alerts and it’s out of your sequence, or keep it in case
-            it comes back up.
-          </p>
-          <ReplanControls
-            planId={ctx.plan_id}
-            rideId={affected.ride_id}
-            rideName={affected.ride_name}
-            initiallyDropped={droppedSet.has(affected.ride_id)}
-          />
-        </div>
-      ) : (
-        <p className="mt-4 text-fg-2 text-sm">
-          That ride isn’t in this plan (already dropped or completed).
-        </p>
-      )}
-
-      <div className="mt-8">
-        <h3 className="label-meta mb-2">
-          {remaining.length > 0 ? "Still on today’s plan" : "Nothing else queued"}
-        </h3>
-        <div className="rounded-lg border border-line bg-bg-1 divide-y divide-line-soft shadow-[var(--shadow-card)]">
-          {remaining.map((r, i) => (
-            <div key={r.ride_id} className="flex items-center gap-3 px-4 py-2.5">
-              <span className="text-fg-3 text-xs w-5">{i + 1}.</span>
-              <span className="text-fg-0 text-sm">{r.ride_name}</span>
+      <div className="mt-6 rounded-lg border border-line bg-bg-1 divide-y divide-line-soft shadow-[var(--shadow-card)]">
+        {ctx.rides.map((r, i) => {
+          const isAffected = r.ride_id === rideId;
+          return (
+            <div
+              key={r.ride_id}
+              className={
+                "px-4 py-3 " + (isAffected ? "bg-warn/5" : "")
+              }
+            >
+              <div className="flex items-center gap-3">
+                <span className="text-fg-3 text-xs w-5">{i + 1}.</span>
+                <span className="text-fg-0 text-sm flex-1">{r.ride_name}</span>
+                {isAffected && (
+                  <span className="rounded-full bg-warn/15 px-2 py-0.5 text-xs text-warn">
+                    disrupted
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 pl-8">
+                <ReplanControls
+                  planId={ctx.plan_id}
+                  rideId={r.ride_id}
+                  rideName={r.ride_name}
+                  initiallyDropped={droppedSet.has(r.ride_id)}
+                />
+              </div>
             </div>
-          ))}
-          {remaining.length === 0 && (
-            <p className="px-4 py-3 text-fg-3 text-sm">
-              No other rides left in the sequence.
-            </p>
-          )}
-        </div>
-        <p className="mt-4 text-fg-3 text-xs">
-          <a href="/trips" className="underline">Open the full trip</a> to see
-          every day.
-        </p>
+          );
+        })}
+        {ctx.rides.length === 0 && (
+          <p className="px-4 py-3 text-fg-3 text-sm">
+            No rides left in this plan’s sequence.
+          </p>
+        )}
       </div>
+
+      <p className="mt-4 text-fg-3 text-xs">
+        <a href="/trips" className="underline">All trips &amp; days →</a>
+      </p>
     </div>
   );
 }
