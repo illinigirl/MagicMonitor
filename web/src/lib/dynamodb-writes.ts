@@ -188,6 +188,52 @@ export async function getUserParkSubscriptions(
   return new Set(found.filter((k): k is ParkKey => k !== null));
 }
 
+// ─── Plan alert opt-in (2026-07-03) ──────────────────────────────────
+//
+// ⚠️ BOUNDARY NOTE: this is the web's ONLY write into the SHARED trip
+// partition (USER#megan) — everywhere else the web writes strictly
+// per-user rows. Deliberately narrow: an UpdateItem that touches exactly
+// one attribute (alert_subscribers) via ATOMIC set ADD/DELETE, so it can
+// never race with (or clobber) the MCP planner's edits to the same rows.
+// The IAM LeadingKeys grant (USER#*) already covers it — no CDK change.
+
+/** Shared trip partition owner — must match SHARED_TRIP_USER in
+ *  dynamodb.ts and the MCP planner's _SHARED_USER_ID. */
+const SHARED_TRIP_USER = "megan";
+
+/**
+ * Opt the signed-in member in/out of a set of plan days' alerts.
+ *
+ * `sub` MUST come from the session (auth().user.id) — never the request
+ * body (same rule as every write in this module). Adds/removes it in each
+ * row's alert_subscribers String Set; the poller then includes the
+ * member's USER#<sub>/PROFILE Pushover key in that plan's fanout. DDB
+ * semantics: ADD creates the set, DELETE of the last member removes the
+ * attribute (= back to owner-only).
+ */
+export async function setPlanAlertSubscription(
+  sub: string,
+  planIds: string[],
+  subscribed: boolean,
+): Promise<void> {
+  await Promise.all(
+    planIds.map((planId) =>
+      client.send(
+        new UpdateCommand({
+          TableName: tableName,
+          Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+          UpdateExpression: subscribed
+            ? "ADD alert_subscribers :m"
+            : "DELETE alert_subscribers :m",
+          ExpressionAttributeValues: { ":m": new Set([sub]) },
+          // Only mutate rows the planner actually wrote — never create.
+          ConditionExpression: "attribute_exists(PK)",
+        }),
+      ),
+    ),
+  );
+}
+
 // ─── Favorite rides (M3 Phase 2) ─────────────────────────────────────
 //
 // Schema: USER#<sub> / FAV_RIDE#<ride_id> with denormalized park_key.

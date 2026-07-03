@@ -303,3 +303,28 @@ class TestLowWaitScenario:
         assert set(resolved.keys()) == {"alice", "bob"}
         assert resolved["alice"].kwargs["plan_id"] == "PLAN#p1"  # plan wins
         assert "plan_id" not in resolved["bob"].kwargs
+
+
+class TestDedupeResolvedByKey:
+    """One human, two ids (implicit owner "megan" + web opt-in under
+    their sub) must get ONE push, not two — collapse by Pushover key."""
+
+    def test_same_key_collapses_first_id_wins(self):
+        resolved = resolve_alert_recipients([
+            AlertCandidate("megan", PRIORITY_PLAN, _fake_notifier, {"a": 1}),
+            AlertCandidate("sub-megan-uuid", PRIORITY_PLAN, _fake_notifier, {"a": 2}),
+            AlertCandidate("sub-jim", PRIORITY_PLAN, _fake_notifier, {"a": 3}),
+        ])
+        keys = {"megan": "pk-megan", "sub-megan-uuid": "pk-megan", "sub-jim": "pk-jim"}
+        out = alert_routing.dedupe_resolved_by_key(resolved, keys.get)
+        assert [(u, k) for u, k, _ in out] == [
+            ("megan", "pk-megan"), ("sub-jim", "pk-jim"),
+        ]
+
+    def test_missing_key_dropped(self):
+        resolved = resolve_alert_recipients([
+            AlertCandidate("ghost", PRIORITY_PLAN, _fake_notifier, {}),
+            AlertCandidate("sub-jim", PRIORITY_FAVORITE, _fake_notifier, {}),
+        ])
+        out = alert_routing.dedupe_resolved_by_key(resolved, {"sub-jim": "pk-jim"}.get)
+        assert [(u, k) for u, k, _ in out] == [("sub-jim", "pk-jim")]

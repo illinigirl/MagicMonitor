@@ -227,6 +227,7 @@ def handler(event, context):
                     f"Fanning out to {len(active_plans)} plan(s)."
                 )
                 seen_users: set[str] = set()
+                seen_user_keys: set[str] = set()
                 weather_alerts_sent = 0
                 for plan in active_plans:
                     user_id = plan["user_id"]
@@ -244,6 +245,12 @@ def handler(event, context):
                     user_key = get_user_key(user_id)
                     if not user_key:
                         continue
+                    # ...and by Pushover key: the owner is implicit AND may
+                    # be opted in under their sub via the web toggle — same
+                    # key, one push (mirrors dedupe_resolved_by_key).
+                    if user_key in seen_user_keys:
+                        continue
+                    seen_user_keys.add(user_key)
                     # Mark BEFORE send: same pattern as the other
                     # cooldowns. If the Pushover send fails the
                     # cooldown still prevents re-fire spam within the
@@ -464,14 +471,13 @@ def handler(event, context):
                             f"{len(plan_targets)} plan targets → "
                             f"{len(resolved)} unique recipients"
                         )
-                        for target_user, candidate in resolved.items():
-                            user_key = get_user_key(target_user)
-                            if not user_key:
-                                print(
-                                    f"[poller] No pushover_user_key for "
-                                    f"user {target_user} — skipping"
-                                )
-                                continue
+                        # Dedupe by Pushover key (owner implicit + web
+                        # opt-in under their sub = same key, one push).
+                        for target_user, user_key, candidate in (
+                            alert_routing.dedupe_resolved_by_key(
+                                resolved, get_user_key
+                            )
+                        ):
                             if candidate.notifier_fn(user_key, **candidate.kwargs):
                                 total_alerts += 1
 
@@ -561,13 +567,12 @@ def handler(event, context):
                     f"{len(favoriters)} favoriters, {len(plan_targets)} plan "
                     f"targets → {len(resolved)} unique recipients"
                 )
-                for target_user, candidate in resolved.items():
-                    user_key = get_user_key(target_user)
-                    if not user_key:
-                        print(
-                            f"[poller] No pushover_user_key for user {target_user} — skipping"
-                        )
-                        continue
+                # Dedupe by Pushover key: the owner is implicit AND may
+                # also be opted in under their sub via the web toggle —
+                # same key, one push (see alert_routing docstring).
+                for target_user, user_key, candidate in (
+                    alert_routing.dedupe_resolved_by_key(resolved, get_user_key)
+                ):
                     if candidate.notifier_fn(user_key, **candidate.kwargs):
                         total_alerts += 1
 
@@ -657,13 +662,12 @@ def handler(event, context):
                     f"{len(favoriters)} favoriters, {len(plan_targets)} plan "
                     f"targets → {len(resolved)} unique recipients"
                 )
-                for target_user, candidate in resolved.items():
-                    user_key = get_user_key(target_user)
-                    if not user_key:
-                        print(
-                            f"[poller] No pushover_user_key for user {target_user} — skipping"
-                        )
-                        continue
+                # Dedupe by Pushover key: the owner is implicit AND may
+                # also be opted in under their sub via the web toggle —
+                # same key, one push (see alert_routing docstring).
+                for target_user, user_key, candidate in (
+                    alert_routing.dedupe_resolved_by_key(resolved, get_user_key)
+                ):
                     if candidate.notifier_fn(user_key, **candidate.kwargs):
                         total_alerts += 1
 

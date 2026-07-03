@@ -18,6 +18,8 @@ import { getUpcomingTrips, type Trip, type TripDay } from "@/lib/dynamodb";
 import { findPark } from "@/lib/parks";
 import { isTripsAllowed } from "@/lib/trips-access";
 
+import TripAlertToggle from "./TripAlertToggle";
+
 // Shared, family-scoped, low-traffic — always render fresh.
 export const dynamic = "force-dynamic";
 
@@ -60,6 +62,7 @@ export default async function TripsPage() {
   }
 
   const trips = await getUpcomingTrips();
+  const viewerSub = session?.user?.id ?? "";
 
   return (
     <div className="mx-auto max-w-2xl px-6 py-12">
@@ -84,7 +87,7 @@ export default async function TripsPage() {
       ) : (
         <div className="space-y-10">
           {trips.map((trip) => (
-            <TripSection key={trip.trip_id} trip={trip} />
+            <TripSection key={trip.trip_id} trip={trip} viewerSub={viewerSub} />
           ))}
         </div>
       )}
@@ -92,17 +95,33 @@ export default async function TripsPage() {
   );
 }
 
-function TripSection({ trip }: { trip: Trip }) {
+function TripSection({ trip, viewerSub }: { trip: Trip; viewerSub: string }) {
+  // The toggle applies to days still in play (recorded days are history —
+  // their alerts can't fire again). Subscribed = opted in on ANY such day;
+  // the owner is implicitly subscribed server-side, so for them this
+  // toggle just adds a redundant (deduped) entry — harmless.
+  const openDays = trip.days.filter((d) => !d.outcome_recorded);
+  const subscribed = openDays.some((d) =>
+    d.alert_subscribers.includes(viewerSub),
+  );
   return (
     <section>
-      <div className="mb-3">
-        <h3 className="display text-xl font-medium text-fg-1">
-          {trip.name ?? "Trip"}
-        </h3>
-        <p className="label-meta mt-1">
-          {formatDay(trip.start_date)} &ndash; {formatDay(trip.end_date)} ·{" "}
-          {trip.days.length} {trip.days.length === 1 ? "day" : "days"}
-        </p>
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <h3 className="display text-xl font-medium text-fg-1">
+            {trip.name ?? "Trip"}
+          </h3>
+          <p className="label-meta mt-1">
+            {formatDay(trip.start_date)} &ndash; {formatDay(trip.end_date)} ·{" "}
+            {trip.days.length} {trip.days.length === 1 ? "day" : "days"}
+          </p>
+        </div>
+        {openDays.length > 0 && (
+          <TripAlertToggle
+            planIds={openDays.map((d) => d.plan_id)}
+            subscribed={subscribed}
+          />
+        )}
       </div>
       <div className="space-y-3">
         {trip.days.map((day) => (

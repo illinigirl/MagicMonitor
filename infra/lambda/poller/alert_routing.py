@@ -83,3 +83,33 @@ def resolve_alert_recipients(
         if existing is None or c.priority > existing.priority:
             best[c.user_id] = c
     return best
+
+
+def dedupe_resolved_by_key(
+    resolved: dict[str, AlertCandidate],
+    get_user_key,
+) -> list[tuple[str, str, AlertCandidate]]:
+    """Resolve each recipient's Pushover key and collapse duplicates.
+
+    The same human can appear under two ids: the shared-partition owner
+    is an IMPLICIT plan-alert recipient ("megan") and may also opt in via
+    the /trips web toggle under their Cognito sub — both profiles carry
+    the same Pushover key, so without this one event would push twice.
+    First id wins (dict order — plan/owner candidates are appended before
+    favoriter ones at every call site). Ids with no resolvable key are
+    dropped with a log line.
+
+    Returns [(user_id, user_key, candidate)] ready to dispatch.
+    """
+    out: list[tuple[str, str, AlertCandidate]] = []
+    seen_keys: set[str] = set()
+    for user_id, candidate in resolved.items():
+        user_key = get_user_key(user_id)
+        if not user_key:
+            print(f"[poller] No pushover_user_key for user {user_id} — skipping")
+            continue
+        if user_key in seen_keys:
+            continue
+        seen_keys.add(user_key)
+        out.append((user_id, user_key, candidate))
+    return out
