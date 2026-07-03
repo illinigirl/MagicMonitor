@@ -76,8 +76,12 @@ export interface LiveRideSlice {
  * - rides: remaining only — NOT dropped and NOT completed.
  * - completed_names: what's already ridden, passed as context (pacing,
  *   "worth adding more?") — never as re-plannable rides.
- * - catalog: park rides not in the plan at all (any status but CLOSED;
- *   DOWN stays visible so Claude knows it exists but won't pick it).
+ * - catalog: park rides not in the plan (any status but CLOSED; DOWN
+ *   stays visible so Claude knows it exists but won't pick it) PLUS
+ *   dropped-but-not-ridden plan rides, flagged was_dropped. Without
+ *   that flag a dropped ride was invisible to the model entirely —
+ *   which broke the feature's core loop (drop when DOWN, re-add when
+ *   back up; hit for real 2026-07-03 when Tiana's came back).
  */
 export function buildReplanModelInput(
   plan: ReplanPlanSlice,
@@ -85,10 +89,19 @@ export function buildReplanModelInput(
 ): {
   rides: ReplanRideInput[];
   completed_names: string[];
-  catalog: { ride_id: string; ride_name: string; current_wait: number | null; status: string }[];
+  catalog: {
+    ride_id: string;
+    ride_name: string;
+    current_wait: number | null;
+    status: string;
+    was_dropped?: boolean;
+  }[];
 } {
   const byId = new Map(live.map((r) => [r.ride_id, r]));
   const done = new Set(plan.completed_ride_ids);
+  const droppedOnly = new Set(
+    plan.dropped_ride_ids.filter((id) => !done.has(id)),
+  );
   const gone = new Set([...plan.dropped_ride_ids, ...plan.completed_ride_ids]);
   const rides = plan.rides
     .filter((r) => !gone.has(r.ride_id))
@@ -108,12 +121,17 @@ export function buildReplanModelInput(
     .map((r) => r.ride_name);
   const planned = new Set(plan.rides.map((r) => r.ride_id));
   const catalog = live
-    .filter((r) => !planned.has(r.ride_id) && r.status !== "CLOSED")
+    .filter(
+      (r) =>
+        (!planned.has(r.ride_id) || droppedOnly.has(r.ride_id)) &&
+        r.status !== "CLOSED",
+    )
     .map((r) => ({
       ride_id: r.ride_id,
       ride_name: r.name,
       current_wait: r.wait_mins,
       status: r.status,
+      ...(droppedOnly.has(r.ride_id) ? { was_dropped: true } : {}),
     }));
   return { rides, completed_names, catalog };
 }
@@ -150,6 +168,29 @@ export function formatPlanRideLine(r: ReplanRideInput): string {
     r.held_ll ? `HELD LL (ignore standby)` : null,
   ].filter(Boolean);
   return `- ${bits.join(", ")}`;
+}
+
+/**
+ * Split a suggestion's adds into RESTORES (ride_id already in the
+ * plan's ride_sequence — it was dropped; un-dropping restores it
+ * without duplicating the sequence entry) and genuinely NEW rides to
+ * append. Pure — exported for tests and the applyReplanOrder action.
+ */
+export function splitReplanAdds(
+  adds: { ride_id: string; ride_name: string }[],
+  existingSequenceIds: Iterable<string>,
+): {
+  restores: string[];
+  news: { ride_id: string; ride_name: string }[];
+} {
+  const existing = new Set(existingSequenceIds);
+  const restores: string[] = [];
+  const news: { ride_id: string; ride_name: string }[] = [];
+  for (const a of adds) {
+    if (existing.has(a.ride_id)) restores.push(a.ride_id);
+    else news.push(a);
+  }
+  return { restores, news };
 }
 
 const TOOL = {
@@ -218,8 +259,15 @@ export async function proposeReplan(input: {
   rides: ReplanRideInput[];
   /** Names of rides already ridden today — context only, never re-planned. */
   completed_names?: string[];
-  /** Other rides in the park (not in the plan) Claude may add from. */
-  catalog: { ride_id: string; ride_name: string; current_wait: number | null; status: string }[];
+  /** Rides Claude may ADD: park rides not in the plan, plus dropped
+   *  plan rides (was_dropped — re-adding restores them). */
+  catalog: {
+    ride_id: string;
+    ride_name: string;
+    current_wait: number | null;
+    status: string;
+    was_dropped?: boolean;
+  }[];
 }): Promise<ReplanSuggestion> {
   const client = new Anthropic({ apiKey: await getKey() });
 
@@ -240,6 +288,8 @@ export async function proposeReplan(input: {
       "around the standby. Drop rides that are DOWN or clearly not worth the " +
       "time. You may ADD rides — but ONLY ride_ids from the provided catalog, " +
       "and only when the family asked or it clearly helps (e.g. time to spare). " +
+      "A catalog ride marked as dropped earlier is usually one that was DOWN — " +
+      "if it's back up and the day has room, re-ADDing it is often the best move. " +
       "Never invent a ride_id. Put every non-dropped ride_id (planned + added) " +
       "in `order`. If nothing needs changing, set no_change=true but still " +
       "return the order. Keep summary + reasons short.",
@@ -265,7 +315,13 @@ export async function proposeReplan(input: {
           (input.catalog.length
             ? `Other rides in the park you may ADD (use these exact ride_ids only):\n` +
               input.catalog
-                .map((c) => `- ${c.ride_name} [${c.ride_id}] now ${c.status === "DOWN" ? "DOWN" : c.current_wait ?? "?"}`)
+                .map(
+                  (c) =>
+                    `- ${c.ride_name} [${c.ride_id}] now ${c.status === "DOWN" ? "DOWN" : c.current_wait ?? "?"}` +
+                    (c.was_dropped
+                      ? " (dropped from the plan earlier — ADDing it restores it)"
+                      : ""),
+                )
                 .join("\n") + "\n\n"
             : "") +
           `Re-sequence, drop, and/or add as needed. Only add when the family asked or it clearly helps.`,

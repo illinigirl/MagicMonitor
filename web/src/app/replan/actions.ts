@@ -27,6 +27,7 @@ import {
 import {
   buildReplanModelInput,
   proposeReplan,
+  splitReplanAdds,
   type ReplanSuggestion,
 } from "@/lib/claude-replan";
 import { completeRideAndAdvance } from "@/lib/plan-complete";
@@ -164,9 +165,17 @@ export async function applyReplanOrder(
     return { ok: false, error: "Nothing to apply." };
   }
   try {
-    // Add new rides FIRST (so they exist in ride_sequence before the
+    // Adds split into RESTORES (ride already in ride_sequence — it was
+    // dropped, e.g. re-adding a ride that came back up; un-drop it so
+    // the sequence isn't duplicated) vs genuinely NEW rides to append.
+    // New rides land FIRST (so they exist in ride_sequence before the
     // order + poller reference them), then order, then drops.
-    if (cleanAdds.length) await addRidesToSequence(planId, cleanAdds);
+    const existing = new Set(
+      (await getReplanContext(planId))?.rides.map((r) => r.ride_id) ?? [],
+    );
+    const { restores, news } = splitReplanAdds(cleanAdds, existing);
+    if (news.length) await addRidesToSequence(planId, news);
+    await Promise.all(restores.map((id) => setRideDropped(planId, id, false)));
     if (clean.length) await setPlanOrder(planId, clean);
     await Promise.all(cleanDrops.map((id) => setRideDropped(planId, id, true)));
   } catch {

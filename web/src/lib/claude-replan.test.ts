@@ -9,7 +9,11 @@ vi.mock("@aws-sdk/client-ssm", () => ({
   GetParameterCommand: class {},
 }));
 
-import { buildReplanModelInput, formatPlanRideLine } from "./claude-replan";
+import {
+  buildReplanModelInput,
+  formatPlanRideLine,
+  splitReplanAdds,
+} from "./claude-replan";
 
 const plan = {
   rides: [
@@ -56,13 +60,27 @@ describe("buildReplanModelInput", () => {
     expect(completed_names).toEqual(["Space Mountain"]);
   });
 
-  it("catalog = park rides not in the plan, CLOSED excluded, DOWN kept", () => {
+  it("catalog = park rides not in the plan + DROPPED plan rides, CLOSED excluded", () => {
+    // 2026-07-03 bug #3: a dropped ride was in NEITHER list, so "Tiana's
+    // is back up — add it" was structurally impossible. Dropped rides
+    // now surface in the catalog, flagged, so the model can re-add them.
     const { catalog } = buildReplanModelInput(plan, live);
-    expect(catalog.map((c) => c.ride_id)).toEqual(["dumbo"]);
+    expect(catalog.map((c) => c.ride_id).sort()).toEqual(["dumbo", "tron"]);
+    expect(catalog.find((c) => c.ride_id === "tron")?.was_dropped).toBe(true);
+    expect(catalog.find((c) => c.ride_id === "dumbo")?.was_dropped).toBeUndefined();
   });
 
-  it("catalog excludes even completed plan rides (no re-ride suggestions)", () => {
+  it("catalog excludes completed plan rides (no re-ride suggestions)", () => {
     const { catalog } = buildReplanModelInput(plan, live);
+    expect(catalog.map((c) => c.ride_id)).not.toContain("space");
+  });
+
+  it("a ride both completed and dropped stays out of the catalog", () => {
+    const doneAndDropped = {
+      ...plan,
+      dropped_ride_ids: ["tron", "space"],
+    };
+    const { catalog } = buildReplanModelInput(doneAndDropped, live);
     expect(catalog.map((c) => c.ride_id)).not.toContain("space");
   });
 
@@ -106,5 +124,31 @@ describe("buildReplanModelInput", () => {
     const { rides, completed_names } = buildReplanModelInput(allDone, live);
     expect(rides).toEqual([]);
     expect(completed_names).toHaveLength(4);
+  });
+});
+
+describe("splitReplanAdds", () => {
+  it("routes an already-in-sequence add to restore (un-drop, no duplicate)", () => {
+    const { restores, news } = splitReplanAdds(
+      [
+        { ride_id: "tiana", ride_name: "Tiana's Bayou" },
+        { ride_id: "dumbo", ride_name: "Dumbo" },
+      ],
+      ["space", "tron", "btm", "tiana"],
+    );
+    expect(restores).toEqual(["tiana"]);
+    expect(news).toEqual([{ ride_id: "dumbo", ride_name: "Dumbo" }]);
+  });
+
+  it("handles all-new and all-restore cleanly", () => {
+    expect(splitReplanAdds([{ ride_id: "x", ride_name: "X" }], [])).toEqual({
+      restores: [],
+      news: [{ ride_id: "x", ride_name: "X" }],
+    });
+    expect(splitReplanAdds([{ ride_id: "x", ride_name: "X" }], ["x"])).toEqual({
+      restores: ["x"],
+      news: [],
+    });
+    expect(splitReplanAdds([], ["x"])).toEqual({ restores: [], news: [] });
   });
 });
