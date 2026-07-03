@@ -530,3 +530,41 @@ class TestLLWatchedReader:
                 "park_key": "epcot", "ll_watch": True,
             })
         assert db.get_user_ll_watched_rides("megan", "epcot") == {"r1", "r2", "r3"}
+
+
+# ── Re-plan drop filter (2026-07-03) ──
+
+class TestDroppedRidesExcludedFromPlanIndex:
+    """A ride in dropped_ride_ids (set by the /replan approve flow) must
+    leave the poller's active-plan ride index, so no more DOWN/UP/LL
+    alerts fire for it — while ride_sequence stays intact for the MCP."""
+
+    def setup_method(self):
+        self.stub = _StubTable()
+        _swap_in_stub(self.stub)
+
+    def _put_plan(self, dropped=None):
+        item = {
+            "PK": "USER#megan", "SK": "PLAN#p1",
+            "planned_for_date": "2026-06-23", "outcome_recorded": False,
+            "active": True, "park_key": "magic_kingdom",
+            "ride_sequence": [
+                {"ride_id": "sm", "ride_name": "Space Mountain"},
+                {"ride_id": "bt", "ride_name": "Big Thunder"},
+            ],
+        }
+        if dropped:
+            item["dropped_ride_ids"] = set(dropped)
+        self.stub.put_item(Item=item)
+
+    def test_no_drops_indexes_all_rides(self):
+        self._put_plan()
+        index, _ = db.build_active_plan_ride_index("2026-06-23")
+        assert "sm" in index and "bt" in index
+
+    def test_dropped_ride_excluded_others_remain(self):
+        self._put_plan(dropped=["sm"])
+        index, _ = db.build_active_plan_ride_index("2026-06-23")
+        assert "sm" not in index          # dropped → not watched
+        assert "space mountain" not in index  # nor its name key
+        assert "bt" in index              # sibling still watched

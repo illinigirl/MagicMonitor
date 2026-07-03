@@ -329,3 +329,51 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
   trips.sort((a, b) => (a.start_date < b.start_date ? -1 : 1));
   return trips;
 }
+
+// ─── Single-plan read for /replan ────────────────────────────────────
+
+export interface ReplanContext {
+  plan_id: string;
+  date: string;
+  park_key: ParkKey;
+  park_name: string;
+  active: boolean;
+  outcome_recorded: boolean;
+  /** Rides still in the sequence (not dropped, not completed). */
+  rides: { ride_name: string; ride_id: string }[];
+  /** ride_ids already dropped via the /replan approve flow. */
+  dropped_ride_ids: string[];
+}
+
+/**
+ * Read one shared-trip plan by its id (the PLAN# SK suffix) for the
+ * /replan page. Returns null if it doesn't exist. Keyed GetItem — no
+ * scan. The plan lives in the shared partition (USER#megan); /replan is
+ * gated to the family at the page layer, same as /trips.
+ */
+export async function getReplanContext(
+  planId: string,
+): Promise<ReplanContext | null> {
+  const resp = await client.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+    }),
+  );
+  const r = resp.Item as
+    | (PlanRow & { dropped_ride_ids?: Set<string> | string[] })
+    | undefined;
+  if (!r) return null;
+  return {
+    plan_id: planId,
+    date: r.planned_for_date ?? "",
+    park_key: (r.park_key ?? "magic_kingdom") as ParkKey,
+    park_name: findPark(r.park_key ?? "magic_kingdom")?.name ?? (r.park_key ?? ""),
+    active: Boolean(r.active),
+    outcome_recorded: Boolean(r.outcome_recorded),
+    rides: (r.ride_sequence ?? [])
+      .filter((rd) => rd.ride_id)
+      .map((rd) => ({ ride_name: rd.ride_name ?? "(unnamed)", ride_id: rd.ride_id! })),
+    dropped_ride_ids: [...(r.dropped_ride_ids ?? [])],
+  };
+}
