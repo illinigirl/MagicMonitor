@@ -270,6 +270,14 @@ def handler(event, context):
     plan_ride_index, active_plans = db.build_active_plan_ride_index(
         today_local_iso, now_et=now_et
     )
+    # ride_id → held-LL return ISO, flattened across active plans. Used to
+    # suppress useless earlier-LL alerts: if you hold an LL for a ride,
+    # only alert when an available slot beats the time you hold.
+    held_ll_by_ride: dict[str, str] = {}
+    for _p in active_plans:
+        for _rid, _ret in (_p.get("ll_holds") or {}).items():
+            if _rid and _ret:
+                held_ll_by_ride.setdefault(_rid, _ret)
     if plan_ride_index:
         print(
             f"[poller] Active plans for {today_local_iso}: "
@@ -454,8 +462,21 @@ def handler(event, context):
             # improvement, no cooldown (per design); dedupe by Pushover
             # key so a plan+favorite overlap is one push, plan framing
             # winning. Park-hours gated like every other alert.
-            if alerts_allowed(park_key) and _ll_became_earlier(
-                (existing or {}).get("ll"), attr.get("ll")
+            # Held-LL precision: if the plan holds an LL for this ride,
+            # the improvement is only useful when the available slot beats
+            # the time held (an improvement to a slot still LATER than what
+            # you hold is noise — the case Megan hit). No held LL → the
+            # meaningful-improvement rule (_ll_became_earlier) stands.
+            _held = held_ll_by_ride.get(ride_id)
+            _ll_beats_held = True
+            if _held:
+                _avail = _parse_iso(attr.get("ll", {}).get("return_start"))
+                _held_dt = _parse_iso(_held)
+                _ll_beats_held = bool(_avail and _held_dt and _avail < _held_dt)
+            if (
+                alerts_allowed(park_key)
+                and _ll_beats_held
+                and _ll_became_earlier((existing or {}).get("ll"), attr.get("ll"))
             ):
                 new_ll = attr["ll"]
                 prior_ll = (existing or {}).get("ll") or {}

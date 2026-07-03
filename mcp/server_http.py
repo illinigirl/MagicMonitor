@@ -1874,6 +1874,10 @@ def get_plan_for_day(date: str | None = None) -> dict[str, Any]:
         # ride_id the family marked "do next" from the phone (/replan), or
         # None — honor it when re-sequencing.
         "next_up": chosen.get("next_up"),
+        # {ride_id: LL return ISO} for rides the party HOLDS a Lightning
+        # Lane on (set via set_held_ll). Those rides' predicted waits are
+        # LL returns, not standby — don't treat their standby as a signal.
+        "held_lls": chosen.get("ll_holds", {}),
         "completed_rides": chosen.get("completed_rides", []),
         "dropped_rides": chosen.get("dropped_rides", []),
         "show_selections": chosen.get("show_selections", []),
@@ -2443,6 +2447,88 @@ def set_plan_alert_subscription(
             "key — they won't receive pushes until they add one at /me."
         )
     return out
+
+
+@mcp.tool()
+def set_held_ll(
+    ride: str,
+    return_time: str | None = None,
+    date: str | None = None,
+) -> dict[str, Any]:
+    """Record (or clear) a Lightning Lane you HOLD for a planned ride.
+
+    This is the key that makes LL alerts useful. When MM knows you hold an
+    LL for a ride at a given return time, it will:
+      • only alert about an EARLIER LL when a slot beats the time you hold
+        (no more "5 min earlier" pings on a ride you've got hours sooner);
+      • exclude that ride from the "busier/lighter than planned" drift math
+        (an LL'd ride isn't a standby wait, so its standby number is
+        irrelevant to how the plan is going).
+
+    Set this whenever a plan assumes a Lightning Lane for a ride — at plan
+    time (the predicted wait is the LL return, not standby) or when the
+    user books one during the day ("I got TRON at 3pm").
+
+    Args:
+        ride: Ride name or ride_id; must be in the day's plan.
+        return_time: The LL return time — "3:00 PM", "3pm", "15:00", or a
+            full ISO. OMIT (or null) to CLEAR a held LL for the ride.
+        date: Plan date (YYYY-MM-DD). Defaults to today (ET).
+
+    Returns:
+        Dict with ride_id, held_return (resolved ISO or null when cleared),
+        and days_updated.
+    """
+    target = date or _today_et_date_iso()
+    try:
+        target = datetime.fromisoformat(target).date().isoformat()
+    except ValueError:
+        return {"error": "Invalid date",
+                "error_message": f"Could not parse '{date}'. Use YYYY-MM-DD."}
+    try:
+        table = _ddb_table()
+        plans = [
+            _convert_decimals(x) for x in _query_shared_prefix(table, "PLAN#")
+            if x.get("planned_for_date") == target and not x.get("outcome_recorded")
+        ]
+        if not plans:
+            return {"error": "No plan for that day",
+                    "error_message": f"No un-recorded plan found for {target}."}
+        plans.sort(key=lambda it: it.get("planned_at") or it["SK"], reverse=True)
+        plan = next((p for p in plans if p.get("active")), plans[0])
+        # Resolve the ride against the plan's own sequence (name or id).
+        q = ride.strip().lower()
+        match = next(
+            (r for r in plan.get("ride_sequence", [])
+             if r.get("ride_id") == ride or (r.get("ride_name") or "").lower() == q
+             or q in (r.get("ride_name") or "").lower()),
+            None,
+        )
+        if not match or not match.get("ride_id"):
+            return {"error": "Ride not in plan",
+                    "error_message": f"'{ride}' isn't in the plan for {target}."}
+        ride_id = match["ride_id"]
+        held_iso = None
+        if return_time:
+            held_iso = _tool_impls.parse_ll_time(return_time, target)
+            if held_iso is None:
+                return {"error": "Invalid return_time",
+                        "error_message": f"Could not parse '{return_time}'. "
+                                         "Try '3:00 PM' or '15:00'."}
+        days = _tool_impls.apply_held_ll(
+            table, _SHARED_USER_ID, ride_id, held_iso, [plan]
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Held-LL update failed", "error_message": str(e)}
+    return {
+        "ride_id": ride_id,
+        "ride_name": match.get("ride_name"),
+        "held_return": held_iso,
+        "cleared": held_iso is None,
+        "days_updated": sorted(days),
+    }
 
 
 @mcp.tool()
