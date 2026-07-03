@@ -47,3 +47,27 @@ def test_post_failure_returns_false(monkeypatch):
 
     monkeypatch.setattr(notifier.requests, "post", fake_post)
     assert notifier._send("user-key-123", "title", "message") is False
+
+
+def test_alert_plan_low_wait_message(monkeypatch):
+    """Plan-aware low-wait: names the plan context, carries the wait +
+    baseline numbers, sends at priority 0 (opportunity, not disruption)."""
+    monkeypatch.setattr(notifier, "_get_app_token", lambda: "tok")
+    sent = {}
+
+    def fake_post(url, data=None, timeout=None):
+        sent.update(data)
+        return _FakeResp()
+
+    monkeypatch.setattr(notifier.requests, "post", fake_post)
+    ok = notifier.alert_plan_low_wait(
+        "user-key", ride_name="Space Mountain", park_name="Magic Kingdom",
+        park_key="magic_kingdom", wait_mins=15, typical_wait_mins=40,
+        plan_id="PLAN#p1",
+    )
+    assert ok is True
+    assert "Plan opportunity" in sent["title"]
+    assert "15 min" in sent["message"]
+    assert "in your plan today" in sent["message"]
+    assert "~40 min" in sent["message"]
+    assert sent["priority"] == 0

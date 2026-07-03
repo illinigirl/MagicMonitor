@@ -398,15 +398,56 @@ def handler(event, context):
                 )
 
                 if historical_fire or forecast_fire:
+                    # Two alert sources can match the same user, same as
+                    # the DOWN path: favoriting the ride generally, OR
+                    # having it (still un-ridden) in TODAY's active plan.
+                    # The plan-aware framing is more actionable ("jump to
+                    # it now, it's cheaper than planned"), so it wins via
+                    # the resolver. Plan targets come from the active-plan
+                    # ride index, which only holds ride_sequence of ACTIVE
+                    # plans inside their window — dormant plans, completed
+                    # rides, and out-of-window hours never alert.
+                    low_wait_kwargs = {
+                        "ride_name": attr["name"],
+                        "park_name": attr["park_name"],
+                        "park_key": park_key,
+                        "wait_mins": new_wait,
+                        "typical_wait_mins": (
+                            typical_for_msg if historical_fire else None
+                        ),
+                        "forecast_wait_mins": (
+                            forecast_wait if forecast_fire else None
+                        ),
+                    }
                     favoriters = filter_to_favoriters(
                         subscribers, park_key, ride_id
                     )
-                    if favoriters:
+                    plan_targets = db.lookup_plan_targets(
+                        plan_ride_index, ride_id, attr["name"]
+                    )
+                    candidates: list[alert_routing.AlertCandidate] = []
+                    for target_user, target_plan in plan_targets:
+                        candidates.append(alert_routing.AlertCandidate(
+                            user_id=target_user,
+                            priority=alert_routing.PRIORITY_PLAN,
+                            notifier_fn=notifier.alert_plan_low_wait,
+                            kwargs={**low_wait_kwargs, "plan_id": target_plan},
+                        ))
+                    for fav_user in favoriters:
+                        candidates.append(alert_routing.AlertCandidate(
+                            user_id=fav_user,
+                            priority=alert_routing.PRIORITY_FAVORITE,
+                            notifier_fn=notifier.alert_low_wait,
+                            kwargs=dict(low_wait_kwargs),
+                        ))
+
+                    resolved = alert_routing.resolve_alert_recipients(candidates)
+                    if resolved:
                         # Cooldown is set per-ride (not per-recipient)
                         # — same pattern as DOWN. Set it only when we
                         # actually fan out so a window with no
-                        # favoriters can still alert the next user
-                        # who favorites the ride.
+                        # recipients can still alert the next user who
+                        # favorites/plans the ride.
                         db.mark_low_wait_alert_sent(ride_id)
                         # Log which baseline(s) tripped so post-hoc
                         # log analysis can audit false-positive rate
@@ -419,22 +460,20 @@ def handler(event, context):
                         print(
                             f"[poller] {attr['name']} LOW WAIT "
                             f"({new_wait}m, {', '.join(triggers)}): "
-                            f"alerting {len(favoriters)} favoriters"
+                            f"{len(favoriters)} favoriters, "
+                            f"{len(plan_targets)} plan targets → "
+                            f"{len(resolved)} unique recipients"
                         )
-                        total_alerts += _fanout(
-                            favoriters, get_user_key,
-                            notifier.alert_low_wait,
-                            ride_name=attr["name"],
-                            park_name=attr["park_name"],
-                            park_key=park_key,
-                            wait_mins=new_wait,
-                            typical_wait_mins=(
-                                typical_for_msg if historical_fire else None
-                            ),
-                            forecast_wait_mins=(
-                                forecast_wait if forecast_fire else None
-                            ),
-                        )
+                        for target_user, candidate in resolved.items():
+                            user_key = get_user_key(target_user)
+                            if not user_key:
+                                print(
+                                    f"[poller] No pushover_user_key for "
+                                    f"user {target_user} — skipping"
+                                )
+                                continue
+                            if candidate.notifier_fn(user_key, **candidate.kwargs):
+                                total_alerts += 1
 
             # No status change → nothing more to do for this ride.
             if new_status == old_status:
