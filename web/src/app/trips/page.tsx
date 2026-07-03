@@ -226,9 +226,9 @@ function DayCard({ day }: { day: TripDay }) {
         {day.active && !day.outcome_recorded && day.rides.length > 0 && (
           <a
             href={`/replan?plan=${encodeURIComponent(day.plan_id)}`}
-            className="mt-3 inline-block text-xs text-gold hover:underline"
+            className="mt-3 inline-flex items-center gap-1 rounded-md bg-gold/15 border border-gold/40 px-3 py-1.5 text-xs font-medium text-gold hover:bg-gold/25"
           >
-            Adjust / drop rides →
+            Today’s schedule — waits, mark done, LLs →
           </a>
         )}
       </div>

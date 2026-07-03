@@ -12,12 +12,13 @@
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
-import { getReplanContext } from "@/lib/dynamodb";
+import { getParkRides, getReplanContext } from "@/lib/dynamodb";
 import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
 
 import ReplanControls from "./ReplanControls";
 import AskClaude from "./AskClaude";
+import HeldLlInput from "./HeldLlInput";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +42,9 @@ export default async function ReplanPage({
   // wait / earlier LL / back-up) → Do next; "storm"/absent → neutral.
   const kind = sp.type ?? "";
   const ctx = planId ? await getReplanContext(planId) : null;
+  // Live waits for the plan's park, to show current wait per ride.
+  const liveWaits = ctx ? await getParkRides(ctx.park_key) : [];
+  const waitById = new Map(liveWaits.map((r) => [r.ride_id, r]));
 
   if (!ctx) {
     return (
@@ -105,11 +109,20 @@ export default async function ReplanPage({
               <div className="flex items-center gap-3">
                 <span className="text-fg-3 text-xs w-5">{i + 1}.</span>
                 <span className="text-fg-0 text-sm flex-1">{r.ride_name}</span>
+                <CurrentWait live={waitById.get(r.ride_id)} />
                 {isAffected && (
                   <span className="rounded-full bg-warn/15 px-2 py-0.5 text-xs text-warn">
                     alert
                   </span>
                 )}
+              </div>
+              <div className="mt-2 pl-8">
+                <HeldLlInput
+                  planId={ctx.plan_id}
+                  rideId={r.ride_id}
+                  dateIso={ctx.date}
+                  heldIso={ctx.held_lls[r.ride_id] ?? null}
+                />
               </div>
               <div className="mt-2 pl-8">
                 <ReplanControls
@@ -133,8 +146,36 @@ export default async function ReplanPage({
       </div>
 
       <p className="mt-4 text-fg-3 text-xs">
+        Waits are live (poller refreshes every ~2 min) ·{" "}
         <a href="/trips" className="underline">All trips &amp; days →</a>
       </p>
     </div>
+  );
+}
+
+/** Compact current-wait chip for a ride, from the live STATE row. */
+function CurrentWait({
+  live,
+}: {
+  live?: { status: string; wait_mins: number | null };
+}) {
+  if (!live) return null;
+  if (live.status === "DOWN")
+    return (
+      <span className="shrink-0 rounded-full bg-bad/15 px-2 py-0.5 text-xs font-medium text-bad">
+        Down
+      </span>
+    );
+  if (live.status === "OPERATING" && live.wait_mins !== null)
+    return (
+      <span className="shrink-0 text-fg-0 text-sm font-semibold tabular-nums">
+        {live.wait_mins}
+        <span className="text-fg-3 text-xs font-normal ml-0.5">min</span>
+      </span>
+    );
+  return (
+    <span className="shrink-0 text-fg-3 text-xs">
+      {live.status === "OPERATING" ? "open" : live.status.toLowerCase()}
+    </span>
   );
 }
