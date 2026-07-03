@@ -410,3 +410,22 @@ describe("getUpcomingTrips alert_subscribers", () => {
     expect(trips[0].days[1].alert_subscribers).toEqual([]);
   });
 });
+
+describe("getMemberNames", () => {
+  it("resolves subs to profile names, dedupes, and falls back on missing", async () => {
+    // One GetItem per unique sub; second call returns no profile.
+    sendMock
+      .mockResolvedValueOnce({ Item: { name: "Michele" } })
+      .mockResolvedValueOnce({ Item: undefined });
+    const { getMemberNames } = await import("./dynamodb");
+    const names = await getMemberNames([
+      "01db7540-aaaa",
+      "01db7540-aaaa", // duplicate → one lookup
+      "beef1234-bbbb",
+    ]);
+    expect(sendMock).toHaveBeenCalledTimes(2); // deduped
+    expect(names["01db7540-aaaa"]).toBe("Michele");
+    // Missing profile → short-id fallback, never blank.
+    expect(names["beef1234-bbbb"]).toBe("beef12…");
+  });
+});

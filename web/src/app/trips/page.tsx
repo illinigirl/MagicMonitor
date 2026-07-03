@@ -14,7 +14,13 @@
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
-import { getUpcomingTrips, type Trip, type TripDay } from "@/lib/dynamodb";
+import {
+  getMemberNames,
+  getUpcomingTrips,
+  SHARED_TRIP_OWNER_SUB,
+  type Trip,
+  type TripDay,
+} from "@/lib/dynamodb";
 import { findPark } from "@/lib/parks";
 import { isTripsAllowed } from "@/lib/trips-access";
 
@@ -64,6 +70,14 @@ export default async function TripsPage() {
   const trips = await getUpcomingTrips();
   const viewerSub = session?.user?.id ?? "";
 
+  // Resolve every subscriber sub (across all trips) + the owner to names,
+  // once, so each trip can show its "who's getting alerts" roster.
+  const allSubs = new Set<string>([SHARED_TRIP_OWNER_SUB]);
+  for (const t of trips) {
+    for (const d of t.days) for (const s of d.alert_subscribers) allSubs.add(s);
+  }
+  const memberNames = await getMemberNames([...allSubs]);
+
   return (
     <div className="mx-auto max-w-2xl px-6 py-12">
       <header className="mb-8">
@@ -87,7 +101,12 @@ export default async function TripsPage() {
       ) : (
         <div className="space-y-10">
           {trips.map((trip) => (
-            <TripSection key={trip.trip_id} trip={trip} viewerSub={viewerSub} />
+            <TripSection
+              key={trip.trip_id}
+              trip={trip}
+              viewerSub={viewerSub}
+              memberNames={memberNames}
+            />
           ))}
         </div>
       )}
@@ -95,15 +114,50 @@ export default async function TripsPage() {
   );
 }
 
-function TripSection({ trip, viewerSub }: { trip: Trip; viewerSub: string }) {
+/** Display label for a subscriber sub — "You" for the viewer, else the
+ *  resolved profile name. */
+function labelFor(
+  sub: string,
+  memberNames: Record<string, string>,
+  viewerSub: string,
+): string {
+  if (sub === viewerSub) return "You";
+  return memberNames[sub] ?? `${sub.slice(0, 6)}…`;
+}
+
+function TripSection({
+  trip,
+  viewerSub,
+  memberNames,
+}: {
+  trip: Trip;
+  viewerSub: string;
+  memberNames: Record<string, string>;
+}) {
   // The toggle applies to days still in play (recorded days are history —
-  // their alerts can't fire again). Subscribed = opted in on ANY such day;
-  // the owner is implicitly subscribed server-side, so for them this
-  // toggle just adds a redundant (deduped) entry — harmless.
+  // their alerts can't fire again).
   const openDays = trip.days.filter((d) => !d.outcome_recorded);
-  const subscribed = openDays.some((d) =>
-    d.alert_subscribers.includes(viewerSub),
-  );
+
+  // The plan owner is alerted implicitly (server-side) and is never in
+  // alert_subscribers — so their toggle must not depend on the set.
+  const viewerIsOwner = viewerSub === SHARED_TRIP_OWNER_SUB;
+  const subscribed =
+    viewerIsOwner ||
+    openDays.some((d) => d.alert_subscribers.includes(viewerSub));
+
+  // Roster: everyone getting alerts = owner (always) + the union of
+  // stored subscribers across open days, resolved to names. Dedupe the
+  // owner out of the subscriber list so they aren't shown twice.
+  const subscriberSubs = new Set<string>();
+  for (const d of openDays) for (const s of d.alert_subscribers) subscriberSubs.add(s);
+  subscriberSubs.delete(SHARED_TRIP_OWNER_SUB);
+  const roster = [
+    labelFor(SHARED_TRIP_OWNER_SUB, memberNames, viewerSub) + " (owner)",
+    ...[...subscriberSubs]
+      .map((s) => labelFor(s, memberNames, viewerSub))
+      .sort(),
+  ];
+
   return (
     <section>
       <div className="mb-3 flex items-start justify-between gap-3">
@@ -115,13 +169,25 @@ function TripSection({ trip, viewerSub }: { trip: Trip; viewerSub: string }) {
             {formatDay(trip.start_date)} &ndash; {formatDay(trip.end_date)} ·{" "}
             {trip.days.length} {trip.days.length === 1 ? "day" : "days"}
           </p>
+          {openDays.length > 0 && (
+            <p className="text-fg-3 text-xs mt-1.5">
+              Getting alerts: {roster.join(" · ")}
+            </p>
+          )}
         </div>
-        {openDays.length > 0 && (
-          <TripAlertToggle
-            planIds={openDays.map((d) => d.plan_id)}
-            subscribed={subscribed}
-          />
-        )}
+        {openDays.length > 0 &&
+          (viewerIsOwner ? (
+            // Owner can't opt out of their own plan's alerts — show the
+            // state instead of a toggle that would write a redundant row.
+            <span className="shrink-0 rounded-full border border-ok/40 bg-ok/15 px-3 py-1 text-xs font-medium text-ok">
+              You&rsquo;re alerted (your plan)
+            </span>
+          ) : (
+            <TripAlertToggle
+              planIds={openDays.map((d) => d.plan_id)}
+              subscribed={subscribed}
+            />
+          ))}
       </div>
       <div className="space-y-3">
         {trip.days.map((day) => (
