@@ -232,6 +232,17 @@ function DayCard({ day }: { day: TripDay }) {
         ) : (
           <p className="mt-3 text-sm text-fg-3">No rides lined up yet.</p>
         )}
+        {/* Adjust entry point — active, in-play days only. Reaches the
+            same /replan surface an alert links to, so the plan is
+            adjustable from the dashboard, not just from a live push. */}
+        {day.active && !day.outcome_recorded && day.rides.length > 0 && (
+          <a
+            href={`/replan?plan=${encodeURIComponent(day.plan_id)}`}
+            className="mt-3 inline-block text-xs text-gold hover:underline"
+          >
+            Adjust / drop rides →
+          </a>
+        )}
       </div>
     </div>
   );
