@@ -732,3 +732,32 @@ class TestPlanAlertSubscription:
                            planned_for_date=_future(10), trip_id="t1")
         row = next(v for (p, s), v in stub.items.items() if s.startswith("PLAN#"))
         assert row["alert_subscribers"] == {"sub-sis"}
+
+
+class TestSplitDroppedRides:
+    """split_dropped_rides keeps the MCP planner's view in sync with the
+    poller: rides in dropped_ride_ids (the /replan atomic set) leave
+    ride_sequence and surface separately."""
+
+    def test_no_drops_returns_all_planned(self):
+        import _tool_impls
+        plan = {"ride_sequence": [{"ride_id": "a"}, {"ride_id": "b"}]}
+        still, dropped = _tool_impls.split_dropped_rides(plan)
+        assert [r["ride_id"] for r in still] == ["a", "b"]
+        assert dropped == []
+
+    def test_dropped_split_out(self):
+        import _tool_impls
+        plan = {
+            "ride_sequence": [{"ride_id": "a"}, {"ride_id": "b"}, {"ride_id": "c"}],
+            "dropped_ride_ids": ["b"],
+        }
+        still, dropped = _tool_impls.split_dropped_rides(plan)
+        assert [r["ride_id"] for r in still] == ["a", "c"]
+        assert [r["ride_id"] for r in dropped] == ["b"]
+
+    def test_accepts_set_or_list(self):
+        import _tool_impls
+        plan = {"ride_sequence": [{"ride_id": "a"}], "dropped_ride_ids": {"a"}}
+        still, dropped = _tool_impls.split_dropped_rides(plan)
+        assert still == [] and [r["ride_id"] for r in dropped] == ["a"]

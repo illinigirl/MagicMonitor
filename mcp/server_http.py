@@ -1812,6 +1812,12 @@ def get_plan_for_day(date: str | None = None) -> dict[str, Any]:
         body (park_key, trip_id, active, activated_at, plan_window,
         ride_sequence, completed_rides, dropped_rides, show_selections,
         notes, created_by, outcome_recorded).
+
+        `ride_sequence` is the EFFECTIVE plan: rides the family dropped
+        from the phone via the /replan flow are already removed and listed
+        separately under `dropped_via_replan`. Re-plan around what's in
+        ride_sequence; adding one of the dropped rides back (add_ride_to_
+        plan) automatically un-drops it.
     """
     target = date or _today_et_date_iso()
     try:
@@ -1849,6 +1855,11 @@ def get_plan_for_day(date: str | None = None) -> dict[str, Any]:
     matches.sort(key=lambda it: it.get("planned_at") or it["SK"], reverse=True)
     chosen = next((m for m in matches if m.get("active")), matches[0])
 
+    # Present the EFFECTIVE sequence: rides the family dropped from the
+    # phone via /replan are removed from ride_sequence and surfaced under
+    # dropped_via_replan, so this matches what the poller actually watches.
+    still_planned, dropped_via_replan = _tool_impls.split_dropped_rides(chosen)
+
     return {
         "date": target,
         "found": True,
@@ -1858,7 +1869,8 @@ def get_plan_for_day(date: str | None = None) -> dict[str, Any]:
         "active": bool(chosen.get("active")),
         "activated_at": chosen.get("activated_at"),
         "plan_window": chosen.get("plan_window"),
-        "ride_sequence": chosen.get("ride_sequence", []),
+        "ride_sequence": still_planned,
+        "dropped_via_replan": dropped_via_replan,
         "completed_rides": chosen.get("completed_rides", []),
         "dropped_rides": chosen.get("dropped_rides", []),
         "show_selections": chosen.get("show_selections", []),
@@ -1954,7 +1966,8 @@ def get_upcoming_trip() -> dict[str, Any]:
         "park_key": r.get("park_key"),
         "plan_id": r["SK"][len("PLAN#"):],
         "active": bool(r.get("active")),
-        "ride_count": len(r.get("ride_sequence") or []),
+        # Effective count — rides dropped via /replan don't count.
+        "ride_count": len(_tool_impls.split_dropped_rides(r)[0]),
         "outcome_recorded": bool(r.get("outcome_recorded")),
     } for r in rows]
 
@@ -2604,10 +2617,16 @@ def add_ride_to_plan(
     ride_seq.append(entry)
 
     try:
+        # Re-adding a ride also UN-DROPS it: clear it from dropped_ride_ids
+        # (the /replan drop set) so a ride dropped from the phone and then
+        # re-added by Claude isn't silently kept off the watch set. DELETE
+        # of an absent member is a harmless no-op.
+        vals = _floats_to_decimals({":seq": ride_seq})
+        vals[":dropid"] = {ride_id}
         table.update_item(
             Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk},
-            UpdateExpression="SET ride_sequence = :seq",
-            ExpressionAttributeValues=_floats_to_decimals({":seq": ride_seq}),
+            UpdateExpression="SET ride_sequence = :seq DELETE dropped_ride_ids :dropid",
+            ExpressionAttributeValues=vals,
             ConditionExpression="attribute_exists(PK)",
         )
     except Exception as e:
