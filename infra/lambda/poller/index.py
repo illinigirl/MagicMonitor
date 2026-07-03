@@ -128,6 +128,13 @@ def _parse_iso(iso: str | None):
 # remaining rides) at/above which we nudge a re-plan. Env-tunable.
 PLAN_DRIFT_THRESHOLD_MIN = int(os.environ.get("PLAN_DRIFT_THRESHOLD_MIN", "30"))
 
+# Plan-drift is OFF by default: predicted_wait_min bakes in Lightning
+# Lane assumptions (an LL'd headliner is predicted ~15 min), so comparing
+# it to the current STANDBY wait falsely reads "busier than planned" for
+# every LL ride. Re-enable only once the held-LL record lets the drift
+# math exclude LL rides (or compare LL-return-vs-held). Env: "true".
+PLAN_DRIFT_ENABLED = os.environ.get("PLAN_DRIFT_ENABLED", "false").lower() == "true"
+
 
 def _compute_plan_drift(rides: list[dict], current_waits: dict[str, int]):
     """Sum (predicted_wait_min − current_wait) over remaining planned
@@ -850,7 +857,7 @@ def handler(event, context):
     # instead of per-ride low-wait spam on a drifting day. Dedupe
     # active_plans (per-recipient) down to one drift computation per plan.
     seen_drift_plans: set[str] = set()
-    for plan in active_plans:
+    for plan in (active_plans if PLAN_DRIFT_ENABLED else []):
         plan_id = plan["plan_id"]
         if plan_id in seen_drift_plans:
             continue

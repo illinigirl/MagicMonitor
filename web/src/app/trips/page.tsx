@@ -23,6 +23,7 @@ import {
 } from "@/lib/dynamodb";
 import { findPark } from "@/lib/parks";
 import { isTripsAllowed } from "@/lib/trips-access";
+import { FamilyOnly } from "@/components/auth/FamilyOnly";
 
 import TripAlertToggle from "./TripAlertToggle";
 
@@ -51,20 +52,7 @@ export default async function TripsPage() {
 
   // Family-only gate: this surface shows shared data.
   if (!isTripsAllowed(session.user.email)) {
-    return (
-      <div className="mx-auto max-w-2xl px-6 py-12">
-        <header className="mb-6">
-          <p className="label-meta">Trips</p>
-          <h2 className="display text-3xl font-medium mt-2">Family trips only</h2>
-        </header>
-        <p className="text-fg-2 leading-relaxed">
-          The trip planner is a shared family space, so this page is
-          limited to family accounts. You&rsquo;re signed in as{" "}
-          <span className="text-fg-1">{session.user.email}</span> — if that
-          should have access, it needs adding to the allowlist.
-        </p>
-      </div>
-    );
+    return <FamilyOnly email={session.user.email} />;
   }
 
   const trips = await getUpcomingTrips();

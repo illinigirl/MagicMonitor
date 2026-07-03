@@ -14,6 +14,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { getReplanContext } from "@/lib/dynamodb";
 import { isTripsAllowed } from "@/lib/trips-access";
+import { FamilyOnly } from "@/components/auth/FamilyOnly";
 
 import ReplanControls from "./ReplanControls";
 
@@ -29,11 +30,7 @@ export default async function ReplanPage({
     redirect("/api/auth/signin?callbackUrl=/replan");
   }
   if (!isTripsAllowed(session.user?.email)) {
-    return (
-      <div className="mx-auto max-w-md px-6 py-16 text-center">
-        <p className="text-fg-1">This trip is family-only.</p>
-      </div>
-    );
+    return <FamilyOnly email={session.user?.email} />;
   }
 
   const sp = await searchParams;
