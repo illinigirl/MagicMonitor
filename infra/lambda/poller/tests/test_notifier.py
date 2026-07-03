@@ -218,3 +218,33 @@ class TestOpportunityAndStormDeepLinks:
         )
         url = sent["data"]["url"]
         assert "/replan?plan=p1" in url and "type=storm" in url and "ride=" not in url
+
+
+class TestAlertPlanDrift:
+    """Aggregated plan-drift nudge: direction-aware copy + /replan link."""
+
+    def _capture(self, monkeypatch):
+        monkeypatch.setattr(notifier, "_get_app_token", lambda: "tok")
+        sent = {}
+        monkeypatch.setattr(
+            notifier.requests, "post",
+            lambda url, data=None, timeout=None: (sent.update(data=data) or _FakeResp()),
+        )
+        return sent
+
+    def test_lighter_says_ahead_and_links(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_plan_drift(
+            "key", park_name="EPCOT", park_key="epcot", net_minutes=65, plan_id="p1",
+        )
+        assert "ahead of plan" in sent["data"]["title"].lower() or "ahead" in sent["data"]["title"]
+        assert "~65 min under" in sent["data"]["message"]
+        assert "/replan?plan=p1" in sent["data"]["url"] and "type=drift" in sent["data"]["url"]
+
+    def test_heavier_says_busier(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_plan_drift(
+            "key", park_name="EPCOT", park_key="epcot", net_minutes=-75, plan_id="p1",
+        )
+        assert "busier" in sent["data"]["title"].lower()
+        assert "~75 min over" in sent["data"]["message"]
