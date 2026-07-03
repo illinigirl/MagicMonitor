@@ -135,6 +135,11 @@ def _convert_decimals(obj: Any) -> Any:
         return {k: _convert_decimals(v) for k, v in obj.items()}
     if isinstance(obj, list):
         return [_convert_decimals(v) for v in obj]
+    if isinstance(obj, set):
+        # DynamoDB String Sets (e.g. alert_subscribers) come back as Python
+        # sets, which aren't JSON-serializable — a raw row in a tool return
+        # would crash the MCP runtime. Sorted list keeps output stable.
+        return sorted(_convert_decimals(v) for v in obj)
     return obj
 
 
@@ -2232,6 +2237,7 @@ def _build_plan_item(
     active: bool = False,
     activated_at: str | None = None,
     created_by: str | None = None,
+    alert_subscribers: set[str] | None = None,
 ) -> dict[str, Any]:
     """Assemble a PLAN# row. Shared by record_plan (single day, often
     same-day + active) and create_trip (one dormant row per trip day).
@@ -2247,8 +2253,15 @@ def _build_plan_item(
       - `created_by`: attribution label (friendly user id). Defaults to
         user_id. In the shared-trip model multiple people write to one
         partition, so we stamp who recorded each row.
+      - `alert_subscribers` (2026-07-03): DDB String Set of ADDITIONAL
+        alert recipients (ids with a USER#<id>/PROFILE row — Cognito subs
+        for family members). The partition owner is IMPLICIT and always
+        alerted; absent attribute = owner-only, exactly the pre-feature
+        behavior (no migration). Omitted when empty (DDB rejects empty
+        sets). Mutated only via atomic ADD/DELETE (see
+        set_plan_alert_subscription) so web + MCP edits can't race.
     """
-    return {
+    item = {
         "PK": f"USER#{user_id}",
         "SK": f"PLAN#{plan_ts}",
         "park_key": park_key,
@@ -2271,6 +2284,64 @@ def _build_plan_item(
         "outcome_recorded": False,
         "ttl": _plan_pending_ttl(planned_for_date),
     }
+    if alert_subscribers:
+        item["alert_subscribers"] = set(alert_subscribers)
+    return item
+
+
+def _resolve_alert_member(
+    table, member: str, friendly_to_sub: dict[str, str] | None = None
+) -> tuple[str | None, bool]:
+    """Resolve a member label to the profile id the poller alerts on.
+
+    Tries `member` as-given (a Cognito sub, or a legacy friendly id with
+    its own profile row), then via a friendly-name→sub map (available on
+    the HTTP transport from MCP_SUB_USER_MAP). The poller looks up
+    Pushover keys at USER#<id>/PROFILE, so an id only "works" if that row
+    exists — family members create it by signing into the dashboard and
+    saving /me once.
+
+    Returns (resolved_id, has_pushover_key); (None, False) when no
+    profile row exists under any candidate id.
+    """
+    candidates = [member]
+    if friendly_to_sub:
+        mapped = friendly_to_sub.get(member.strip().lower())
+        if mapped:
+            candidates.append(mapped)
+    for cand in candidates:
+        row = table.get_item(
+            Key={"PK": f"USER#{cand}", "SK": "PROFILE"}
+        ).get("Item")
+        if row:
+            return cand, bool(row.get("pushover_user_key"))
+    return None, False
+
+
+def _apply_alert_subscription(
+    table, user_id: str, member_id: str, subscribed: bool,
+    plan_rows: list[dict],
+) -> list[str]:
+    """Atomically ADD/DELETE `member_id` in each plan row's
+    alert_subscribers String Set.
+
+    Set-level ADD/DELETE (not read-modify-write) so a concurrent MCP plan
+    edit or web toggle can't lose the change — and it never touches the
+    attributes the plan-edit tools rewrite. DELETE removing the last
+    member removes the attribute entirely, which reads back as
+    owner-only (the default). Returns the affected planned_for_dates.
+    """
+    op = "ADD" if subscribed else "DELETE"
+    updated: list[str] = []
+    for r in plan_rows:
+        table.update_item(
+            Key={"PK": f"USER#{user_id}", "SK": r["SK"]},
+            UpdateExpression=f"{op} alert_subscribers :m",
+            ExpressionAttributeValues={":m": {member_id}},
+            ConditionExpression="attribute_exists(PK)",
+        )
+        updated.append(r.get("planned_for_date") or r["SK"])
+    return updated
 
 
 def _bias_confidence(n: int) -> str:

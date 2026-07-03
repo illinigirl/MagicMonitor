@@ -444,3 +444,49 @@ class TestFanoutPagination:
             })
         favs = db.get_user_favorites_for_park("megan", "magic_kingdom")
         assert favs == {"r1", "r2", "r3"}
+
+
+# ── Plan alert subscribers fanout (2026-07-03) ──
+
+class TestPlanAlertSubscribersFanout:
+    """alert_subscribers on a PLAN# row adds recipients to BOTH fanout
+    surfaces (per-ride index for DOWN/UP/low-wait, active_plans for
+    weather). Absent attribute = owner-only — the pre-feature behavior."""
+
+    def setup_method(self):
+        self.stub = _StubTable()
+        _swap_in_stub(self.stub)
+
+    def _put_plan(self, plan_id, subscribers=None):
+        item = {
+            "PK": "USER#megan",
+            "SK": f"PLAN#{plan_id}",
+            "planned_for_date": "2026-06-23",
+            "outcome_recorded": False,
+            "active": True,
+            "park_key": "magic_kingdom",
+            "ride_sequence": [{"ride_id": "sm", "ride_name": "Space Mountain"}],
+        }
+        if subscribers:
+            item["alert_subscribers"] = set(subscribers)
+        self.stub.put_item(Item=item)
+
+    def test_absent_attribute_is_owner_only(self):
+        self._put_plan("p1")
+        index, active_plans = db.build_active_plan_ride_index("2026-06-23")
+        assert index["sm"] == [("megan", "p1")]
+        assert [p["user_id"] for p in active_plans] == ["megan"]
+
+    def test_subscribers_expand_both_surfaces(self):
+        self._put_plan("p1", subscribers={"sub-jim", "sub-sis"})
+        index, active_plans = db.build_active_plan_ride_index("2026-06-23")
+        # Ride index: owner + both subscribers, owner first.
+        assert set(index["sm"]) == {("megan", "p1"), ("sub-jim", "p1"), ("sub-sis", "p1")}
+        assert index["sm"][0] == ("megan", "p1")
+        # Weather surface: one active_plans entry per recipient.
+        assert {p["user_id"] for p in active_plans} == {"megan", "sub-jim", "sub-sis"}
+
+    def test_owner_in_subscribers_not_duplicated(self):
+        self._put_plan("p1", subscribers={"megan", "sub-jim"})
+        index, _ = db.build_active_plan_ride_index("2026-06-23")
+        assert sorted(index["sm"]) == [("megan", "p1"), ("sub-jim", "p1")]

@@ -553,20 +553,34 @@ def build_active_plan_ride_index(
                 item.get("plan_window"), now_et
             ):
                 continue
-            active_plans.append({
-                "user_id":   user_id,
-                "plan_id":   plan_id,
-                "park_key":  item.get("park_key"),
-                # park_name isn't stored on the plan row, but it's
-                # derivable from park_key in the handler via the same
-                # PARK_NAME lookup the notifier uses. Leaving the slot
-                # here for clarity.
-            })
+            # Alert recipients (2026-07-03): the partition owner is always
+            # implicit, plus any opted-in family members from the row's
+            # alert_subscribers String Set (ids with USER#<id>/PROFILE
+            # rows — see set_plan_alert_subscription in the MCP). Absent
+            # attribute = owner-only, the pre-feature behavior. Each
+            # recipient gets their own index/active_plans entries; the
+            # weather path's per-user dedup + per-(user, plan) cooldowns
+            # already handle the rest.
+            subscribers = item.get("alert_subscribers") or set()
+            recipients = [user_id] + sorted(
+                s for s in subscribers if s and s != user_id
+            )
+            for recipient in recipients:
+                active_plans.append({
+                    "user_id":   recipient,
+                    "plan_id":   plan_id,
+                    "park_key":  item.get("park_key"),
+                    # park_name isn't stored on the plan row, but it's
+                    # derivable from park_key in the handler via the same
+                    # PARK_NAME lookup the notifier uses. Leaving the slot
+                    # here for clarity.
+                })
             for ride in item.get("ride_sequence", []) or []:
                 ride_id = ride.get("ride_id")
                 ride_name = ride.get("ride_name")
                 for key in filter(None, (ride_id, (ride_name or "").lower())):
-                    index.setdefault(key, []).append((user_id, plan_id))
+                    for recipient in recipients:
+                        index.setdefault(key, []).append((recipient, plan_id))
         last_evaluated_key = resp.get("LastEvaluatedKey")
         if not last_evaluated_key:
             break
