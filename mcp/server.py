@@ -1896,7 +1896,11 @@ def get_plan_for_day(
         "active": bool(chosen.get("active")),
         "activated_at": chosen.get("activated_at"),
         "plan_window": chosen.get("plan_window"),
-        "ride_sequence": chosen.get("ride_sequence", []),
+        # Effective sequence — rides dropped from the phone via /replan are
+        # removed here (surfaced under dropped_via_replan) to match what the
+        # poller watches.
+        "ride_sequence": _tool_impls.split_dropped_rides(chosen)[0],
+        "dropped_via_replan": _tool_impls.split_dropped_rides(chosen)[1],
         "completed_rides": chosen.get("completed_rides", []),
         "dropped_rides": chosen.get("dropped_rides", []),
         "show_selections": chosen.get("show_selections", []),
@@ -1995,7 +1999,8 @@ def get_upcoming_trip(user_id: str = _DEFAULT_USER_ID) -> dict[str, Any]:
         "park_key": r.get("park_key"),
         "plan_id": r["SK"][len("PLAN#"):],
         "active": bool(r.get("active")),
-        "ride_count": len(r.get("ride_sequence") or []),
+        # Effective count — rides dropped via /replan don't count.
+        "ride_count": len(_tool_impls.split_dropped_rides(r)[0]),
         "outcome_recorded": bool(r.get("outcome_recorded")),
     } for r in rows]
 
@@ -3015,10 +3020,15 @@ def add_ride_to_plan(
     ride_seq.append(new_entry)
 
     try:
+        # Re-adding un-drops: also clear the ride from dropped_ride_ids
+        # (the /replan drop set) so a phone-dropped ride re-added here isn't
+        # silently kept off the watch set. DELETE of an absent member no-ops.
+        vals = _floats_to_decimals({":seq": ride_seq})
+        vals[":dropid"] = {ride_id}
         table.update_item(
             Key={"PK": f"USER#{user_id}", "SK": sk},
-            UpdateExpression="SET ride_sequence = :seq",
-            ExpressionAttributeValues=_floats_to_decimals({":seq": ride_seq}),
+            UpdateExpression="SET ride_sequence = :seq DELETE dropped_ride_ids :dropid",
+            ExpressionAttributeValues=vals,
             ConditionExpression="attribute_exists(PK)",
         )
     except Exception as e:

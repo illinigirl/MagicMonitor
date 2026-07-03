@@ -2622,6 +2622,27 @@ def _compute_calibration_summary(
     }
 
 
+def split_dropped_rides(
+    plan: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split a plan's ride_sequence into (still-planned, dropped-via-replan)
+    using the plan's dropped_ride_ids.
+
+    dropped_ride_ids is the atomic set the /replan approve flow writes when
+    the family drops a disrupted ride from the phone (no Claude app). The
+    poller already excludes those rides from its watch set; this keeps the
+    MCP planner's view in sync so Claude re-plans around the SAME effective
+    sequence — not a stale one that still lists a ride the family dropped.
+    """
+    dropped_ids = set(plan.get("dropped_ride_ids") or [])
+    seq = plan.get("ride_sequence") or []
+    if not dropped_ids:
+        return list(seq), []
+    still = [r for r in seq if r.get("ride_id") not in dropped_ids]
+    dropped = [r for r in seq if r.get("ride_id") in dropped_ids]
+    return still, dropped
+
+
 def _pop_ride_from_sequence(
     ride_sequence: list[dict[str, Any]],
     ride_id: str,
