@@ -2,9 +2,10 @@
 //
 // Shows ONE park's waits (a home-screen widget shouldn't try to be the
 // whole park map). Which park:
-//   1. If you have an ACTIVE PLAN today → that park (auto — the "right
-//      park for the day", no config).
-//   2. Else the park you PIN via the widget Parameter (see setup #5).
+//   1. A park PINNED via the widget Parameter always wins — a pinned
+//      widget stays put (see setup #5).
+//   2. Else, if you have an ACTIVE PLAN today → that park (a blank
+//      widget auto-follows the plan — the "right park for the day").
 //   3. Else your park with the most favorites (never blank).
 // Plus DOWN rides flagged and current temp/conditions at WDW.
 //
@@ -18,7 +19,9 @@
 //      "MM Waits". Small fits ~5 rides; medium/large fit more.
 //   5. (Optional) Pin a park: long-press the widget → Edit Widget →
 //      Parameter → type a park (epcot, MK, "hollywood studios", AK…).
-//      Leave it blank to auto-follow today's plan.
+//      A pinned widget always stays on that park. Leave it blank to
+//      auto-follow today's plan. (So: pin the parks you always want to
+//      watch, and keep one blank widget as your plan-of-the-day.)
 //
 // iOS refreshes widgets on its own cadence (~5–15 min); tap to open
 // /waits for live-now numbers.
@@ -74,21 +77,22 @@ async function run() {
     return finish(w);
   }
 
-  // Decide the single park + its rides. Plan wins; then pinned param;
-  // then largest favorites group.
-  const planActive = data.plan && data.plan.rides.length > 0;
+  // Decide the single park + its rides. A PINNED param wins (a pinned
+  // widget stays put); else today's active plan; else largest favorites.
   const groups = data.parks ?? [];
+  const pinned = matchPark(groups, args.widgetParameter);
+  const planActive = data.plan && data.plan.rides.length > 0;
   let parkLabel, rides, planning = false;
 
-  if (planActive) {
+  if (pinned) {
+    parkLabel = pinned.park_name;
+    rides = pinned.rides;
+  } else if (planActive) {
     planning = true;
     parkLabel = data.plan.park_name;
     rides = data.plan.rides.map((r, i) => ({ ...r, prefix: `${i + 1}. ` }));
   } else {
-    const pinned = matchPark(groups, args.widgetParameter);
-    const group =
-      pinned ||
-      [...groups].sort((a, b) => b.rides.length - a.rides.length)[0];
+    const group = [...groups].sort((a, b) => b.rides.length - a.rides.length)[0];
     if (group) {
       parkLabel = group.park_name;
       rides = group.rides;
