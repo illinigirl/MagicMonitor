@@ -43,6 +43,14 @@ _REQUIRED_FIELDS = ("redirect_uris",)
 # Cognito's ClientName max length per the AWS API docs.
 _COGNITO_CLIENT_NAME_MAX = 128
 
+# Refresh-token lifetime for DCR-minted clients. Cognito's default is 30
+# days, which forced a re-login per device every month — the actual
+# "MCP got flaky again" cause. 365 days = a once-a-year re-auth, a
+# reasonable trade for an allowlisted personal/family MCP. (Cognito
+# range: 60 min – 10 years.) Access tokens keep their short default;
+# only the refresh window is extended.
+_REFRESH_TOKEN_DAYS = 365
+
 
 class RegistrationError(Exception):
     """Maps to RFC 7591 §3.2.2 client registration error responses.
@@ -107,6 +115,8 @@ def register_client(
         CallbackURLs=list(redirect_uris),
         SupportedIdentityProviders=list(supported_idp_names),
         ExplicitAuthFlows=["ALLOW_REFRESH_TOKEN_AUTH"],
+        RefreshTokenValidity=_REFRESH_TOKEN_DAYS,
+        TokenValidityUnits={"RefreshToken": "days"},
     )
 
     cog_client = resp["UserPoolClient"]

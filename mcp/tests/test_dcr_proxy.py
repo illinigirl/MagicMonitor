@@ -61,6 +61,10 @@ class TestHappyPath:
         assert kwargs["AllowedOAuthFlowsUserPoolClient"] is True
         assert kwargs["CallbackURLs"] == ["https://claude.ai/mcp/callback"]
         assert "Google" in kwargs["SupportedIdentityProviders"]
+        # 365-day refresh token (not Cognito's 30-day default) — the fix
+        # for per-device monthly re-login.
+        assert kwargs["RefreshTokenValidity"] == 365
+        assert kwargs["TokenValidityUnits"] == {"RefreshToken": "days"}
 
     def test_client_name_passed_through(self, cognito_stub):
         register_client(
