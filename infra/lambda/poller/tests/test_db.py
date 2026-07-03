@@ -490,3 +490,43 @@ class TestPlanAlertSubscribersFanout:
         self._put_plan("p1", subscribers={"megan", "sub-jim"})
         index, _ = db.build_active_plan_ride_index("2026-06-23")
         assert sorted(index["sm"]) == [("megan", "p1"), ("sub-jim", "p1")]
+
+
+# ── LL-watch opt-in reader (2026-07-03) ──
+
+class _CapturingStub(_StubTable):
+    """Records the last query kwargs so a test can assert the
+    FilterExpression the stub itself doesn't execute."""
+    def query(self, **kwargs):
+        self.last_query_kwargs = kwargs
+        return super().query(**kwargs)
+
+
+class TestLLWatchedReader:
+    """get_user_ll_watched_rides returns FAV_RIDE# rides opted into
+    LL-watch. Filtering is delegated to DDB (FilterExpression), so the
+    tests pin (a) the ll_watch gate is in the query and (b) the loop
+    reads every page — the data-growth failure class."""
+
+    def setup_method(self):
+        self.stub = _CapturingStub()
+        _swap_in_stub(self.stub)
+
+    def test_query_gates_on_park_and_ll_watch(self):
+        self.stub.put_item(Item={
+            "PK": "USER#megan", "SK": "FAV_RIDE#r1",
+            "park_key": "epcot", "ll_watch": True,
+        })
+        db.get_user_ll_watched_rides("megan", "epcot")
+        fe = self.stub.last_query_kwargs["FilterExpression"]
+        assert "ll_watch" in fe and "park_key" in fe
+        assert self.stub.last_query_kwargs["ExpressionAttributeValues"][":on"] is True
+
+    def test_reads_all_pages(self):
+        self.stub.page_size = 1
+        for r in ("r1", "r2", "r3"):
+            self.stub.put_item(Item={
+                "PK": "USER#megan", "SK": f"FAV_RIDE#{r}",
+                "park_key": "epcot", "ll_watch": True,
+            })
+        assert db.get_user_ll_watched_rides("megan", "epcot") == {"r1", "r2", "r3"}

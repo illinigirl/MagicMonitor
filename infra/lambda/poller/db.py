@@ -411,6 +411,35 @@ def get_user_favorites_for_park(user_id: str, park_key: str) -> set[str]:
         kwargs["ExclusiveStartKey"] = lek
 
 
+def get_user_ll_watched_rides(user_id: str, park_key: str) -> set[str]:
+    """Return the ride_ids in this park the user opted into LL-watching.
+
+    A favorite is LL-watched only when its FAV_RIDE# row carries
+    `ll_watch = true` (set via the /me favorites toggle or the MCP
+    watch_ll tool). Absent/false → not watched, so the LL-improvement
+    fanout skips it. Plan rides are watched independently of this
+    (always-on for the active-plan party), so this covers ONLY the
+    favorites-opt-in half.
+
+    Paginated + FilterExpression on both park_key and ll_watch so a
+    grown table can't silently drop the user's rows (the 2026-05-24
+    class); same shape as get_user_favorites_for_park.
+    """
+    out: set[str] = set()
+    kwargs = {
+        "KeyConditionExpression": Key("PK").eq(f"USER#{user_id}") & Key("SK").begins_with("FAV_RIDE#"),
+        "FilterExpression": "park_key = :park AND ll_watch = :on",
+        "ExpressionAttributeValues": {":park": park_key, ":on": True},
+    }
+    while True:
+        resp = _table.query(**kwargs)
+        out.update(item["SK"].removeprefix("FAV_RIDE#") for item in resp.get("Items", []))
+        lek = resp.get("LastEvaluatedKey")
+        if not lek:
+            return out
+        kwargs["ExclusiveStartKey"] = lek
+
+
 # ─── Active plan index (M9 bridge: plan-aware DOWN/UP alerts) ───────
 # USER#<id> / PLAN#<iso_ts> rows are written by the MCP record_plan
 # tool when a user accepts a plan. The poller needs to know which

@@ -71,3 +71,52 @@ def test_alert_plan_low_wait_message(monkeypatch):
     assert "in your plan today" in sent["message"]
     assert "~40 min" in sent["message"]
     assert sent["priority"] == 0
+
+
+class TestAlertLLEarlier:
+    """Earlier-LL push: message shape + framing (plan vs watch)."""
+
+    def _capture(self, monkeypatch):
+        monkeypatch.setattr(notifier, "_get_app_token", lambda: "tok")
+        sent = {}
+
+        def fake_post(url, data=None, timeout=None):
+            sent["data"] = data
+            return _FakeResp()
+
+        monkeypatch.setattr(notifier.requests, "post", fake_post)
+        return sent
+
+    def test_plan_framed_with_prior_and_price(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        ok = notifier.alert_ll_earlier(
+            "key", ride_name="TRON", park_name="Magic Kingdom",
+            park_key="magic_kingdom",
+            new_return_start="2026-07-03T14:15:00-04:00",
+            prior_return_start="2026-07-03T18:40:00-04:00",
+            in_plan=True, price="$18",
+        )
+        assert ok is True
+        msg = sent["data"]["message"]
+        assert "2:15 PM" in sent["data"]["title"]
+        assert "was 6:40 PM, now 2:15 PM" in msg
+        assert "in your plan today" in msg
+        assert "$18" in msg
+
+    def test_watch_framed_no_prior(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_ll_earlier(
+            "key", ride_name="Remy", park_name="EPCOT", park_key="epcot",
+            new_return_start="2026-07-03T13:20:00-04:00",
+        )
+        msg = sent["data"]["message"]
+        assert "on your watch list" in msg
+        assert "1:20 PM" in msg
+
+    def test_unparseable_time_degrades(self, monkeypatch):
+        self._capture(monkeypatch)
+        # Must not raise on a garbage timestamp.
+        assert notifier.alert_ll_earlier(
+            "key", ride_name="X", park_name="P", park_key="epcot",
+            new_return_start="not-a-time",
+        ) is True
