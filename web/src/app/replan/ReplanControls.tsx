@@ -9,7 +9,13 @@
 
 import { useState, useTransition } from "react";
 
-import { applyDone, applyDrop, applyNextUp, type ReplanResult } from "./actions";
+import {
+  applyActualWait,
+  applyDone,
+  applyDrop,
+  applyNextUp,
+  type ReplanResult,
+} from "./actions";
 
 export default function ReplanControls({
   planId,
@@ -18,6 +24,7 @@ export default function ReplanControls({
   initiallyDropped,
   initiallyNext,
   initiallyDone,
+  initialActual,
   emphasize,
 }: {
   planId: string;
@@ -26,6 +33,7 @@ export default function ReplanControls({
   initiallyDropped: boolean;
   initiallyNext: boolean;
   initiallyDone: boolean;
+  initialActual: number | null;
   /** Which action to lead with for this ride. */
   emphasize: "drop" | "next";
 }) {
@@ -69,6 +77,11 @@ export default function ReplanControls({
         <span className="rounded-full bg-ok/15 px-3 py-1 text-xs font-medium text-ok">
           Done ✓
         </span>
+        <ActualWait
+          planId={planId}
+          rideId={rideId}
+          initial={initialActual}
+        />
         <TextBtn onClick={unDone} disabled={pending} label="Undo" />
         <Err error={error} />
       </Row>
@@ -154,6 +167,50 @@ export default function ReplanControls({
       {doneBtn}
       <Err error={error} />
     </Row>
+  );
+}
+
+/** Optional "actual wait" capture on a done ride — calibration data.
+ *  Blank is fine; saves on blur. */
+function ActualWait({
+  planId,
+  rideId,
+  initial,
+}: {
+  planId: string;
+  rideId: string;
+  initial: number | null;
+}) {
+  const [pending, start] = useTransition();
+  const [saved, setSaved] = useState(initial !== null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const save = (v: string) => {
+    setErr(null);
+    start(async () => {
+      const res = await applyActualWait(planId, rideId, v);
+      if (res.ok) setSaved(v.trim() !== "");
+      else setErr(res.error ?? "");
+    });
+  };
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-fg-3">
+      actual
+      <input
+        type="number"
+        min={0}
+        max={600}
+        inputMode="numeric"
+        defaultValue={initial ?? ""}
+        placeholder="—"
+        disabled={pending}
+        onBlur={(e) => save(e.target.value)}
+        className="w-12 rounded border border-line bg-bg-0 px-1 py-0.5 text-center text-fg-0"
+      />
+      min
+      {saved && <span className="text-ok">✓</span>}
+      {err && <span className="text-warn">{err}</span>}
+    </span>
   );
 }
 

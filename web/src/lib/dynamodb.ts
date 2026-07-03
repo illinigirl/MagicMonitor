@@ -349,6 +349,8 @@ export interface ReplanContext {
   held_lls: Record<string, string>;
   /** ride_ids marked done from /replan. */
   completed_ride_ids: string[];
+  /** {ride_id: actual wait minutes} captured on Mark done (optional). */
+  actual_waits: Record<string, number>;
 }
 
 /**
@@ -370,6 +372,7 @@ export async function getReplanContext(
     | (Omit<PlanRow, "ride_sequence"> & {
         dropped_ride_ids?: Set<string> | string[];
         completed_ride_ids?: Set<string> | string[];
+        actual_waits?: Record<string, number>;
         next_up?: string;
         ll_holds?: Record<string, string>;
         plan_order?: string[];
@@ -412,5 +415,6 @@ export async function getReplanContext(
     next_up: r.next_up ?? null,
     held_lls: r.ll_holds ?? {},
     completed_ride_ids: [...(r.completed_ride_ids ?? [])],
+    actual_waits: r.actual_waits ?? {},
   };
 }

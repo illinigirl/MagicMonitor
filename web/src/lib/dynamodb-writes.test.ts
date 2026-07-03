@@ -238,3 +238,24 @@ describe("setHeldLl", () => {
     expect(sendMock.mock.calls[0][0].input.UpdateExpression).toBe("REMOVE ll_holds.#r");
   });
 });
+
+describe("setRideActualWait", () => {
+  it("ensures the map then sets the ride's actual minutes", async () => {
+    sendMock.mockResolvedValue({});
+    const { setRideActualWait } = await import("./dynamodb-writes");
+    await setRideActualWait("p1", "tron", 45);
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    const set = sendMock.mock.calls[1][0].input;
+    expect(set.UpdateExpression).toBe("SET actual_waits.#r = :m");
+    expect(set.ExpressionAttributeNames["#r"]).toBe("tron");
+    expect(set.ExpressionAttributeValues[":m"]).toBe(45);
+  });
+
+  it("REMOVEs when cleared (null)", async () => {
+    sendMock.mockResolvedValue({});
+    const { setRideActualWait } = await import("./dynamodb-writes");
+    await setRideActualWait("p1", "tron", null);
+    expect(sendMock).toHaveBeenCalledOnce();
+    expect(sendMock.mock.calls[0][0].input.UpdateExpression).toBe("REMOVE actual_waits.#r");
+  });
+});
