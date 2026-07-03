@@ -264,3 +264,44 @@ class TestTripCrudHttp:
         assert out["found"] is True
         assert "2099-06-25" in [d["date"] for d in out["days"]]
         assert out["end_date"] == "2099-06-25"
+
+
+class TestAlertSubscriberSeed:
+    """New plan rows auto-subscribe their creator (by sub) when the
+    creator isn't the shared-partition owner; the owner stays implicit
+    (never stored)."""
+
+    def test_non_owner_creator_is_seeded(self, stub, as_user):
+        as_user("sub-jim")
+        rec = s.record_plan("MK", [], planned_for_date="2099-07-01")
+        row = stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]
+        assert row["alert_subscribers"] == {"sub-jim"}
+
+    def test_owner_creator_not_stored(self, stub, as_user):
+        as_user("sub-megan")
+        rec = s.record_plan("MK", [], planned_for_date="2099-07-01")
+        row = stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]
+        assert "alert_subscribers" not in row
+
+    def test_create_trip_seeds_every_day(self, stub, as_user):
+        as_user("sub-jim")
+        s.create_trip("Trip", [
+            {"date": "2099-07-01", "park": "MK"},
+            {"date": "2099-07-02", "park": "EPCOT"},
+        ])
+        plan_rows = [v for (p, sk), v in stub.items.items() if sk.startswith("PLAN#")]
+        assert len(plan_rows) == 2
+        for r in plan_rows:
+            assert r["alert_subscribers"] == {"sub-jim"}
+
+    def test_upsert_merges_prior_subs_with_new_seed(self, stub, as_user):
+        # Jim records a day (seeded sub-jim); Megan re-records the same
+        # day — prior subs must survive the row rebuild.
+        as_user("sub-jim")
+        rec = s.record_plan("MK", [], planned_for_date="2099-07-01", trip_id="t1")
+        as_user("sub-megan")
+        rec2 = s.record_plan("MK", [{"ride_name": "Space", "ride_id": "sm"}],
+                             planned_for_date="2099-07-01", trip_id="t1")
+        assert rec2["plan_id"] == rec["plan_id"]
+        row = stub.items[("USER#megan", f"PLAN#{rec['plan_id']}")]
+        assert row["alert_subscribers"] == {"sub-jim"}

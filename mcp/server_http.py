@@ -112,6 +112,7 @@ from _tool_impls import (
     _WDW_LAT,
     _WDW_LON,
     _all_park_state_rows_via_gsi,
+    _apply_alert_subscription,
     _aws_error_payload,
     _bias_confidence,
     _build_plan_item,
@@ -134,6 +135,7 @@ from _tool_impls import (
     _park_state_rows_via_gsi,
     _plan_pending_ttl,
     _pop_ride_from_sequence,
+    _resolve_alert_member,
     _today_et_date_iso,
     get_planning_context,
 )
@@ -383,6 +385,18 @@ def _created_by_from_context() -> str:
     if not sub:
         return _SHARED_USER_ID
     return _SUB_USER_MAP.get(sub, sub)
+
+
+def _creator_alert_seed() -> set[str] | None:
+    """Default alert_subscribers for a NEW plan row: the verified caller's
+    sub, when the caller isn't the shared-partition owner — so a family
+    member's plans alert them without a separate opt-in step. The owner is
+    an implicit recipient and is never stored (see _build_plan_item).
+    """
+    sub = _authenticated_sub.get()
+    if not sub or _SUB_USER_MAP.get(sub) == _SHARED_USER_ID:
+        return None
+    return {sub}
 
 
 # ─── FastMCP server + tools ─────────────────────────────────────────
@@ -1594,6 +1608,7 @@ def record_plan(
         active=active,
         activated_at=activated_at,
         created_by=created_by,
+        alert_subscribers=_creator_alert_seed(),
     )
 
     if prior is not None:
@@ -1609,6 +1624,13 @@ def record_plan(
             item["plan_window"] = prior.get("plan_window")
         if active and prior.get("active") and prior.get("activated_at"):
             item["activated_at"] = prior.get("activated_at")
+        # Same wipe hazard for alert opt-ins: subscribed family members
+        # must survive a re-record of the day. Merge prior subs with any
+        # fresh seed (e.g. a different creator re-recording).
+        prior_subs = set(prior.get("alert_subscribers") or ())
+        merged_subs = prior_subs | set(item.get("alert_subscribers") or ())
+        if merged_subs:
+            item["alert_subscribers"] = merged_subs
 
     try:
         table.put_item(Item=_floats_to_decimals(item))
@@ -1744,6 +1766,7 @@ def create_trip(name: str, days: list[dict[str, Any]]) -> dict[str, Any]:
                     plan_window=d["plan_window"],
                     active=False,
                     created_by=created_by,
+                    alert_subscribers=_creator_alert_seed(),
                 )
                 batch.put_item(Item=_floats_to_decimals(item))
                 day_results.append({"date": d["date"], "park_key": d["park_key"],
@@ -2294,6 +2317,116 @@ def record_plan_outcome(
         "outcome_recorded_at": now_iso,
         "new_expires_at_epoch": new_ttl,
     }
+
+
+@mcp.tool()
+def set_plan_alert_subscription(
+    member: str,
+    subscribed: bool = True,
+    trip_id: str | None = None,
+    date: str | None = None,
+) -> dict[str, Any]:
+    """Opt a family member IN (or out) of the disruption/weather/low-wait
+    alert pushes for a trip or a single day's plan.
+
+    By default only the shared-partition owner receives plan alerts (the
+    owner is always subscribed and can't be removed); a plan's creator is
+    auto-subscribed at record time. This adds `member` as an additional
+    recipient on the matching plan day rows — same DOWN / BACK UP / storm /
+    low-wait pushes.
+
+    Args:
+        member: Who to subscribe — a family member's name as configured
+            (e.g. "jim"), or their Cognito sub, or any id with a
+            USER#<id>/PROFILE row. The member must have signed into the
+            dashboard and saved /me once (that's where their Pushover key
+            lives) — if they haven't, this errors with instructions.
+        subscribed: True to opt in (default), False to opt out.
+        trip_id: Apply to EVERY un-recorded day of this trip.
+        date: Apply to the single plan for this date (YYYY-MM-DD).
+            Provide trip_id or date (or both to filter to one trip day).
+
+    Returns:
+        Dict with member (resolved id), subscribed, days_updated, and a
+        warning when the member's profile has no Pushover key yet.
+    """
+    if not trip_id and not date:
+        return {
+            "error": "Provide trip_id and/or date",
+            "error_message": "Say which trip (trip_id) or day (date) to apply to.",
+        }
+    target_date = None
+    if date:
+        try:
+            target_date = datetime.fromisoformat(date).date().isoformat()
+        except ValueError:
+            return {
+                "error": "Invalid date",
+                "error_message": f"Could not parse '{date}'. Use YYYY-MM-DD.",
+            }
+
+    try:
+        table = _ddb_table()
+        # Friendly-name → sub map (reverse of MCP_SUB_USER_MAP) so "jim"
+        # resolves to the sub whose /me profile holds his Pushover key.
+        friendly_to_sub = {
+            friendly.strip().lower(): sub
+            for sub, friendly in _SUB_USER_MAP.items()
+        }
+        member_id, has_key = _resolve_alert_member(table, member, friendly_to_sub)
+        if member_id is None:
+            return {
+                "error": "Member has no profile",
+                "error_message": (
+                    f"No USER#<id>/PROFILE row found for {member!r}. They need "
+                    "to sign into the dashboard once and save /me (name + "
+                    "Pushover key) first."
+                ),
+            }
+        if member_id == _SHARED_USER_ID or _SUB_USER_MAP.get(member_id) == _SHARED_USER_ID:
+            return {
+                "member": member_id,
+                "subscribed": True,
+                "days_updated": [],
+                "note": "The plan owner always receives alerts — nothing to change.",
+            }
+        rows = [
+            r for r in (
+                _convert_decimals(x) for x in _query_shared_prefix(table, "PLAN#")
+            )
+            if not r.get("outcome_recorded")
+            and (trip_id is None or r.get("trip_id") == trip_id)
+            and (target_date is None or r.get("planned_for_date") == target_date)
+        ]
+        if not rows:
+            return {
+                "error": "No matching plans",
+                "error_message": (
+                    f"No un-recorded plan rows matched trip_id={trip_id!r} "
+                    f"date={target_date!r}."
+                ),
+            }
+        days = _apply_alert_subscription(
+            table, _SHARED_USER_ID, member_id, subscribed, rows
+        )
+    except Exception as e:
+        err = _aws_error_payload(e)
+        return err if err is not None else {
+            "error": "Subscription update failed",
+            "error_message": str(e),
+        }
+
+    out: dict[str, Any] = {
+        "member": member_id,
+        "subscribed": subscribed,
+        "days_updated": sorted(days),
+    }
+    if subscribed and not has_key:
+        out["warning"] = (
+            "Subscription stored, but this member's profile has no Pushover "
+            "key — they won't receive pushes until they add one at /me."
+        )
+    return out
 
 
 @mcp.tool()

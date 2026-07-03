@@ -69,6 +69,19 @@ class _StubTable:
                 attr = lhs.strip()
                 attr = names.get(attr, attr)  # resolve #ttl etc.
                 item[attr] = vals[rhs.strip()]
+        elif expr.upper().startswith(("ADD ", "DELETE ")):
+            # Atomic set ops (alert_subscribers). DDB semantics: ADD
+            # creates the set if absent; DELETE removing the last member
+            # removes the attribute entirely.
+            op, rest = expr.split(" ", 1)
+            attr, rhs = rest.strip().split(" ")
+            val = set(vals[rhs.strip()])
+            cur = set(item.get(attr) or set())
+            cur = cur | val if op.upper() == "ADD" else cur - val
+            if cur:
+                item[attr] = cur
+            else:
+                item.pop(attr, None)
         if ReturnValues == "ALL_NEW":
             return {"Attributes": dict(item)}
         return {}
@@ -635,3 +648,87 @@ class TestRecordPlanUpsert:
         assert len(out["days"]) == 1                        # the date shows ONCE
         assert out["days"][0]["active"] is True             # active row preferred
         assert out["days"][0]["ride_count"] == 2
+
+
+# ─── set_plan_alert_subscription (2026-07-03) ───────────────────────
+
+
+class TestPlanAlertSubscription:
+    def _seed_profile(self, stub, member_id, pushover_key="pk-123"):
+        item = {"PK": f"USER#{member_id}", "SK": "PROFILE"}
+        if pushover_key:
+            item["pushover_user_key"] = pushover_key
+        stub.put_item(Item=item)
+
+    def test_subscribe_member_trip_wide(self, stub):
+        self._seed_profile(stub, "sub-sis")
+        trip = server.create_trip("Trip", [
+            {"date": _future(10), "park": "MK"},
+            {"date": _future(11), "park": "EPCOT"},
+        ])
+        out = server.set_plan_alert_subscription("sub-sis", trip_id=trip["trip_id"])
+        assert "error" not in out and "warning" not in out
+        assert sorted(out["days_updated"]) == [_future(10), _future(11)]
+        plan_rows = [v for (p, s), v in stub.items.items() if s.startswith("PLAN#")]
+        for r in plan_rows:
+            assert r["alert_subscribers"] == {"sub-sis"}
+
+    def test_unsubscribe_removes_attribute(self, stub):
+        self._seed_profile(stub, "sub-sis")
+        trip = server.create_trip("Trip", [{"date": _future(10), "park": "MK"}])
+        server.set_plan_alert_subscription("sub-sis", trip_id=trip["trip_id"])
+        out = server.set_plan_alert_subscription(
+            "sub-sis", subscribed=False, trip_id=trip["trip_id"]
+        )
+        assert out["subscribed"] is False
+        row = next(v for (p, s), v in stub.items.items() if s.startswith("PLAN#"))
+        assert "alert_subscribers" not in row  # last member out → attr gone
+
+    def test_single_date_only_touches_that_day(self, stub):
+        self._seed_profile(stub, "sub-sis")
+        trip = server.create_trip("Trip", [
+            {"date": _future(10), "park": "MK"},
+            {"date": _future(11), "park": "EPCOT"},
+        ])
+        out = server.set_plan_alert_subscription("sub-sis", date=_future(11))
+        assert out["days_updated"] == [_future(11)]
+        rows = {v["planned_for_date"]: v for (p, s), v in stub.items.items()
+                if s.startswith("PLAN#")}
+        assert "alert_subscribers" not in rows[_future(10)]
+        assert rows[_future(11)]["alert_subscribers"] == {"sub-sis"}
+
+    def test_member_without_profile_errors(self, stub):
+        server.create_trip("Trip", [{"date": _future(10), "park": "MK"}])
+        out = server.set_plan_alert_subscription("nobody", date=_future(10))
+        assert out["error"] == "Member has no profile"
+        assert "/me" in out["error_message"]
+
+    def test_owner_is_noop(self, stub):
+        self._seed_profile(stub, "megan")
+        server.create_trip("Trip", [{"date": _future(10), "park": "MK"}])
+        out = server.set_plan_alert_subscription("megan", date=_future(10))
+        assert out["days_updated"] == []
+        assert "always receives" in out["note"]
+
+    def test_missing_pushover_key_warns_but_stores(self, stub):
+        self._seed_profile(stub, "sub-sis", pushover_key=None)
+        server.create_trip("Trip", [{"date": _future(10), "park": "MK"}])
+        out = server.set_plan_alert_subscription("sub-sis", date=_future(10))
+        assert "Pushover" in out["warning"]
+        row = next(v for (p, s), v in stub.items.items() if s.startswith("PLAN#"))
+        assert row["alert_subscribers"] == {"sub-sis"}
+
+    def test_requires_trip_or_date(self, stub):
+        out = server.set_plan_alert_subscription("sub-sis")
+        assert "Provide trip_id and/or date" in out["error"]
+
+    def test_upsert_preserves_subscribers(self, stub):
+        # The calibration-wipe bug class: a same-day re-record must not
+        # drop opted-in members (put_item replaces the whole row).
+        self._seed_profile(stub, "sub-sis")
+        server.record_plan("MK", [], planned_for_date=_future(10), trip_id="t1")
+        server.set_plan_alert_subscription("sub-sis", date=_future(10))
+        server.record_plan("MK", [{"ride_name": "Space", "ride_id": "sm"}],
+                           planned_for_date=_future(10), trip_id="t1")
+        row = next(v for (p, s), v in stub.items.items() if s.startswith("PLAN#"))
+        assert row["alert_subscribers"] == {"sub-sis"}
