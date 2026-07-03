@@ -117,3 +117,34 @@ describe("getUserParkSubscriptions", () => {
     expect(await getUserParkSubscriptions("sub-123")).toEqual(new Set());
   });
 });
+
+describe("setPlanAlertSubscription", () => {
+  it("issues one atomic ADD per plan row with the session sub as a Set", async () => {
+    sendMock.mockResolvedValue({});
+    const { setPlanAlertSubscription } = await import("./dynamodb-writes");
+    await setPlanAlertSubscription("sub-sis", ["p1", "p2"], true);
+
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    const inputs = sendMock.mock.calls.map((c) => c[0].input);
+    expect(inputs.map((i) => i.Key)).toEqual([
+      { PK: "USER#megan", SK: "PLAN#p1" },
+      { PK: "USER#megan", SK: "PLAN#p2" },
+    ]);
+    for (const i of inputs) {
+      // Atomic set op — NOT a read-modify-write SET (that's what makes
+      // concurrent MCP/web edits safe).
+      expect(i.UpdateExpression).toBe("ADD alert_subscribers :m");
+      expect(i.ExpressionAttributeValues[":m"]).toEqual(new Set(["sub-sis"]));
+      expect(i.ConditionExpression).toBe("attribute_exists(PK)");
+    }
+  });
+
+  it("uses atomic DELETE on unsubscribe", async () => {
+    sendMock.mockResolvedValue({});
+    const { setPlanAlertSubscription } = await import("./dynamodb-writes");
+    await setPlanAlertSubscription("sub-sis", ["p1"], false);
+    expect(sendMock.mock.calls[0][0].input.UpdateExpression).toBe(
+      "DELETE alert_subscribers :m",
+    );
+  });
+});

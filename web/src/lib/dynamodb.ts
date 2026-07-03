@@ -117,6 +117,10 @@ export interface TripDay {
   ride_count: number;
   outcome_recorded: boolean;
   rides: { ride_name: string; ride_id?: string }[];
+  /** ADDITIONAL alert recipients opted in on this day (Cognito subs).
+   *  The plan owner is implicit and never stored. Powers the /trips
+   *  "get alerts" toggle state. */
+  alert_subscribers: string[];
 }
 
 export interface Trip {
@@ -135,6 +139,8 @@ interface PlanRow {
   active?: boolean;
   outcome_recorded?: boolean;
   ride_sequence?: { ride_name?: string; ride_id?: string }[];
+  // DDB String Set — the DocumentClient unmarshalls SS to a JS Set.
+  alert_subscribers?: Set<string> | string[];
 }
 
 interface TripRow {
@@ -233,6 +239,9 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
           ride_name: rd.ride_name ?? "(unnamed)",
           ride_id: rd.ride_id,
         })),
+        // Set (from DDB SS) or array — normalize to a serializable array
+        // (a JS Set can't cross the Server Component boundary as a prop).
+        alert_subscribers: [...(r.alert_subscribers ?? [])].sort(),
       })),
     });
   }
@@ -278,6 +287,7 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
             ride_name: rd.ride_name ?? "(unnamed)",
             ride_id: rd.ride_id,
           })),
+          alert_subscribers: [...(r.alert_subscribers ?? [])].sort(),
         },
       ],
     });

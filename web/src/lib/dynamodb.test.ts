@@ -390,3 +390,23 @@ describe("getUpcomingTrips", () => {
     expect(trips[1].name).toBe("June trip");
   });
 });
+
+describe("getUpcomingTrips alert_subscribers", () => {
+  it("normalizes the DDB String Set to a sorted array (absent → [])", async () => {
+    mockTripsAndPlans(
+      [makeTripRow()],
+      [{
+        Items: [
+          makePlanRow({ SK: "PLAN#p1", planned_for_date: "2099-09-01",
+                        alert_subscribers: new Set(["sub-b", "sub-a"]) }),
+          makePlanRow({ SK: "PLAN#p2", planned_for_date: "2099-09-02" }),
+        ],
+        LastEvaluatedKey: undefined,
+      }],
+    );
+    const { getUpcomingTrips } = await import("./dynamodb");
+    const trips = await getUpcomingTrips();
+    expect(trips[0].days[0].alert_subscribers).toEqual(["sub-a", "sub-b"]);
+    expect(trips[0].days[1].alert_subscribers).toEqual([]);
+  });
+});
