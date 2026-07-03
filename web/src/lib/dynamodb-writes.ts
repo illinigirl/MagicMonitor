@@ -308,6 +308,32 @@ export async function setRideDropped(
 }
 
 /**
+ * Mark a ride done (done=true) or un-done (false) for a shared plan, via
+ * atomic ADD/DELETE on completed_ride_ids. Like dropped_ride_ids: no
+ * ride_sequence surgery, so it can't race a plan edit. The poller stops
+ * watching it and the page shows it done. (Claude's mark_ride_complete is
+ * the richer path — it also captures actual wait for calibration — but a
+ * one-tap "I rode it" from the phone doesn't need that.)
+ */
+export async function setRideDone(
+  planId: string,
+  rideId: string,
+  done: boolean,
+): Promise<void> {
+  await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+      UpdateExpression: done
+        ? "ADD completed_ride_ids :r"
+        : "DELETE completed_ride_ids :r",
+      ExpressionAttributeValues: { ":r": new Set([rideId]) },
+      ConditionExpression: "attribute_exists(PK)",
+    }),
+  );
+}
+
+/**
  * Mark a ride as "do next" for a shared plan (rideId), or clear it
  * (null). A single scalar next_up set atomically (SET/REMOVE) — no
  * ride_sequence surgery, so it can't race with an MCP edit. Web /trips,
@@ -324,6 +350,59 @@ export async function setPlanNextUp(
       Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
       UpdateExpression: rideId ? "SET next_up = :r" : "REMOVE next_up",
       ...(rideId ? { ExpressionAttributeValues: { ":r": rideId } } : {}),
+      ConditionExpression: "attribute_exists(PK)",
+    }),
+  );
+}
+
+// ─── "Ask Claude" daily rate limit (2026-07-03) ──────────────────────
+//
+// The /replan "Ask Claude" server action costs real Anthropic tokens, so
+// it's capped per user per day. Atomic ADD on a dated counter row (TTL'd
+// to auto-expire) — returns the post-increment count so the caller can
+// reject once over the cap. Row: USER#<sub>/REPLAN_LLM#<yyyy-mm-dd>.
+
+/** Increment + return today's Ask-Claude call count for a user. */
+export async function bumpReplanLlmCount(
+  sub: string,
+  dayIso: string,
+): Promise<number> {
+  const resp = await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${sub}`, SK: `REPLAN_LLM#${dayIso}` },
+      UpdateExpression:
+        "SET #ttl = if_not_exists(#ttl, :ttl) ADD #c :one",
+      ExpressionAttributeNames: { "#ttl": "ttl", "#c": "count" },
+      ExpressionAttributeValues: {
+        ":one": 1,
+        // ~2 days out; the row only needs to survive the current day.
+        ":ttl": Math.floor(Date.now() / 1000) + 172800,
+      },
+      ReturnValues: "UPDATED_NEW",
+    }),
+  );
+  return Number(resp.Attributes?.count ?? 1);
+}
+
+/**
+ * Set the suggested ride ORDER for a plan (a list of ride_ids), from the
+ * "Ask Claude" re-plan. A single atomic SET of one list attribute
+ * (plan_order) — overwrites wholesale, never touches ride_sequence, so it
+ * can't corrupt the planner's list or race a concurrent edit. Reads
+ * present rides in plan_order when present; a dropped ride just won't
+ * appear even if still listed.
+ */
+export async function setPlanOrder(
+  planId: string,
+  order: string[],
+): Promise<void> {
+  await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+      UpdateExpression: "SET plan_order = :o",
+      ExpressionAttributeValues: { ":o": order },
       ConditionExpression: "attribute_exists(PK)",
     }),
   );

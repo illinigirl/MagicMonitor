@@ -13,8 +13,19 @@
 import { revalidatePath } from "next/cache";
 
 import { auth } from "@/auth";
-import { setPlanNextUp, setRideDropped } from "@/lib/dynamodb-writes";
+import { getParkRides, getReplanContext } from "@/lib/dynamodb";
+import {
+  bumpReplanLlmCount,
+  setPlanNextUp,
+  setPlanOrder,
+  setRideDone,
+  setRideDropped,
+} from "@/lib/dynamodb-writes";
+import { proposeReplan, type ReplanSuggestion } from "@/lib/claude-replan";
+import { getCurrentConditions } from "@/lib/weather";
 import { isTripsAllowed } from "@/lib/trips-access";
+
+const ASK_CLAUDE_DAILY_CAP = 20;
 
 export interface ReplanResult {
   ok: boolean;
@@ -45,6 +56,130 @@ export async function applyDrop(
   if (bad) return bad;
   try {
     await setRideDropped(planId, rideId, dropped);
+  } catch {
+    return { ok: false, error: "Couldn't update — try again." };
+  }
+  revalidatePath("/replan");
+  revalidatePath("/trips");
+  return { ok: true };
+}
+
+export type AskClaudeResult =
+  | { ok: true; suggestion: ReplanSuggestion }
+  | { ok: false; error: string };
+
+/**
+ * "Ask Claude" — a server-side Sonnet call that returns a holistic
+ * re-plan suggestion (or "no changes needed") for the day's plan. Costs
+ * real tokens, so: family-gated + a per-user daily cap. Tap-only (there's
+ * no automatic caller).
+ */
+export async function askClaudeReplan(
+  planId: string,
+  trigger?: string | null,
+): Promise<AskClaudeResult> {
+  const session = await auth();
+  const sub = session?.user?.id;
+  if (!sub) return { ok: false, error: "Not signed in." };
+  if (!isTripsAllowed(session.user?.email)) {
+    return { ok: false, error: "Family accounts only." };
+  }
+
+  const today = new Date().toLocaleDateString("en-CA", {
+    timeZone: "America/New_York",
+  });
+  try {
+    const count = await bumpReplanLlmCount(sub, today);
+    if (count > ASK_CLAUDE_DAILY_CAP) {
+      return {
+        ok: false,
+        error: `Daily limit reached (${ASK_CLAUDE_DAILY_CAP} Ask-Claude checks). Try again tomorrow.`,
+      };
+    }
+
+    const ctx = await getReplanContext(planId);
+    if (!ctx) return { ok: false, error: "Plan not found." };
+
+    const [state, weather] = await Promise.all([
+      getParkRides(ctx.park_key),
+      getCurrentConditions(),
+    ]);
+    const byId = new Map(state.map((r) => [r.ride_id, r]));
+    const dropped = new Set(ctx.dropped_ride_ids);
+    const rides = ctx.rides
+      .filter((r) => !dropped.has(r.ride_id))
+      .map((r) => {
+        const live = byId.get(r.ride_id);
+        return {
+          ride_id: r.ride_id,
+          ride_name: r.ride_name,
+          predicted_wait_min: r.predicted_wait_min,
+          current_wait: live?.wait_mins ?? null,
+          status: live?.status ?? "UNKNOWN",
+          held_ll: ctx.held_lls[r.ride_id] ?? null,
+        };
+      });
+
+    const suggestion = await proposeReplan({
+      park_name: ctx.park_name,
+      date: ctx.date,
+      weather: weather ? `${weather.condition}, ${weather.temp_f}°` : null,
+      trigger: trigger ?? null,
+      rides,
+    });
+    return { ok: true, suggestion };
+  } catch (err) {
+    console.warn("[replan/ask] failed:", err);
+    return { ok: false, error: "Couldn't reach Claude — try again." };
+  }
+}
+
+/**
+ * Apply a Claude-suggested re-plan: set the new ride order + drop the
+ * rides it flagged. Both are atomic (plan_order SET, dropped_ride_ids
+ * ADD). Family-gated; the suggestion itself was already produced behind
+ * the daily cap, so this apply is free.
+ */
+export async function applyReplanOrder(
+  planId: string,
+  order: string[],
+  drop: string[],
+): Promise<ReplanResult> {
+  const session = await auth();
+  if (!session?.user?.id) return { ok: false, error: "Not signed in." };
+  if (!isTripsAllowed(session.user?.email)) {
+    return { ok: false, error: "Family accounts only." };
+  }
+  const clean = (order ?? []).filter((s) => typeof s === "string").slice(0, 50);
+  if (!planId || clean.length === 0) {
+    return { ok: false, error: "Nothing to apply." };
+  }
+  try {
+    await setPlanOrder(planId, clean);
+    await Promise.all(
+      (drop ?? [])
+        .filter((s) => typeof s === "string")
+        .slice(0, 50)
+        .map((id) => setRideDropped(planId, id, true)),
+    );
+  } catch {
+    return { ok: false, error: "Couldn't apply — try again." };
+  }
+  revalidatePath("/replan");
+  revalidatePath("/trips");
+  return { ok: true };
+}
+
+/** Mark a ride done (done=true) or un-done (false) from /replan. */
+export async function applyDone(
+  planId: string,
+  rideId: string,
+  done: boolean,
+): Promise<ReplanResult> {
+  const bad = await gate(planId, rideId);
+  if (bad) return bad;
+  try {
+    await setRideDone(planId, rideId, done);
   } catch {
     return { ok: false, error: "Couldn't update — try again." };
   }

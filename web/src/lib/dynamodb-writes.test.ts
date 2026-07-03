@@ -192,3 +192,25 @@ describe("setPlanNextUp", () => {
     expect(input.ExpressionAttributeValues).toBeUndefined();
   });
 });
+
+describe("setPlanOrder + bumpReplanLlmCount", () => {
+  it("setPlanOrder atomically SETs the plan_order list", async () => {
+    sendMock.mockResolvedValue({});
+    const { setPlanOrder } = await import("./dynamodb-writes");
+    await setPlanOrder("p1", ["c", "a", "b"]);
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input.UpdateExpression).toBe("SET plan_order = :o");
+    expect(input.ExpressionAttributeValues[":o"]).toEqual(["c", "a", "b"]);
+    expect(input.ConditionExpression).toBe("attribute_exists(PK)");
+  });
+
+  it("bumpReplanLlmCount ADDs to a dated counter and returns it", async () => {
+    sendMock.mockResolvedValue({ Attributes: { count: 3 } });
+    const { bumpReplanLlmCount } = await import("./dynamodb-writes");
+    const n = await bumpReplanLlmCount("sub-1", "2026-07-03");
+    expect(n).toBe(3);
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input.Key).toEqual({ PK: "USER#sub-1", SK: "REPLAN_LLM#2026-07-03" });
+    expect(input.UpdateExpression).toContain("ADD #c :one");
+  });
+});

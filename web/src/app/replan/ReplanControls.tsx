@@ -9,7 +9,7 @@
 
 import { useState, useTransition } from "react";
 
-import { applyDrop, applyNextUp, type ReplanResult } from "./actions";
+import { applyDone, applyDrop, applyNextUp, type ReplanResult } from "./actions";
 
 export default function ReplanControls({
   planId,
@@ -17,6 +17,7 @@ export default function ReplanControls({
   rideName,
   initiallyDropped,
   initiallyNext,
+  initiallyDone,
   emphasize,
 }: {
   planId: string;
@@ -24,12 +25,14 @@ export default function ReplanControls({
   rideName: string;
   initiallyDropped: boolean;
   initiallyNext: boolean;
+  initiallyDone: boolean;
   /** Which action to lead with for this ride. */
   emphasize: "drop" | "next";
 }) {
   const [pending, startTransition] = useTransition();
   const [dropped, setDropped] = useState(initiallyDropped);
   const [isNext, setIsNext] = useState(initiallyNext);
+  const [done, setDone] = useState(initiallyDone);
   const [error, setError] = useState<string | null>(null);
 
   const act = (fn: () => Promise<ReplanResult>, onOk: () => void) => {
@@ -53,6 +56,24 @@ export default function ReplanControls({
       setDropped(false);
     });
   const clearNext = () => act(() => applyNextUp(planId, rideId, false), () => setIsNext(false));
+  const markDone = () =>
+    act(() => applyDone(planId, rideId, true), () => {
+      setDone(true);
+      setIsNext(false);
+    });
+  const unDone = () => act(() => applyDone(planId, rideId, false), () => setDone(false));
+
+  if (done) {
+    return (
+      <Row>
+        <span className="rounded-full bg-ok/15 px-3 py-1 text-xs font-medium text-ok">
+          Done ✓
+        </span>
+        <TextBtn onClick={unDone} disabled={pending} label="Undo" />
+        <Err error={error} />
+      </Row>
+    );
+  }
 
   if (dropped) {
     return (
@@ -105,7 +126,18 @@ export default function ReplanControls({
     </button>
   );
 
-  // Lead with the emphasized action.
+  const doneBtn = (
+    <button
+      type="button"
+      onClick={markDone}
+      disabled={pending}
+      className="rounded-md border border-line bg-bg-1 px-3 py-1.5 text-sm font-medium text-fg-2 hover:bg-bg-2 hover:text-ok disabled:opacity-50"
+    >
+      Done
+    </button>
+  );
+
+  // Lead with the emphasized action; Done is always available.
   return (
     <Row>
       {emphasize === "next" ? (
@@ -119,6 +151,7 @@ export default function ReplanControls({
           {nextBtn}
         </>
       )}
+      {doneBtn}
       <Err error={error} />
     </Row>
   );

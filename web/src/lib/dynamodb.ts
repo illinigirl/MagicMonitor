@@ -340,11 +340,15 @@ export interface ReplanContext {
   active: boolean;
   outcome_recorded: boolean;
   /** Rides still in the sequence (not dropped, not completed). */
-  rides: { ride_name: string; ride_id: string }[];
+  rides: { ride_name: string; ride_id: string; predicted_wait_min: number | null }[];
   /** ride_ids already dropped via the /replan approve flow. */
   dropped_ride_ids: string[];
   /** ride_id the family marked "do next" (or null). */
   next_up: string | null;
+  /** {ride_id: LL return ISO} the party holds a Lightning Lane on. */
+  held_lls: Record<string, string>;
+  /** ride_ids marked done from /replan. */
+  completed_ride_ids: string[];
 }
 
 /**
@@ -363,12 +367,39 @@ export async function getReplanContext(
     }),
   );
   const r = resp.Item as
-    | (PlanRow & {
+    | (Omit<PlanRow, "ride_sequence"> & {
         dropped_ride_ids?: Set<string> | string[];
+        completed_ride_ids?: Set<string> | string[];
         next_up?: string;
+        ll_holds?: Record<string, string>;
+        plan_order?: string[];
+        ride_sequence?: {
+          ride_name?: string;
+          ride_id?: string;
+          predicted_wait_min?: number;
+        }[];
       })
     | undefined;
   if (!r) return null;
+  const rides = (r.ride_sequence ?? [])
+    .filter((rd) => rd.ride_id)
+    .map((rd) => ({
+      ride_name: rd.ride_name ?? "(unnamed)",
+      ride_id: rd.ride_id!,
+      predicted_wait_min:
+        typeof rd.predicted_wait_min === "number" ? rd.predicted_wait_min : null,
+    }));
+  // Honor a Claude-applied order (plan_order): rides listed there first,
+  // in that order; anything not listed keeps its original position after.
+  const order = r.plan_order ?? [];
+  if (order.length > 0) {
+    const rank = new Map(order.map((id, i) => [id, i]));
+    rides.sort(
+      (a, b) =>
+        (rank.get(a.ride_id) ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(b.ride_id) ?? Number.MAX_SAFE_INTEGER),
+    );
+  }
   return {
     plan_id: planId,
     date: r.planned_for_date ?? "",
@@ -376,10 +407,10 @@ export async function getReplanContext(
     park_name: findPark(r.park_key ?? "magic_kingdom")?.name ?? (r.park_key ?? ""),
     active: Boolean(r.active),
     outcome_recorded: Boolean(r.outcome_recorded),
-    rides: (r.ride_sequence ?? [])
-      .filter((rd) => rd.ride_id)
-      .map((rd) => ({ ride_name: rd.ride_name ?? "(unnamed)", ride_id: rd.ride_id! })),
+    rides,
     dropped_ride_ids: [...(r.dropped_ride_ids ?? [])],
     next_up: r.next_up ?? null,
+    held_lls: r.ll_holds ?? {},
+    completed_ride_ids: [...(r.completed_ride_ids ?? [])],
   };
 }

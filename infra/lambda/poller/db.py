@@ -594,10 +594,12 @@ def build_active_plan_ride_index(
             recipients = [user_id] + sorted(
                 s for s in subscribers if s and s != user_id
             )
-            # Rides dropped via the /replan approve flow leave the watch
-            # set (atomic dropped_ride_ids set — never mutates
+            # Rides dropped OR marked done via /replan leave the watch set
+            # (atomic dropped_ride_ids / completed_ride_ids — never mutate
             # ride_sequence, so the MCP planner's view is intact).
-            dropped = item.get("dropped_ride_ids") or set()
+            dropped = (item.get("dropped_ride_ids") or set()) | (
+                item.get("completed_ride_ids") or set()
+            )
             # Remaining planned rides with their at-plan-time predictions,
             # for the plan-drift check (current waits vs what the plan
             # assumed). Only rides carrying a numeric predicted_wait_min
