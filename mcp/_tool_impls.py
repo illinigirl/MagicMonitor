@@ -2706,11 +2706,23 @@ def split_dropped_rides(
     sequence — not a stale one that still lists a ride the family dropped.
     """
     dropped_ids = set(plan.get("dropped_ride_ids") or [])
+    # Rides marked done from /replan also leave the remaining sequence
+    # (the plan's completed_rides list is the richer, calibration path).
+    done_ids = set(plan.get("completed_ride_ids") or [])
     seq = plan.get("ride_sequence") or []
-    if not dropped_ids:
-        return list(seq), []
-    still = [r for r in seq if r.get("ride_id") not in dropped_ids]
+    still = [
+        r for r in seq
+        if r.get("ride_id") not in dropped_ids and r.get("ride_id") not in done_ids
+    ]
     dropped = [r for r in seq if r.get("ride_id") in dropped_ids]
+    # Honor a Claude-applied re-order (plan_order, set by the /replan
+    # "Ask Claude" apply): listed rides first, in that order; unlisted
+    # rides keep their original position after. Keeps the planner's view
+    # consistent with what the family sees on the page.
+    order = plan.get("plan_order") or []
+    if order:
+        rank = {rid: i for i, rid in enumerate(order)}
+        still.sort(key=lambda r: rank.get(r.get("ride_id"), len(order) + 1))
     return still, dropped
 
 

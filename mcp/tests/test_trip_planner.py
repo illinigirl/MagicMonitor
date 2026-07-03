@@ -785,3 +785,29 @@ class TestParseLLTime:
         import _tool_impls
         assert _tool_impls.parse_ll_time("later", "2026-07-03") is None
         assert _tool_impls.parse_ll_time("", "2026-07-03") is None
+
+
+class TestPlanOrderHonored:
+    """split_dropped_rides applies a Claude-set plan_order so the MCP view
+    matches what the family reordered on /replan."""
+
+    def test_reorders_still_by_plan_order(self):
+        import _tool_impls
+        plan = {
+            "ride_sequence": [{"ride_id": "a"}, {"ride_id": "b"}, {"ride_id": "c"}],
+            "plan_order": ["c", "a"],
+        }
+        still, _ = _tool_impls.split_dropped_rides(plan)
+        # c, a first (in order), then b (unlisted) keeps trailing.
+        assert [r["ride_id"] for r in still] == ["c", "a", "b"]
+
+    def test_order_plus_drop(self):
+        import _tool_impls
+        plan = {
+            "ride_sequence": [{"ride_id": "a"}, {"ride_id": "b"}, {"ride_id": "c"}],
+            "plan_order": ["c", "b", "a"],
+            "dropped_ride_ids": ["b"],
+        }
+        still, dropped = _tool_impls.split_dropped_rides(plan)
+        assert [r["ride_id"] for r in still] == ["c", "a"]  # b dropped
+        assert [r["ride_id"] for r in dropped] == ["b"]

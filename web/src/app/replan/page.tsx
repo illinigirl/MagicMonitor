@@ -17,6 +17,7 @@ import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
 
 import ReplanControls from "./ReplanControls";
+import AskClaude from "./AskClaude";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +56,7 @@ export default async function ReplanPage({
 
   const affected = ctx.rides.find((r) => r.ride_id === rideId);
   const droppedSet = new Set(ctx.dropped_ride_ids);
+  const doneSet = new Set(ctx.completed_ride_ids);
   // "down" alerts lead with Drop; everything else (short wait, earlier
   // LL, back-up) leads with Do next. The affected ride follows the alert
   // kind; other rides default to Drop-lead.
@@ -81,7 +83,15 @@ export default async function ReplanPage({
       <h2 className="display text-2xl font-medium mt-2">{heading}</h2>
       <p className="text-fg-2 text-sm mt-2">{lede}</p>
 
-      <div className="mt-6 rounded-lg border border-line bg-bg-1 divide-y divide-line-soft shadow-[var(--shadow-card)]">
+      <div className="mt-6">
+        <AskClaude
+          planId={ctx.plan_id}
+          trigger={affected ? `${affected.ride_name} (${kind || "alert"})` : null}
+          rideNames={Object.fromEntries(ctx.rides.map((r) => [r.ride_id, r.ride_name]))}
+        />
+      </div>
+
+      <div className="rounded-lg border border-line bg-bg-1 divide-y divide-line-soft shadow-[var(--shadow-card)]">
         {ctx.rides.map((r, i) => {
           const isAffected = r.ride_id === rideId;
           const isNext = ctx.next_up === r.ride_id;
@@ -108,6 +118,7 @@ export default async function ReplanPage({
                   rideName={r.ride_name}
                   initiallyDropped={droppedSet.has(r.ride_id)}
                   initiallyNext={isNext}
+                  initiallyDone={doneSet.has(r.ride_id)}
                   emphasize={isAffected ? affectedEmphasis : "drop"}
                 />
               </div>

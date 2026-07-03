@@ -23,6 +23,10 @@ import * as fs from "fs";
  * (one-time `aws ssm put-parameter`) so secrets never live in CDK,
  * CloudFormation, or git. Same hygiene pattern as the earlier project's TMDB key. */
 const PUSHOVER_APP_TOKEN_PARAM = "/disney/pushover/app_token";
+// Anthropic API key for the /replan "Ask Claude" suggestion (server-side
+// Sonnet call). SecureString in SSM; only the NAME is in env, the value
+// never leaves SSM. Populate the value out-of-band (not in the repo).
+const ANTHROPIC_API_KEY_PARAM = "/magicmonitor/anthropic-api-key";
 const PUSHOVER_USER_KEY_PARAM = "/disney/pushover/megan_user_key";
 
 /** Park entity IDs from themeparks.wiki — duplicated here from the Lambda
@@ -592,6 +596,9 @@ export class DisneyStack extends cdk.Stack {
         // PARAMETER NAME is in env — the secret value never leaves
         // SSM. Rotates without a redeploy.
         PUSHOVER_APP_TOKEN_PARAM,
+        // Anthropic key param name for the /replan "Ask Claude" call
+        // (value read from SSM at runtime via the grant below).
+        ANTHROPIC_API_KEY_PARAM,
         AMPLIFY_MONOREPO_APP_ROOT: "web",
         AMPLIFY_DIFF_DEPLOY: "false",
         // Avoid the "do you accept telemetry?" interactive prompt
@@ -651,6 +658,7 @@ export class DisneyStack extends cdk.Stack {
                     // NEXTAUTH_* are kept as v4-compat fallbacks.
                     "echo \"DISNEY_TABLE_NAME=$DISNEY_TABLE_NAME\" >> .env.production",
                     "echo \"PUSHOVER_APP_TOKEN_PARAM=$PUSHOVER_APP_TOKEN_PARAM\" >> .env.production",
+                    "echo \"ANTHROPIC_API_KEY_PARAM=$ANTHROPIC_API_KEY_PARAM\" >> .env.production",
                     "echo \"AUTH_URL=$NEXTAUTH_URL\" >> .env.production",
                     "echo \"AUTH_SECRET=$NEXTAUTH_SECRET\" >> .env.production",
                     "echo \"NEXTAUTH_URL=$NEXTAUTH_URL\" >> .env.production",
@@ -803,6 +811,18 @@ export class DisneyStack extends cdk.Stack {
         actions: ["ssm:GetParameter"],
         resources: [
           `arn:aws:ssm:${this.region}:${this.account}:parameter${PUSHOVER_APP_TOKEN_PARAM}`,
+        ],
+      }),
+    );
+
+    // SSM read for the Anthropic API key — used by the /replan
+    // "Ask Claude" server action (server-side Sonnet call). Same tight
+    // one-parameter scoping as the Pushover grant.
+    webApp.computeRole.addToPrincipalPolicy(
+      new iam.PolicyStatement({
+        actions: ["ssm:GetParameter"],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter${ANTHROPIC_API_KEY_PARAM}`,
         ],
       }),
     );

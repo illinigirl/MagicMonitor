@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
     "@aws-sdk/client-dynamodb": "^3.700.0",
     "@aws-sdk/client-ssm": "^3.1041.0",
     "@aws-sdk/lib-dynamodb": "^3.700.0",
