@@ -50,6 +50,74 @@ export interface ReplanRideInput {
   held_ll: string | null; // ISO, if the party holds an LL for it
 }
 
+/** The slice of ReplanContext this module needs (kept structural so the
+ *  pure builder is testable without the DDB layer). */
+export interface ReplanPlanSlice {
+  rides: { ride_id: string; ride_name: string; predicted_wait_min: number | null }[];
+  dropped_ride_ids: string[];
+  completed_ride_ids: string[];
+  held_lls: Record<string, string>;
+}
+
+export interface LiveRideSlice {
+  ride_id: string;
+  name: string;
+  wait_mins: number | null;
+  status: string;
+}
+
+/**
+ * Build the model's view of the day from the plan + live state. Pure —
+ * this is the boundary where 2026-07-03's bug lived: completed rides
+ * leaked into "remaining planned rides", so Sonnet re-planned a
+ * fictional day (6 already-ridden rides presented as still pending) and
+ * its narration couldn't match what applying could ever change.
+ *
+ * - rides: remaining only — NOT dropped and NOT completed.
+ * - completed_names: what's already ridden, passed as context (pacing,
+ *   "worth adding more?") — never as re-plannable rides.
+ * - catalog: park rides not in the plan at all (any status but CLOSED;
+ *   DOWN stays visible so Claude knows it exists but won't pick it).
+ */
+export function buildReplanModelInput(
+  plan: ReplanPlanSlice,
+  live: LiveRideSlice[],
+): {
+  rides: ReplanRideInput[];
+  completed_names: string[];
+  catalog: { ride_id: string; ride_name: string; current_wait: number | null; status: string }[];
+} {
+  const byId = new Map(live.map((r) => [r.ride_id, r]));
+  const done = new Set(plan.completed_ride_ids);
+  const gone = new Set([...plan.dropped_ride_ids, ...plan.completed_ride_ids]);
+  const rides = plan.rides
+    .filter((r) => !gone.has(r.ride_id))
+    .map((r) => {
+      const l = byId.get(r.ride_id);
+      return {
+        ride_id: r.ride_id,
+        ride_name: r.ride_name,
+        predicted_wait_min: r.predicted_wait_min,
+        current_wait: l?.wait_mins ?? null,
+        status: l?.status ?? "UNKNOWN",
+        held_ll: plan.held_lls[r.ride_id] ?? null,
+      };
+    });
+  const completed_names = plan.rides
+    .filter((r) => done.has(r.ride_id))
+    .map((r) => r.ride_name);
+  const planned = new Set(plan.rides.map((r) => r.ride_id));
+  const catalog = live
+    .filter((r) => !planned.has(r.ride_id) && r.status !== "CLOSED")
+    .map((r) => ({
+      ride_id: r.ride_id,
+      ride_name: r.name,
+      current_wait: r.wait_mins,
+      status: r.status,
+    }));
+  return { rides, completed_names, catalog };
+}
+
 export interface ReplanSuggestion {
   /** True when the current order is already good — order/drop echo it. */
   no_change: boolean;
@@ -68,8 +136,10 @@ const TOOL = {
   name: "propose_replan",
   description:
     "Re-evaluate the remaining plan: return the suggested ORDER of the " +
-    "remaining rides (best next first) and any to drop. Reorder only — do " +
-    "not invent rides that aren't in the list.",
+    "remaining rides (best next first), any to DROP, and any to ADD from " +
+    "the provided catalog. Use exact ride_ids from the plan or catalog " +
+    "only — never invent one. Anything you mention adding or dropping in " +
+    "`summary` MUST also appear in `add`/`drop`, or it won't happen.",
   input_schema: {
     type: "object" as const,
     properties: {
@@ -126,6 +196,8 @@ export async function proposeReplan(input: {
   /** Free-text context the family typed (e.g. "leaving by 5, skip water rides"). */
   note: string | null;
   rides: ReplanRideInput[];
+  /** Names of rides already ridden today — context only, never re-planned. */
+  completed_names?: string[];
   /** Other rides in the park (not in the plan) Claude may add from. */
   catalog: { ride_id: string; ride_name: string; current_wait: number | null; status: string }[];
 }): Promise<ReplanSuggestion> {
@@ -169,7 +241,15 @@ export async function proposeReplan(input: {
           `Weather: ${input.weather ?? "n/a"}. ` +
           `Alert that prompted this: ${input.trigger ?? "manual check"}.\n\n` +
           (input.note ? `From the family: "${input.note}". Weigh this heavily.\n\n` : "") +
-          `Remaining planned rides (current wait vs planned):\n${rideLines}\n\n` +
+          (input.completed_names?.length
+            ? `Already ridden today (context only — do NOT put these in order/drop): ` +
+              `${input.completed_names.join(", ")}.\n\n`
+            : "") +
+          (input.rides.length
+            ? `Remaining planned rides (current wait vs planned):\n${rideLines}\n\n`
+            : `NO planned rides remain — everything is already ridden or ` +
+              `dropped. Suggest ADDs from the catalog if the day has time ` +
+              `left, or say the day looks complete.\n\n`) +
           (input.catalog.length
             ? `Other rides in the park you may ADD (use these exact ride_ids only):\n` +
               input.catalog
@@ -189,9 +269,24 @@ export async function proposeReplan(input: {
   const catalogById = new Map(input.catalog.map((c) => [c.ride_id, c.ride_name]));
   // Adds must be real catalog ride_ids not already planned.
   const planned = new Set(input.rides.map((r) => r.ride_id));
-  const add = (out.add ?? [])
+  const rawAdd = out.add ?? [];
+  const add = rawAdd
     .filter((a) => catalogById.has(a.ride_id) && !planned.has(a.ride_id))
     .map((a) => ({ ride_id: a.ride_id, ride_name: catalogById.get(a.ride_id) ?? a.ride_name }));
+  // Boundary log (2026-07-03): what the model SAID vs what validation
+  // kept. Without this, a narrated-but-filtered add ("I'll add Dumbo!")
+  // is indistinguishable from the model never proposing one — the exact
+  // ambiguity that made today's bug hard to pin down.
+  const eaten = rawAdd.filter((a) => !add.some((k) => k.ride_id === a.ride_id));
+  console.log(
+    `[replan/ask] sonnet returned order=${(out.order ?? []).length} ` +
+      `drop=${(out.drop ?? []).length} add=${rawAdd.length}; kept add=${add.length}` +
+      (eaten.length
+        ? ` — FILTERED adds (bad/duplicate ride_id): ${eaten
+            .map((a) => `${a.ride_name ?? "?"}[${a.ride_id}]`)
+            .join(", ")}`
+        : ""),
+  );
   const addSet = new Set(add.map((a) => a.ride_id));
   // Valid ride universe = planned + adds.
   const ids = new Set([...planned, ...addSet]);

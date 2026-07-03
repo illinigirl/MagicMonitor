@@ -24,7 +24,11 @@ import {
   setRideDone,
   setRideDropped,
 } from "@/lib/dynamodb-writes";
-import { proposeReplan, type ReplanSuggestion } from "@/lib/claude-replan";
+import {
+  buildReplanModelInput,
+  proposeReplan,
+  type ReplanSuggestion,
+} from "@/lib/claude-replan";
 import { completeRideAndAdvance } from "@/lib/plan-complete";
 import { getCurrentConditions } from "@/lib/weather";
 import { isTripsAllowed } from "@/lib/trips-access";
@@ -109,33 +113,10 @@ export async function askClaudeReplan(
       getParkRides(ctx.park_key),
       getCurrentConditions(),
     ]);
-    const byId = new Map(state.map((r) => [r.ride_id, r]));
-    const dropped = new Set(ctx.dropped_ride_ids);
-    const rides = ctx.rides
-      .filter((r) => !dropped.has(r.ride_id))
-      .map((r) => {
-        const live = byId.get(r.ride_id);
-        return {
-          ride_id: r.ride_id,
-          ride_name: r.ride_name,
-          predicted_wait_min: r.predicted_wait_min,
-          current_wait: live?.wait_mins ?? null,
-          status: live?.status ?? "UNKNOWN",
-          held_ll: ctx.held_lls[r.ride_id] ?? null,
-        };
-      });
-
-    // Catalog of rides in the park NOT already in the plan, so Claude can
-    // suggest adds (from real ride_ids only).
-    const planned = new Set(ctx.rides.map((r) => r.ride_id));
-    const catalog = state
-      .filter((r) => !planned.has(r.ride_id) && r.status !== "CLOSED")
-      .map((r) => ({
-        ride_id: r.ride_id,
-        ride_name: r.name,
-        current_wait: r.wait_mins,
-        status: r.status,
-      }));
+    // buildReplanModelInput is the completed/dropped boundary: rides =
+    // genuinely remaining only (the 2026-07-03 bug sent already-ridden
+    // rides as "remaining", so Sonnet re-planned a fictional day).
+    const { rides, completed_names, catalog } = buildReplanModelInput(ctx, state);
 
     const suggestion = await proposeReplan({
       park_name: ctx.park_name,
@@ -144,6 +125,7 @@ export async function askClaudeReplan(
       trigger: trigger ?? null,
       note: (note ?? "").trim().slice(0, 500) || null,
       rides,
+      completed_names,
       catalog,
     });
     return { ok: true, suggestion };
@@ -171,23 +153,22 @@ export async function applyReplanOrder(
     return { ok: false, error: "Family accounts only." };
   }
   const clean = (order ?? []).filter((s) => typeof s === "string").slice(0, 60);
-  if (!planId || clean.length === 0) {
+  const cleanDrops = (drop ?? []).filter((s) => typeof s === "string").slice(0, 50);
+  const cleanAdds = (add ?? [])
+    .filter((a) => a && typeof a.ride_id === "string" && typeof a.ride_name === "string")
+    .slice(0, 20);
+  // An empty ORDER is legitimate when there are drops/adds — e.g. every
+  // remaining ride is DOWN and the suggestion is "drop both" (hit for
+  // real 2026-07-03). Only reject when there's literally nothing to do.
+  if (!planId || (clean.length === 0 && cleanDrops.length === 0 && cleanAdds.length === 0)) {
     return { ok: false, error: "Nothing to apply." };
   }
   try {
     // Add new rides FIRST (so they exist in ride_sequence before the
     // order + poller reference them), then order, then drops.
-    const cleanAdds = (add ?? [])
-      .filter((a) => a && typeof a.ride_id === "string" && typeof a.ride_name === "string")
-      .slice(0, 20);
     if (cleanAdds.length) await addRidesToSequence(planId, cleanAdds);
-    await setPlanOrder(planId, clean);
-    await Promise.all(
-      (drop ?? [])
-        .filter((s) => typeof s === "string")
-        .slice(0, 50)
-        .map((id) => setRideDropped(planId, id, true)),
-    );
+    if (clean.length) await setPlanOrder(planId, clean);
+    await Promise.all(cleanDrops.map((id) => setRideDropped(planId, id, true)));
   } catch {
     return { ok: false, error: "Couldn't apply — try again." };
   }
