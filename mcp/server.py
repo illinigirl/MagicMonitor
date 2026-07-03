@@ -1901,6 +1901,7 @@ def get_plan_for_day(
         # poller watches.
         "ride_sequence": _tool_impls.split_dropped_rides(chosen)[0],
         "dropped_via_replan": _tool_impls.split_dropped_rides(chosen)[1],
+        "next_up": chosen.get("next_up"),
         "completed_rides": chosen.get("completed_rides", []),
         "dropped_rides": chosen.get("dropped_rides", []),
         "show_selections": chosen.get("show_selections", []),

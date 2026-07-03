@@ -186,6 +186,7 @@ def alert_plan_low_wait(
     typical_wait_mins: int | None = None,
     forecast_wait_mins: int | None = None,
     plan_id: Optional[str] = None,
+    ride_id: Optional[str] = None,
 ) -> bool:
     """Plan-aware sibling of alert_low_wait: the ride with the unusually
     short wait is in the recipient's ACTIVE plan today (still in
@@ -208,7 +209,11 @@ def alert_plan_low_wait(
         parts.append(f"Today's forecast: {forecast_wait_mins} min.")
     parts.append("Good time to jump to it if you're close.")
     body = f"{park_name}\n" + " ".join(parts)
-    return _send(user_key, title, body, priority=0)
+    url = _replan_url(plan_id, ride_id, "next")
+    return _send(
+        user_key, title, body, priority=0, url=url,
+        url_title="Do it next or adjust" if url else None,
+    )
 
 
 # Public dashboard base; the /replan deep-link target. Overridable via
@@ -216,17 +221,25 @@ def alert_plan_low_wait(
 _APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://magicmonitor.megillini.dev")
 
 
-def _replan_url(plan_id: str | None, ride_id: str | None) -> str | None:
-    """Deep-link to the /replan approve page for a plan+ride, or None
-    when we lack the ids to target it (the alert stays informational)."""
-    if not plan_id or not ride_id:
+def _replan_url(
+    plan_id: str | None,
+    ride_id: str | None = None,
+    kind: str | None = None,
+) -> str | None:
+    """Deep-link to the /replan adjust page. Needs at least a plan_id
+    (any alert with plan context can link there — the human decides
+    whether to act). `ride_id` highlights the alerted ride; `kind`
+    (down / next / storm) tells the page which action to suggest."""
+    if not plan_id:
         return None
     from urllib.parse import quote
 
-    return (
-        f"{_APP_BASE_URL}/replan?plan={quote(plan_id, safe='')}"
-        f"&ride={quote(ride_id, safe='')}"
-    )
+    url = f"{_APP_BASE_URL}/replan?plan={quote(plan_id, safe='')}"
+    if ride_id:
+        url += f"&ride={quote(ride_id, safe='')}"
+    if kind:
+        url += f"&type={kind}"
+    return url
 
 
 def _fmt_return_time(iso: str | None) -> str | None:
@@ -250,6 +263,8 @@ def alert_ll_earlier(
     prior_return_start: str | None = None,
     in_plan: bool = False,
     price: str | None = None,
+    plan_id: str | None = None,
+    ride_id: str | None = None,
 ) -> bool:
     """An earlier Lightning Lane return window just opened for a ride the
     recipient is watching (an active-plan ride, or a favorite they opted
@@ -274,7 +289,13 @@ def alert_ll_earlier(
         parts.append(f"{price}.")
     parts.append("Grab it or move your existing LL earlier while it lasts.")
     body = f"{park_name}\n" + " ".join(parts)
-    return _send(user_key, title, body, priority=0)
+    # In-plan recipients can act on it via /replan (do-it-next); a
+    # favorites-opt-in watcher has no plan context to re-sequence.
+    url = _replan_url(plan_id, ride_id, "next") if in_plan else None
+    return _send(
+        user_key, title, body, priority=0, url=url,
+        url_title="Do it next or adjust" if url else None,
+    )
 
 
 def alert_plan_disruption(
@@ -301,11 +322,11 @@ def alert_plan_disruption(
     back_up (good news, less urgent).
     """
     emoji = PARK_EMOJI.get(park_key, "🎢")
-    # Deep-link to the /replan approve page so the alert is actionable
-    # without the Claude app (anyone with Pushover + a browser).
-    url = _replan_url(plan_id, ride_id)
+    # Every plan alert deep-links to /replan so it's actionable without
+    # the Claude app — the human decides whether to act.
     url_title = None
     if disruption_type == "went_down":
+        url = _replan_url(plan_id, ride_id, "down")
         title = f"{emoji} Plan disruption — {ride_name} DOWN"
         tail = (
             "Tap to drop it or keep it in your plan."
@@ -319,14 +340,16 @@ def alert_plan_disruption(
         url_title = "Drop it or re-plan"
         priority = 1
     elif disruption_type == "back_up":
+        url = _replan_url(plan_id, ride_id, "next")
         wait_blurb = f" Current wait: {wait_mins} min." if wait_mins is not None else ""
         title = f"{emoji} Plan update — {ride_name} back up"
+        tail = "Tap to do it next or adjust." if url else "Let Claude know if you want to slot it back in."
         body = (
             f"{park_name}\n"
             f"{ride_name} is operating again and it's in your plan today."
-            f"{wait_blurb} Let Claude know if you want to slot it back in."
+            f"{wait_blurb} {tail}"
         )
-        url = None  # back-up is good news; nothing to approve
+        url_title = "Do it next or adjust"
         priority = 0
     else:
         # Defensive: unknown disruption_type. Don't crash the poller —
@@ -362,11 +385,21 @@ def alert_plan_weather_shift(
     locale assumptions in the notifier.
     """
     emoji = PARK_EMOJI.get(park_key, "🎢")
+    # Storm is plan-wide, not one ride — link to the whole day's adjust
+    # page (drop outdoor rides / prioritize indoor).
+    url = _replan_url(plan_id, None, "storm")
     title = f"{emoji} Storm forecast — plan may shift"
+    tail = (
+        "Tap to adjust — drop outdoor rides or move indoor ones up."
+        if url
+        else "Re-check with Claude to slot indoor rides ahead of the storm."
+    )
     body = (
         f"{park_name}\n"
         f"Thunderstorm now in the forecast {window_phrase}. "
-        f"Disney pauses outdoor rides for lightning — re-check with "
-        f"Claude when you can to slot indoor rides ahead of the storm."
+        f"Disney pauses outdoor rides for lightning. {tail}"
     )
-    return _send(user_key, title, body, priority=1)
+    return _send(
+        user_key, title, body, priority=1, url=url,
+        url_title="Adjust for the storm" if url else None,
+    )

@@ -343,6 +343,8 @@ export interface ReplanContext {
   rides: { ride_name: string; ride_id: string }[];
   /** ride_ids already dropped via the /replan approve flow. */
   dropped_ride_ids: string[];
+  /** ride_id the family marked "do next" (or null). */
+  next_up: string | null;
 }
 
 /**
@@ -361,7 +363,10 @@ export async function getReplanContext(
     }),
   );
   const r = resp.Item as
-    | (PlanRow & { dropped_ride_ids?: Set<string> | string[] })
+    | (PlanRow & {
+        dropped_ride_ids?: Set<string> | string[];
+        next_up?: string;
+      })
     | undefined;
   if (!r) return null;
   return {
@@ -375,5 +380,6 @@ export async function getReplanContext(
       .filter((rd) => rd.ride_id)
       .map((rd) => ({ ride_name: rd.ride_name ?? "(unnamed)", ride_id: rd.ride_id! })),
     dropped_ride_ids: [...(r.dropped_ride_ids ?? [])],
+    next_up: r.next_up ?? null,
   };
 }

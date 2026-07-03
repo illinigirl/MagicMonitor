@@ -147,14 +147,17 @@ class TestReplanDeepLink:
         assert "/replan?plan=p1" in url and "ride=sm" in url
         assert sent["data"]["url_title"] == "Drop it or re-plan"
 
-    def test_back_up_has_no_url(self, monkeypatch):
+    def test_back_up_links_do_next(self, monkeypatch):
+        # Any plan alert can trigger a re-plan: back-up now links too,
+        # with a "do it next" framing (type=next) rather than "down".
         sent = self._capture(monkeypatch)
         notifier.alert_plan_disruption(
             "key", ride_name="Space Mountain", park_name="Magic Kingdom",
             park_key="magic_kingdom", disruption_type="back_up",
             plan_id="p1", ride_id="sm", wait_mins=20,
         )
-        assert "url" not in sent["data"]
+        assert "/replan?plan=p1" in sent["data"]["url"]
+        assert "type=next" in sent["data"]["url"]
 
     def test_went_down_without_ids_stays_informational(self, monkeypatch):
         sent = self._capture(monkeypatch)
@@ -163,3 +166,55 @@ class TestReplanDeepLink:
             disruption_type="went_down",
         )
         assert "url" not in sent["data"]
+
+
+class TestOpportunityAndStormDeepLinks:
+    """Every plan alert links to /replan so it's an actionable re-plan
+    entry point. Opportunity alerts suggest 'do next'; storm links to the
+    plan (no ride); a favorites-only LL watcher (not in a plan) gets no
+    link since there's no plan to re-sequence."""
+
+    def _capture(self, monkeypatch):
+        monkeypatch.setattr(notifier, "_get_app_token", lambda: "tok")
+        sent = {}
+        monkeypatch.setattr(
+            notifier.requests, "post",
+            lambda url, data=None, timeout=None: (sent.update(data=data) or _FakeResp()),
+        )
+        return sent
+
+    def test_plan_low_wait_links_do_next(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_plan_low_wait(
+            "key", ride_name="Space Mountain", park_name="MK",
+            park_key="magic_kingdom", wait_mins=10, plan_id="p1", ride_id="sm",
+        )
+        assert "/replan?plan=p1" in sent["data"]["url"] and "ride=sm" in sent["data"]["url"]
+        assert "type=next" in sent["data"]["url"]
+
+    def test_ll_earlier_in_plan_links(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_ll_earlier(
+            "key", ride_name="TRON", park_name="MK", park_key="magic_kingdom",
+            new_return_start="2026-07-03T14:00:00-04:00", in_plan=True,
+            plan_id="p1", ride_id="tron",
+        )
+        assert "/replan?plan=p1" in sent["data"]["url"]
+
+    def test_ll_earlier_favorite_only_no_link(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_ll_earlier(
+            "key", ride_name="TRON", park_name="MK", park_key="magic_kingdom",
+            new_return_start="2026-07-03T14:00:00-04:00", in_plan=False,
+            plan_id=None, ride_id="tron",
+        )
+        assert "url" not in sent["data"]
+
+    def test_storm_links_plan_no_ride(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_plan_weather_shift(
+            "key", park_name="MK", park_key="magic_kingdom",
+            window_phrase="this afternoon", plan_id="p1",
+        )
+        url = sent["data"]["url"]
+        assert "/replan?plan=p1" in url and "type=storm" in url and "ride=" not in url
