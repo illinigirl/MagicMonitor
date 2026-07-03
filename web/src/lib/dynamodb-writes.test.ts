@@ -259,3 +259,24 @@ describe("setRideActualWait", () => {
     expect(sendMock.mock.calls[0][0].input.UpdateExpression).toBe("REMOVE actual_waits.#r");
   });
 });
+
+describe("addRidesToSequence", () => {
+  it("atomically list_appends new ride entries", async () => {
+    sendMock.mockResolvedValue({});
+    const { addRidesToSequence } = await import("./dynamodb-writes");
+    await addRidesToSequence("p1", [{ ride_id: "sm", ride_name: "Space Mountain" }]);
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input.UpdateExpression).toContain("list_append(if_not_exists(ride_sequence");
+    expect(input.ExpressionAttributeValues[":new"]).toEqual([
+      { ride_id: "sm", ride_name: "Space Mountain", added_via: "replan" },
+    ]);
+    expect(input.ConditionExpression).toBe("attribute_exists(PK)");
+  });
+
+  it("no-ops on an empty add list", async () => {
+    sendMock.mockClear();
+    const { addRidesToSequence } = await import("./dynamodb-writes");
+    await addRidesToSequence("p1", []);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+});

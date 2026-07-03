@@ -25,26 +25,35 @@ export default function AskClaude({
 }) {
   const [pending, start] = useTransition();
   const [result, setResult] = useState<AskClaudeResult | null>(null);
+  const [note, setNote] = useState("");
 
   const ask = () => {
     setResult(null);
-    start(async () => setResult(await askClaudeReplan(planId, trigger)));
+    start(async () => setResult(await askClaudeReplan(planId, trigger, note)));
   };
 
   return (
     <div className="mb-6 rounded-lg border border-gold/40 bg-bg-1 p-4 shadow-[var(--shadow-card)]">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <p className="text-fg-1 text-sm font-medium">Not sure what to do?</p>
-          <p className="text-fg-3 text-xs">
-            Ask Claude for a take on the whole day.
-          </p>
-        </div>
+      <div>
+        <p className="text-fg-1 text-sm font-medium">Not sure what to do?</p>
+        <p className="text-fg-3 text-xs">
+          Add anything Claude should know, then ask for a take on the day.
+        </p>
+      </div>
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        rows={2}
+        maxLength={500}
+        placeholder="e.g. leaving by 5, skip water rides, add a couple more headliners…"
+        className="mt-2 w-full rounded-md border border-line bg-bg-0 px-3 py-2 text-sm text-fg-0 placeholder:text-fg-3 focus:border-accent focus:outline-none"
+      />
+      <div className="mt-2 flex justify-end">
         <button
           type="button"
           onClick={ask}
           disabled={pending}
-          className="shrink-0 rounded-md bg-gold px-3 py-1.5 text-sm font-medium text-gold-ink hover:opacity-90 disabled:opacity-60"
+          className="rounded-md bg-gold px-3 py-1.5 text-sm font-medium text-gold-ink hover:opacity-90 disabled:opacity-60"
         >
           {pending ? "Thinking…" : "Ask Claude"}
         </button>
@@ -72,12 +81,19 @@ function Suggestion({
   const [pending, start] = useTransition();
   const [applied, setApplied] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const name = (id: string) => rideNames[id] ?? "(ride)";
+  // Names for planned rides plus any Claude proposed adding.
+  const addNames = Object.fromEntries(suggestion.add.map((a) => [a.ride_id, a.ride_name]));
+  const name = (id: string) => rideNames[id] ?? addNames[id] ?? "(ride)";
 
   const apply = () => {
     setError(null);
     start(async () => {
-      const res = await applyReplanOrder(planId, suggestion.order, suggestion.drop);
+      const res = await applyReplanOrder(
+        planId,
+        suggestion.order,
+        suggestion.drop,
+        suggestion.add,
+      );
       if (res.ok) setApplied(true);
       else setError(res.error ?? "Couldn't apply.");
     });
@@ -99,6 +115,11 @@ function Suggestion({
         ))}
       </ol>
 
+      {suggestion.add.length > 0 && (
+        <p className="mt-2 text-xs text-ok">
+          + Add: {suggestion.add.map((a) => a.ride_name).join(", ")}
+        </p>
+      )}
       {suggestion.drop.length > 0 && (
         <p className="mt-2 text-xs text-bad">
           Drop: {suggestion.drop.map(name).join(", ")}

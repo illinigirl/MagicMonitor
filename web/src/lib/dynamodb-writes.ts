@@ -473,6 +473,37 @@ export async function bumpReplanLlmCount(
 }
 
 /**
+ * Append new rides to a plan's ride_sequence (from an Ask-Claude add).
+ * Uses DDB's atomic `list_append` in the UpdateExpression — a single
+ * server-side append, so no read-modify-write and no race with a
+ * concurrent plan edit. Idempotency (not re-adding an existing ride) is
+ * the caller's job via the catalog filter.
+ */
+export async function addRidesToSequence(
+  planId: string,
+  rides: { ride_id: string; ride_name: string }[],
+): Promise<void> {
+  if (rides.length === 0) return;
+  await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+      UpdateExpression:
+        "SET ride_sequence = list_append(if_not_exists(ride_sequence, :empty), :new)",
+      ExpressionAttributeValues: {
+        ":empty": [],
+        ":new": rides.map((r) => ({
+          ride_id: r.ride_id,
+          ride_name: r.ride_name,
+          added_via: "replan",
+        })),
+      },
+      ConditionExpression: "attribute_exists(PK)",
+    }),
+  );
+}
+
+/**
  * Set the suggested ride ORDER for a plan (a list of ride_ids), from the
  * "Ask Claude" re-plan. A single atomic SET of one list attribute
  * (plan_order) — overwrites wholesale, never touches ride_sequence, so it
