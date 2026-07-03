@@ -17,11 +17,16 @@
  */
 
 import Link from "next/link";
-import { useActionState } from "react";
+import { useActionState, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
 
 import { PARKS, type ParkKey } from "@/lib/parks";
-import { saveSettings, type SaveSettingsResult } from "./actions";
+import {
+  saveSettings,
+  sendTestNotification,
+  type SaveSettingsResult,
+  type TestNotifResult,
+} from "./actions";
 
 interface Props {
   initialName: string;
@@ -80,6 +85,8 @@ export function SettingsForm({
             className="w-full rounded-md border border-line bg-bg-0 px-3 py-2 font-mono text-sm text-fg-0 focus:border-accent focus:outline-none"
           />
         </Field>
+
+        <TestNotificationButton hasSavedKey={Boolean(initialPushoverUserKey)} />
       </fieldset>
 
       <fieldset className="space-y-3">
@@ -127,6 +134,48 @@ export function SettingsForm({
         <StatusMessage state={state} />
       </div>
     </form>
+  );
+}
+
+/**
+ * "Send test notification" — a type="button" (NOT a submit) that fires
+ * the sendTestNotification action out-of-band, so it doesn't submit or
+ * validate the settings form. Tests the SAVED key; disabled until one
+ * exists (hint tells the user to Save a freshly-typed key first).
+ */
+function TestNotificationButton({ hasSavedKey }: { hasSavedKey: boolean }) {
+  const [pending, startTransition] = useTransition();
+  const [result, setResult] = useState<TestNotifResult | null>(null);
+
+  return (
+    <div>
+      <button
+        type="button"
+        disabled={pending || !hasSavedKey}
+        onClick={() => {
+          setResult(null);
+          startTransition(async () => setResult(await sendTestNotification()));
+        }}
+        className="inline-flex items-center gap-2 rounded-md border border-line bg-bg-1 px-3 py-1.5 text-sm text-fg-1 hover:bg-bg-2 disabled:opacity-50 transition-colors"
+      >
+        {pending ? "Sending…" : "Send test notification"}
+      </button>
+      {!hasSavedKey ? (
+        <p className="mt-1 text-xs text-fg-3">
+          Save a Pushover key first, then send a test to confirm it works.
+        </p>
+      ) : result ? (
+        result.ok ? (
+          <p className="mt-1 text-xs text-ok">Sent — check your phone. 📲</p>
+        ) : (
+          <p className="mt-1 text-xs text-bad">{result.error}</p>
+        )
+      ) : (
+        <p className="mt-1 text-xs text-fg-3">
+          Sends a push to your saved key right now.
+        </p>
+      )}
+    </div>
   );
 }
 
