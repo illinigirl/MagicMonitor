@@ -594,20 +594,32 @@ def build_active_plan_ride_index(
             recipients = [user_id] + sorted(
                 s for s in subscribers if s and s != user_id
             )
+            # Rides dropped via the /replan approve flow leave the watch
+            # set (atomic dropped_ride_ids set — never mutates
+            # ride_sequence, so the MCP planner's view is intact).
+            dropped = item.get("dropped_ride_ids") or set()
+            # Remaining planned rides with their at-plan-time predictions,
+            # for the plan-drift check (current waits vs what the plan
+            # assumed). Only rides carrying a numeric predicted_wait_min
+            # are comparable; others are skipped by the drift math.
+            plan_rides = [
+                {
+                    "ride_id": r.get("ride_id"),
+                    "ride_name": r.get("ride_name"),
+                    "predicted_wait_min": r.get("predicted_wait_min"),
+                }
+                for r in (item.get("ride_sequence") or [])
+                if r.get("ride_id") and r.get("ride_id") not in dropped
+            ]
             for recipient in recipients:
                 active_plans.append({
                     "user_id":   recipient,
                     "plan_id":   plan_id,
                     "park_key":  item.get("park_key"),
-                    # park_name isn't stored on the plan row, but it's
-                    # derivable from park_key in the handler via the same
-                    # PARK_NAME lookup the notifier uses. Leaving the slot
-                    # here for clarity.
+                    # Same rides for every recipient of a plan; the drift
+                    # check dedupes by plan_id before using them.
+                    "rides":     plan_rides,
                 })
-            # Rides dropped via the /replan approve flow leave the watch
-            # set (atomic dropped_ride_ids set — never mutates
-            # ride_sequence, so the MCP planner's view is intact).
-            dropped = item.get("dropped_ride_ids") or set()
             for ride in item.get("ride_sequence", []) or []:
                 ride_id = ride.get("ride_id")
                 if ride_id and ride_id in dropped:
@@ -725,6 +737,31 @@ def mark_weather_alert_sent(user_id: str, plan_id: str) -> None:
         Item={
             "PK":      f"USER#{user_id}",
             "SK":      f"COOLDOWN#WEATHER#{plan_id}",
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "ttl":     expire_ts,
+        }
+    )
+
+
+# Plan-drift ("day running lighter/heavier than planned") cooldown —
+# per (user, plan). Longer window than a ride event: it's a gentle
+# once-in-a-while nudge, not a reactive ping. Default 3h.
+PLAN_DRIFT_COOLDOWN_SECS = int(os.environ.get("PLAN_DRIFT_COOLDOWN_SECS", "10800"))
+
+
+def is_plan_drift_on_cooldown(user_id: str, plan_id: str) -> bool:
+    resp = _table.get_item(
+        Key={"PK": f"USER#{user_id}", "SK": f"COOLDOWN#DRIFT#{plan_id}"}
+    )
+    return _cooldown_active(resp)
+
+
+def mark_plan_drift_sent(user_id: str, plan_id: str) -> None:
+    expire_ts = int(time.time()) + PLAN_DRIFT_COOLDOWN_SECS
+    _table.put_item(
+        Item={
+            "PK":      f"USER#{user_id}",
+            "SK":      f"COOLDOWN#DRIFT#{plan_id}",
             "sent_at": datetime.now(timezone.utc).isoformat(),
             "ttl":     expire_ts,
         }

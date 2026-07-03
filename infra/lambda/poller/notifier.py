@@ -359,6 +359,48 @@ def alert_plan_disruption(
     return _send(user_key, title, body, priority=priority, url=url, url_title=url_title)
 
 
+def alert_plan_drift(
+    user_key: str,
+    park_name: str,
+    park_key: str,
+    net_minutes: int,
+    plan_id: Optional[str] = None,
+) -> bool:
+    """One gentle nudge when the remaining planned rides are collectively
+    running well OFF what the plan assumed. net_minutes > 0 = LIGHTER
+    (waits under prediction — time freed up, add rides); < 0 = HEAVIER
+    (busier than planned, trim/re-sequence). Aggregated per plan, heavily
+    cooldowned — replaces per-ride low-wait spam on a drifting day.
+
+    Priority 0 — an opportunity/heads-up, not a disruption.
+    """
+    emoji = PARK_EMOJI.get(park_key, "🎢")
+    mins = abs(int(net_minutes))
+    if net_minutes >= 0:
+        title = f"{emoji} Running ahead of plan"
+        body = (
+            f"{park_name}\n"
+            f"Your remaining rides are ~{mins} min under what the plan "
+            f"assumed — it's lighter than expected. Good time to add "
+            f"something."
+        )
+        url_title = "Add a ride / adjust"
+    else:
+        title = f"{emoji} Busier than planned"
+        body = (
+            f"{park_name}\n"
+            f"Your remaining rides are ~{mins} min over what the plan "
+            f"assumed — heavier than expected. You may want to trim or "
+            f"re-sequence."
+        )
+        url_title = "Trim / re-sequence"
+    url = _replan_url(plan_id, None, "drift")
+    return _send(
+        user_key, title, body, priority=0, url=url,
+        url_title=url_title if url else None,
+    )
+
+
 def alert_plan_weather_shift(
     user_key: str,
     park_name: str,

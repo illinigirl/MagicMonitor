@@ -89,9 +89,17 @@ def _low_wait_threshold(ride_id: str, hour_et: int) -> int | None:
     return by_hour.get(str(hour_et))
 
 
+# Minimum minutes-earlier for an LL improvement to be worth a push. A
+# 5-min improvement isn't actionable; this kills that triviality. (The
+# deeper "you already hold an LL hours earlier" case needs the held-LL
+# record — see the held-LL precision work.) Env-tunable.
+LL_MIN_IMPROVEMENT_MIN = int(os.environ.get("LL_MIN_IMPROVEMENT_MIN", "20"))
+
+
 def _ll_became_earlier(prior_ll: dict | None, new_ll: dict | None) -> bool:
-    """True when a ride's Lightning Lane return window moved EARLIER than
-    the prior poll — the LL-watch trigger.
+    """True when a ride's Lightning Lane return window moved MEANINGFULLY
+    earlier than the prior poll (>= LL_MIN_IMPROVEMENT_MIN) — the LL-watch
+    trigger.
 
     The STATE row's ll is overwritten each poll, so `prior_ll` is exactly
     last poll's offer: no separate baseline needed. Parsed to datetimes
@@ -103,7 +111,8 @@ def _ll_became_earlier(prior_ll: dict | None, new_ll: dict | None) -> bool:
     old_rs = _parse_iso((prior_ll or {}).get("return_start"))
     if new_rs is None or old_rs is None:
         return False
-    return new_rs < old_rs
+    improvement_min = (old_rs - new_rs).total_seconds() / 60
+    return improvement_min >= LL_MIN_IMPROVEMENT_MIN
 
 
 def _parse_iso(iso: str | None):
@@ -113,6 +122,34 @@ def _parse_iso(iso: str | None):
         return datetime.fromisoformat(iso)
     except (ValueError, TypeError):
         return None
+
+
+# Minutes of net drift (summed predicted − current across comparable
+# remaining rides) at/above which we nudge a re-plan. Env-tunable.
+PLAN_DRIFT_THRESHOLD_MIN = int(os.environ.get("PLAN_DRIFT_THRESHOLD_MIN", "30"))
+
+
+def _compute_plan_drift(rides: list[dict], current_waits: dict[str, int]):
+    """Sum (predicted_wait_min − current_wait) over remaining planned
+    rides that have BOTH a numeric prediction and a current operating
+    wait. Returns (net_minutes, n_compared): net > 0 = running LIGHTER
+    than planned (waits under prediction — time freed up); net < 0 =
+    HEAVIER. n_compared guards against firing on a single ride.
+    """
+    net = 0
+    n = 0
+    for r in rides:
+        rid = r.get("ride_id")
+        pred = r.get("predicted_wait_min")
+        cur = current_waits.get(rid)
+        if rid is None or pred is None or cur is None:
+            continue
+        try:
+            net += int(pred) - int(cur)
+        except (TypeError, ValueError):
+            continue
+        n += 1
+    return net, n
 
 
 def handler(event, context):
@@ -316,6 +353,10 @@ def handler(event, context):
     # follow-up notification).
     currently_down: list[tuple[str, dict]] = []  # (ride_id, attraction)
 
+    # ride_id → current operating wait, accumulated across all parks for
+    # the post-loop plan-drift check (planned rides now vs prediction).
+    current_waits: dict[str, int] = {}
+
     for park_key in PARK_KEYS:
         try:
             attractions = wait_times.fetch_live_data(park_key)
@@ -377,6 +418,7 @@ def handler(event, context):
             # reason as the forecast write above: a missed observation
             # is rounding-error scale; a broken alert path is not.
             if new_status == "OPERATING" and new_wait is not None:
+                current_waits[ride_id] = new_wait
                 try:
                     db.record_wait_observation(
                         ride_id=ride_id,
@@ -802,6 +844,41 @@ def handler(event, context):
             park_key=attr["park_key"],
             minutes_down=int(elapsed_mins),
         )
+
+    # ── Plan-drift sweep: whole-plan "running lighter/heavier than
+    # planned" nudge. One aggregated, heavily-cooldowned alert per plan
+    # instead of per-ride low-wait spam on a drifting day. Dedupe
+    # active_plans (per-recipient) down to one drift computation per plan.
+    seen_drift_plans: set[str] = set()
+    for plan in active_plans:
+        plan_id = plan["plan_id"]
+        if plan_id in seen_drift_plans:
+            continue
+        seen_drift_plans.add(plan_id)
+        net, n = _compute_plan_drift(plan.get("rides") or [], current_waits)
+        if n < 2 or abs(net) < PLAN_DRIFT_THRESHOLD_MIN:
+            continue
+        park_key = plan.get("park_key") or "magic_kingdom"
+        park_name = PARK_NAMES.get(park_key, park_key.replace("_", " ").title())
+        # Fan out to the plan's recipients (owner + subscribers), each
+        # with their own per-(user, plan) cooldown + key dedup.
+        seen_drift_keys: set[str] = set()
+        for p in active_plans:
+            if p["plan_id"] != plan_id:
+                continue
+            uid = p["user_id"]
+            if db.is_plan_drift_on_cooldown(uid, plan_id):
+                continue
+            key = get_user_key(uid)
+            if not key or key in seen_drift_keys:
+                continue
+            seen_drift_keys.add(key)
+            db.mark_plan_drift_sent(uid, plan_id)
+            if notifier.alert_plan_drift(
+                key, park_name=park_name, park_key=park_key,
+                net_minutes=net, plan_id=plan_id,
+            ):
+                total_alerts += 1
 
     elapsed = time.time() - started
     print(

@@ -32,3 +32,23 @@ class TestLLBecameEarlier:
 
     def test_malformed_is_safe(self):
         assert index._ll_became_earlier(self._ll("garbage"), self._ll("2026-07-03T15:00:00-04:00")) is False
+
+
+class TestLLMinImprovement:
+    """A trivial improvement (5 min earlier) must NOT fire — only a
+    meaningful one (>= LL_MIN_IMPROVEMENT_MIN, default 20)."""
+
+    def _ll(self, rs):
+        return {"type": "free", "return_start": rs}
+
+    def test_five_minutes_earlier_does_not_fire(self):
+        assert index._ll_became_earlier(
+            self._ll("2026-07-03T18:00:00-04:00"),
+            self._ll("2026-07-03T17:55:00-04:00"),
+        ) is False
+
+    def test_big_improvement_fires(self):
+        assert index._ll_became_earlier(
+            self._ll("2026-07-03T18:00:00-04:00"),
+            self._ll("2026-07-03T17:30:00-04:00"),
+        ) is True
