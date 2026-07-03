@@ -161,6 +161,40 @@ def alert_low_wait(
     return _send(user_key, title, body, priority=0)
 
 
+def alert_plan_low_wait(
+    user_key: str,
+    ride_name: str,
+    park_name: str,
+    park_key: str,
+    wait_mins: int,
+    typical_wait_mins: int | None = None,
+    forecast_wait_mins: int | None = None,
+    plan_id: Optional[str] = None,
+) -> bool:
+    """Plan-aware sibling of alert_low_wait: the ride with the unusually
+    short wait is in the recipient's ACTIVE plan today (still in
+    ride_sequence — not yet ridden), so this is directly actionable:
+    jump to it now and ride it cheaper than planned.
+
+    Same signal + cooldown as alert_low_wait (one low-wait-class push
+    per ride per window); only the framing differs. Priority 0 —
+    an opportunity, not a disruption.
+    """
+    emoji = PARK_EMOJI.get(park_key, "🎢")
+    title = f"{emoji} Plan opportunity — {ride_name} low wait"
+    parts: list[str] = [
+        f"{ride_name} is at {wait_mins} min right now and it's in your "
+        f"plan today.",
+    ]
+    if typical_wait_mins is not None:
+        parts.append(f"Typical for this hour: ~{typical_wait_mins} min.")
+    if forecast_wait_mins is not None:
+        parts.append(f"Today's forecast: {forecast_wait_mins} min.")
+    parts.append("Good time to jump to it if you're close.")
+    body = f"{park_name}\n" + " ".join(parts)
+    return _send(user_key, title, body, priority=0)
+
+
 def alert_plan_disruption(
     user_key: str,
     ride_name: str,

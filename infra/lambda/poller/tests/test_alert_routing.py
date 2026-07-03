@@ -262,3 +262,44 @@ class TestBuildCandidatesShape:
 
         # Carol — plan only — gets the plan alert.
         assert resolved["carol"].kwargs["disruption_type"] == "went_down"
+
+
+class TestLowWaitScenario:
+    """Plan-aware LOW WAIT (added 2026-07-03) uses the same resolver as
+    DOWN/BACK UP: a user with the ride in today's active plan gets the
+    plan-framed opportunity alert; a favoriter-only user gets the generic
+    low-wait alert; a dual-source user gets the plan version."""
+
+    def test_plan_framing_beats_favorite_for_low_wait(self):
+        low_wait_kwargs = {
+            "ride_name": "Space Mountain",
+            "park_name": "Magic Kingdom",
+            "park_key": "magic_kingdom",
+            "wait_mins": 15,
+            "typical_wait_mins": 40,
+            "forecast_wait_mins": None,
+        }
+        candidates = [
+            AlertCandidate(
+                user_id="alice",  # dual-source: plan + favorite
+                priority=PRIORITY_PLAN,
+                notifier_fn=_fake_notifier,
+                kwargs={**low_wait_kwargs, "plan_id": "PLAN#p1"},
+            ),
+            AlertCandidate(
+                user_id="alice",
+                priority=PRIORITY_FAVORITE,
+                notifier_fn=_fake_notifier,
+                kwargs=dict(low_wait_kwargs),
+            ),
+            AlertCandidate(
+                user_id="bob",  # favorite only
+                priority=PRIORITY_FAVORITE,
+                notifier_fn=_fake_notifier,
+                kwargs=dict(low_wait_kwargs),
+            ),
+        ]
+        resolved = resolve_alert_recipients(candidates)
+        assert set(resolved.keys()) == {"alice", "bob"}
+        assert resolved["alice"].kwargs["plan_id"] == "PLAN#p1"  # plan wins
+        assert "plan_id" not in resolved["bob"].kwargs
