@@ -470,7 +470,10 @@ def handler(event, context):
             _held = held_ll_by_ride.get(ride_id)
             _ll_beats_held = True
             if _held:
-                _avail = _parse_iso(attr.get("ll", {}).get("return_start"))
+                # `or {}` — attr["ll"] is present-but-None for a held-LL
+                # ride with no current offer; .get(k, {}) would return
+                # None (default is only used on a MISSING key), crashing.
+                _avail = _parse_iso((attr.get("ll") or {}).get("return_start"))
                 _held_dt = _parse_iso(_held)
                 _ll_beats_held = bool(_avail and _held_dt and _avail < _held_dt)
             if (
