@@ -27,6 +27,7 @@ status churn doesn't spam if a user adds the favorite mid-window.
 import json
 import os
 import time
+import traceback
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -128,28 +129,41 @@ def _parse_iso(iso: str | None):
 # remaining rides) at/above which we nudge a re-plan. Env-tunable.
 PLAN_DRIFT_THRESHOLD_MIN = int(os.environ.get("PLAN_DRIFT_THRESHOLD_MIN", "30"))
 
-# Plan-drift is OFF by default: predicted_wait_min bakes in Lightning
-# Lane assumptions (an LL'd headliner is predicted ~15 min), so comparing
-# it to the current STANDBY wait falsely reads "busier than planned" for
-# every LL ride. Re-enable only once the held-LL record lets the drift
-# math exclude LL rides (or compare LL-return-vs-held). Env: "true".
+# Plan-drift ships LL-aware (2026-07-03): predicted_wait_min bakes in
+# Lightning Lane assumptions (an LL'd headliner is predicted ~15 min),
+# so comparing it to the current STANDBY wait falsely read "busier than
+# planned" for every LL ride — the reason this was originally gated off.
+# The drift math now skips rides in the plan's ll_holds (you won't stand
+# in that ride's standby line, so its standby wait isn't drift). The env
+# gate stays as an ops kill switch; the stack sets it "true".
 PLAN_DRIFT_ENABLED = os.environ.get("PLAN_DRIFT_ENABLED", "false").lower() == "true"
 
 
-def _compute_plan_drift(rides: list[dict], current_waits: dict[str, int]):
+def _compute_plan_drift(
+    rides: list[dict],
+    current_waits: dict[str, int],
+    ll_holds: dict[str, str] | None = None,
+):
     """Sum (predicted_wait_min − current_wait) over remaining planned
     rides that have BOTH a numeric prediction and a current operating
     wait. Returns (net_minutes, n_compared): net > 0 = running LIGHTER
     than planned (waits under prediction — time freed up); net < 0 =
     HEAVIER. n_compared guards against firing on a single ride.
+
+    Rides with a held Lightning Lane (keys of `ll_holds`) are excluded:
+    the party rides those via the LL return window, so the standby wait
+    is noise — counting it produced false "busier than planned" alerts.
     """
     net = 0
     n = 0
+    held = ll_holds or {}
     for r in rides:
         rid = r.get("ride_id")
         pred = r.get("predicted_wait_min")
         cur = current_waits.get(rid)
         if rid is None or pred is None or cur is None:
+            continue
+        if rid in held:
             continue
         try:
             net += int(pred) - int(cur)
@@ -402,441 +416,457 @@ def handler(event, context):
             )
 
         for attr in attractions:
-            ride_id = attr["id"]
-            new_status = attr["status"]
-            new_wait = attr["wait_mins"]
+            # Per-ride containment (2026-07-03): one attraction's bug
+            # must never abort the whole poll. The held-LL None crash
+            # (attr["ll"] present-but-None) threw here and took ALL
+            # alerts dark for every ride and park behind it in the
+            # loop. Log ride + traceback, move on. Tradeoff accepted:
+            # if the failure lands after upsert_ride, that one ride's
+            # status transition is consumed without its alert — one
+            # lost alert beats an alert blackout.
+            try:
+                ride_id = attr["id"]
+                new_status = attr["status"]
+                new_wait = attr["wait_mins"]
 
-            existing = db.get_ride(ride_id)
-            old_status = existing["status"] if existing else None
+                existing = db.get_ride(ride_id)
+                old_status = existing["status"] if existing else None
 
-            db.upsert_ride(attr)
+                db.upsert_ride(attr)
 
-            # Phase A2: persist this poll's forecast snapshot (when
-            # upstream provided one) into a FORECAST# sub-row. Wrapped
-            # so a forecast-side failure can never break the alert path
-            # — a missed forecast is a rounding error against an
-            # 8.8M-row historical baseline; a missed alert is a real
-            # demo regression. Skip cleanly when the ride has no
-            # forecast (DOWN rides, walk-up meets, transportation).
-            if attr.get("forecast"):
-                try:
-                    db.record_forecast(ride_id, attr["last_seen"], attr["forecast"])
-                except Exception as e:
-                    print(f"[poller] forecast write failed for {attr['name']}: {e}")
+                # Phase A2: persist this poll's forecast snapshot (when
+                # upstream provided one) into a FORECAST# sub-row. Wrapped
+                # so a forecast-side failure can never break the alert path
+                # — a missed forecast is a rounding error against an
+                # 8.8M-row historical baseline; a missed alert is a real
+                # demo regression. Skip cleanly when the ride has no
+                # forecast (DOWN rides, walk-up meets, transportation).
+                if attr.get("forecast"):
+                    try:
+                        db.record_forecast(ride_id, attr["last_seen"], attr["forecast"])
+                    except Exception as e:
+                        print(f"[poller] forecast write failed for {attr['name']}: {e}")
 
-            # M6-B Phase 1: persist raw per-poll wait observation for
-            # operating rides. Mirrors the Pi's collection pattern in
-            # DDB so the analytics aggregator can eventually source
-            # from AWS. Only operating rides with a numeric wait —
-            # DOWN rides + walk-ups + transportation don't carry
-            # comparable wait values. Wrapped defensively for the same
-            # reason as the forecast write above: a missed observation
-            # is rounding-error scale; a broken alert path is not.
-            if new_status == "OPERATING" and new_wait is not None:
-                current_waits[ride_id] = new_wait
-                try:
-                    db.record_wait_observation(
-                        ride_id=ride_id,
-                        park_key=park_key,
-                        wait_mins=new_wait,
-                        polled_at=attr["last_seen"],
-                    )
-                except Exception as e:
-                    print(f"[poller] wait observation write failed for {attr['name']}: {e}")
+                # M6-B Phase 1: persist raw per-poll wait observation for
+                # operating rides. Mirrors the Pi's collection pattern in
+                # DDB so the analytics aggregator can eventually source
+                # from AWS. Only operating rides with a numeric wait —
+                # DOWN rides + walk-ups + transportation don't carry
+                # comparable wait values. Wrapped defensively for the same
+                # reason as the forecast write above: a missed observation
+                # is rounding-error scale; a broken alert path is not.
+                if new_status == "OPERATING" and new_wait is not None:
+                    current_waits[ride_id] = new_wait
+                    try:
+                        db.record_wait_observation(
+                            ride_id=ride_id,
+                            park_key=park_key,
+                            wait_mins=new_wait,
+                            polled_at=attr["last_seen"],
+                        )
+                    except Exception as e:
+                        print(f"[poller] wait observation write failed for {attr['name']}: {e}")
 
-            # First time we've seen this ride — record state, no alert.
-            if old_status is None:
-                continue
+                # First time we've seen this ride — record state, no alert.
+                if old_status is None:
+                    continue
 
-            # Track down state regardless of alert fanout, so the
-            # "back up" duration and "still down" sweep work even if
-            # nobody was subscribed at the time it went down.
-            if new_status == "DOWN":
-                currently_down.append((ride_id, attr))
+                # Track down state regardless of alert fanout, so the
+                # "back up" duration and "still down" sweep work even if
+                # nobody was subscribed at the time it went down.
+                if new_status == "DOWN":
+                    currently_down.append((ride_id, attr))
 
-            # ── EARLIER LIGHTNING LANE (watch) ─────────────────────
-            # Fire when a ride's LL return window moved earlier than the
-            # prior poll. Recipients: the active-plan party for this ride
-            # (always watched) PLUS park-subscribers who opted into
-            # LL-watch on this ride (favorites, default-off). Any
-            # improvement, no cooldown (per design); dedupe by Pushover
-            # key so a plan+favorite overlap is one push, plan framing
-            # winning. Park-hours gated like every other alert.
-            # Held-LL precision: if the plan holds an LL for this ride,
-            # the improvement is only useful when the available slot beats
-            # the time held (an improvement to a slot still LATER than what
-            # you hold is noise — the case Megan hit). No held LL → the
-            # meaningful-improvement rule (_ll_became_earlier) stands.
-            _held = held_ll_by_ride.get(ride_id)
-            _ll_beats_held = True
-            if _held:
-                # `or {}` — attr["ll"] is present-but-None for a held-LL
-                # ride with no current offer; .get(k, {}) would return
-                # None (default is only used on a MISSING key), crashing.
-                _avail = _parse_iso((attr.get("ll") or {}).get("return_start"))
-                _held_dt = _parse_iso(_held)
-                _ll_beats_held = bool(_avail and _held_dt and _avail < _held_dt)
-            if (
-                alerts_allowed(park_key)
-                and _ll_beats_held
-                and _ll_became_earlier((existing or {}).get("ll"), attr.get("ll"))
-            ):
-                new_ll = attr["ll"]
-                prior_ll = (existing or {}).get("ll") or {}
-                # Plan party for this ride (by ride_id or lowercased name,
-                # mirroring the DOWN/UP plan lookup). Keep each user's
-                # plan_id so an in-plan recipient's /replan link targets it.
-                plan_pid_by_uid: dict[str, str] = {}
-                for keyname in (ride_id, attr["name"].lower()):
-                    for u, pid in plan_ride_index.get(keyname, []):
-                        plan_pid_by_uid.setdefault(u, pid)
-                plan_users = set(plan_pid_by_uid)
-                # Favoriters who opted in (park-subscribers only).
-                watch_favs = {
-                    s
-                    for s in subscribers
-                    if ride_id in get_ll_watched(s, park_key)
-                }
-                # Dedupe by Pushover key; in_plan sticky-True per key.
-                ll_by_key: dict[str, tuple[str, bool]] = {}
-                for uid in plan_users | watch_favs:
-                    key = get_user_key(uid)
-                    if not key:
-                        continue
-                    in_plan = uid in plan_users
-                    prev = ll_by_key.get(key)
-                    ll_by_key[key] = (uid, in_plan or bool(prev and prev[1]))
-                for key, (uid, in_plan) in ll_by_key.items():
-                    if notifier.alert_ll_earlier(
-                        key,
-                        ride_name=attr["name"],
-                        park_name=attr["park_name"],
-                        park_key=park_key,
-                        new_return_start=new_ll["return_start"],
-                        prior_return_start=prior_ll.get("return_start"),
-                        in_plan=in_plan,
-                        price=new_ll.get("price"),
-                        plan_id=plan_pid_by_uid.get(uid),
-                        ride_id=ride_id,
-                    ):
-                        total_alerts += 1
-
-            # ── LOW WAIT (two baselines, shared cooldown) ──────────
-            # Two independent signals share the COOLDOWN#LOW_WAIT row
-            # so a ride gets at most one low-wait-class push per
-            # window regardless of which baseline triggered:
-            #
-            #   • LOW_WAIT (historical) — current wait below the per-
-            #     (ride, hour) half-typical threshold from
-            #     baselines.json. Catches all-time anomalies.
-            #   • LOW_VS_FORECAST (today-aware) — current wait beats
-            #     today's forecast by a margin meaningful relative to
-            #     park-wide load. Catches heavy-crowd-day opportunities
-            #     LOW_WAIT misses because absolute waits stay above
-            #     the half-typical floor. Designed 2026-05-12.
-            #
-            # Each gate is independent; the alert body adapts to
-            # whichever signal(s) fired. Independent of status-change
-            # detection — this is the only alert type that fires on
-            # stable-state polls. Park-hours + cooldown still gate
-            # the actual fanout.
-            if (
-                new_status == "OPERATING"
-                and new_wait is not None
-                and alerts_allowed(park_key)
-                and not db.is_low_wait_alert_on_cooldown(ride_id)
-            ):
-                now_et = datetime.now(_EASTERN)
-
-                # Historical baseline check
-                threshold = _low_wait_threshold(ride_id, now_et.hour)
-                historical_fire = (
-                    threshold is not None and new_wait <= threshold
-                )
-                typical_for_msg = threshold * 2 if threshold else None
-
-                # Forecast-aware baseline check
-                forecast_wait = forecast_signal.find_forecast_for_hour(
-                    attr.get("forecast"), now_et
-                )
-                forecast_fire = forecast_signal.should_fire_low_vs_forecast(
-                    current_wait=new_wait,
-                    forecast_wait=forecast_wait,
-                    park_ratio=park_load_ratio,
-                    rides_sampled=park_n_sampled,
-                )
-
-                if historical_fire or forecast_fire:
-                    # Two alert sources can match the same user, same as
-                    # the DOWN path: favoriting the ride generally, OR
-                    # having it (still un-ridden) in TODAY's active plan.
-                    # The plan-aware framing is more actionable ("jump to
-                    # it now, it's cheaper than planned"), so it wins via
-                    # the resolver. Plan targets come from the active-plan
-                    # ride index, which only holds ride_sequence of ACTIVE
-                    # plans inside their window — dormant plans, completed
-                    # rides, and out-of-window hours never alert.
-                    low_wait_kwargs = {
-                        "ride_name": attr["name"],
-                        "park_name": attr["park_name"],
-                        "park_key": park_key,
-                        "wait_mins": new_wait,
-                        "typical_wait_mins": (
-                            typical_for_msg if historical_fire else None
-                        ),
-                        "forecast_wait_mins": (
-                            forecast_wait if forecast_fire else None
-                        ),
+                # ── EARLIER LIGHTNING LANE (watch) ─────────────────────
+                # Fire when a ride's LL return window moved earlier than the
+                # prior poll. Recipients: the active-plan party for this ride
+                # (always watched) PLUS park-subscribers who opted into
+                # LL-watch on this ride (favorites, default-off). Any
+                # improvement, no cooldown (per design); dedupe by Pushover
+                # key so a plan+favorite overlap is one push, plan framing
+                # winning. Park-hours gated like every other alert.
+                # Held-LL precision: if the plan holds an LL for this ride,
+                # the improvement is only useful when the available slot beats
+                # the time held (an improvement to a slot still LATER than what
+                # you hold is noise — the case Megan hit). No held LL → the
+                # meaningful-improvement rule (_ll_became_earlier) stands.
+                _held = held_ll_by_ride.get(ride_id)
+                _ll_beats_held = True
+                if _held:
+                    # `or {}` — attr["ll"] is present-but-None for a held-LL
+                    # ride with no current offer; .get(k, {}) would return
+                    # None (default is only used on a MISSING key), crashing.
+                    _avail = _parse_iso((attr.get("ll") or {}).get("return_start"))
+                    _held_dt = _parse_iso(_held)
+                    _ll_beats_held = bool(_avail and _held_dt and _avail < _held_dt)
+                if (
+                    alerts_allowed(park_key)
+                    and _ll_beats_held
+                    and _ll_became_earlier((existing or {}).get("ll"), attr.get("ll"))
+                ):
+                    new_ll = attr["ll"]
+                    prior_ll = (existing or {}).get("ll") or {}
+                    # Plan party for this ride (by ride_id or lowercased name,
+                    # mirroring the DOWN/UP plan lookup). Keep each user's
+                    # plan_id so an in-plan recipient's /replan link targets it.
+                    plan_pid_by_uid: dict[str, str] = {}
+                    for keyname in (ride_id, attr["name"].lower()):
+                        for u, pid in plan_ride_index.get(keyname, []):
+                            plan_pid_by_uid.setdefault(u, pid)
+                    plan_users = set(plan_pid_by_uid)
+                    # Favoriters who opted in (park-subscribers only).
+                    watch_favs = {
+                        s
+                        for s in subscribers
+                        if ride_id in get_ll_watched(s, park_key)
                     }
-                    favoriters = filter_to_favoriters(
-                        subscribers, park_key, ride_id
+                    # Dedupe by Pushover key; in_plan sticky-True per key.
+                    ll_by_key: dict[str, tuple[str, bool]] = {}
+                    for uid in plan_users | watch_favs:
+                        key = get_user_key(uid)
+                        if not key:
+                            continue
+                        in_plan = uid in plan_users
+                        prev = ll_by_key.get(key)
+                        ll_by_key[key] = (uid, in_plan or bool(prev and prev[1]))
+                    for key, (uid, in_plan) in ll_by_key.items():
+                        if notifier.alert_ll_earlier(
+                            key,
+                            ride_name=attr["name"],
+                            park_name=attr["park_name"],
+                            park_key=park_key,
+                            new_return_start=new_ll["return_start"],
+                            prior_return_start=prior_ll.get("return_start"),
+                            in_plan=in_plan,
+                            price=new_ll.get("price"),
+                            plan_id=plan_pid_by_uid.get(uid),
+                            ride_id=ride_id,
+                        ):
+                            total_alerts += 1
+
+                # ── LOW WAIT (two baselines, shared cooldown) ──────────
+                # Two independent signals share the COOLDOWN#LOW_WAIT row
+                # so a ride gets at most one low-wait-class push per
+                # window regardless of which baseline triggered:
+                #
+                #   • LOW_WAIT (historical) — current wait below the per-
+                #     (ride, hour) half-typical threshold from
+                #     baselines.json. Catches all-time anomalies.
+                #   • LOW_VS_FORECAST (today-aware) — current wait beats
+                #     today's forecast by a margin meaningful relative to
+                #     park-wide load. Catches heavy-crowd-day opportunities
+                #     LOW_WAIT misses because absolute waits stay above
+                #     the half-typical floor. Designed 2026-05-12.
+                #
+                # Each gate is independent; the alert body adapts to
+                # whichever signal(s) fired. Independent of status-change
+                # detection — this is the only alert type that fires on
+                # stable-state polls. Park-hours + cooldown still gate
+                # the actual fanout.
+                if (
+                    new_status == "OPERATING"
+                    and new_wait is not None
+                    and alerts_allowed(park_key)
+                    and not db.is_low_wait_alert_on_cooldown(ride_id)
+                ):
+                    now_et = datetime.now(_EASTERN)
+
+                    # Historical baseline check
+                    threshold = _low_wait_threshold(ride_id, now_et.hour)
+                    historical_fire = (
+                        threshold is not None and new_wait <= threshold
                     )
+                    typical_for_msg = threshold * 2 if threshold else None
+
+                    # Forecast-aware baseline check
+                    forecast_wait = forecast_signal.find_forecast_for_hour(
+                        attr.get("forecast"), now_et
+                    )
+                    forecast_fire = forecast_signal.should_fire_low_vs_forecast(
+                        current_wait=new_wait,
+                        forecast_wait=forecast_wait,
+                        park_ratio=park_load_ratio,
+                        rides_sampled=park_n_sampled,
+                    )
+
+                    if historical_fire or forecast_fire:
+                        # Two alert sources can match the same user, same as
+                        # the DOWN path: favoriting the ride generally, OR
+                        # having it (still un-ridden) in TODAY's active plan.
+                        # The plan-aware framing is more actionable ("jump to
+                        # it now, it's cheaper than planned"), so it wins via
+                        # the resolver. Plan targets come from the active-plan
+                        # ride index, which only holds ride_sequence of ACTIVE
+                        # plans inside their window — dormant plans, completed
+                        # rides, and out-of-window hours never alert.
+                        low_wait_kwargs = {
+                            "ride_name": attr["name"],
+                            "park_name": attr["park_name"],
+                            "park_key": park_key,
+                            "wait_mins": new_wait,
+                            "typical_wait_mins": (
+                                typical_for_msg if historical_fire else None
+                            ),
+                            "forecast_wait_mins": (
+                                forecast_wait if forecast_fire else None
+                            ),
+                        }
+                        favoriters = filter_to_favoriters(
+                            subscribers, park_key, ride_id
+                        )
+                        plan_targets = db.lookup_plan_targets(
+                            plan_ride_index, ride_id, attr["name"]
+                        )
+                        candidates: list[alert_routing.AlertCandidate] = []
+                        for target_user, target_plan in plan_targets:
+                            candidates.append(alert_routing.AlertCandidate(
+                                user_id=target_user,
+                                priority=alert_routing.PRIORITY_PLAN,
+                                notifier_fn=notifier.alert_plan_low_wait,
+                                kwargs={**low_wait_kwargs, "plan_id": target_plan,
+                                        "ride_id": ride_id},
+                            ))
+                        for fav_user in favoriters:
+                            candidates.append(alert_routing.AlertCandidate(
+                                user_id=fav_user,
+                                priority=alert_routing.PRIORITY_FAVORITE,
+                                notifier_fn=notifier.alert_low_wait,
+                                kwargs=dict(low_wait_kwargs),
+                            ))
+
+                        resolved = alert_routing.resolve_alert_recipients(candidates)
+                        if resolved:
+                            # Cooldown is set per-ride (not per-recipient)
+                            # — same pattern as DOWN. Set it only when we
+                            # actually fan out so a window with no
+                            # recipients can still alert the next user who
+                            # favorites/plans the ride.
+                            db.mark_low_wait_alert_sent(ride_id)
+                            # Log which baseline(s) tripped so post-hoc
+                            # log analysis can audit false-positive rate
+                            # per signal.
+                            triggers = []
+                            if historical_fire:
+                                triggers.append(f"typical~{typical_for_msg}m")
+                            if forecast_fire:
+                                triggers.append(f"forecast={forecast_wait}m")
+                            print(
+                                f"[poller] {attr['name']} LOW WAIT "
+                                f"({new_wait}m, {', '.join(triggers)}): "
+                                f"{len(favoriters)} favoriters, "
+                                f"{len(plan_targets)} plan targets → "
+                                f"{len(resolved)} unique recipients"
+                            )
+                            # Dedupe by Pushover key (owner implicit + web
+                            # opt-in under their sub = same key, one push).
+                            for target_user, user_key, candidate in (
+                                alert_routing.dedupe_resolved_by_key(
+                                    resolved, get_user_key
+                                )
+                            ):
+                                if candidate.notifier_fn(user_key, **candidate.kwargs):
+                                    total_alerts += 1
+
+                # No status change → nothing more to do for this ride.
+                if new_status == old_status:
+                    continue
+
+                total_changes += 1
+                db.record_status_change(
+                    ride_id=ride_id,
+                    ride_name=attr["name"],
+                    park_name=attr["park_name"],
+                    park_key=park_key,
+                    old_status=old_status,
+                    new_status=new_status,
+                    wait_mins=new_wait,
+                    changed_at=now_iso,
+                )
+
+                # ── DOWN: just went out of service ─────────────────────
+                if new_status == "DOWN":
+                    db.set_down_since(ride_id, now_dt)
+
+                    # Park-hours gate: still record the change above (so
+                    # analytics + DOWN_SINCE tracking work), but don't
+                    # send the alert if we're outside operating hours or
+                    # within the closing buffer.
+                    if not alerts_allowed(park_key):
+                        continue
+
+                    # Cooldown check: don't re-alert if we already pinged
+                    # for this ride in the last DOWN_ALERT_COOLDOWN_SECS.
+                    # (Themeparks.wiki occasionally flaps a ride
+                    # OPERATING→DOWN→OPERATING within minutes.)
+                    if db.is_down_alert_on_cooldown(ride_id):
+                        print(f"[poller] Skipping DOWN alert for {attr['name']} (cooldown)")
+                        continue
+
+                    # Cooldown is set per-ride (not per-recipient) on
+                    # purpose: even if zero users get the alert today
+                    # (no one favorited this ride), we still want the
+                    # cooldown to prevent flap-induced spam if a user
+                    # adds the favorite mid-window. They'll catch the
+                    # next event.
+                    db.mark_down_alert_sent(ride_id)
+
+                    # Two alert sources can match the same user for one
+                    # DOWN event: favoriting the ride generally, OR having
+                    # it in TODAY's plan. The plan-aware alert is more
+                    # actionable (names the plan, prompts a re-sequence),
+                    # so it must win when both apply. Build candidates
+                    # from each source and let alert_routing pick.
+                    favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
                     plan_targets = db.lookup_plan_targets(
                         plan_ride_index, ride_id, attr["name"]
                     )
+
                     candidates: list[alert_routing.AlertCandidate] = []
                     for target_user, target_plan in plan_targets:
                         candidates.append(alert_routing.AlertCandidate(
                             user_id=target_user,
                             priority=alert_routing.PRIORITY_PLAN,
-                            notifier_fn=notifier.alert_plan_low_wait,
-                            kwargs={**low_wait_kwargs, "plan_id": target_plan,
-                                    "ride_id": ride_id},
+                            notifier_fn=notifier.alert_plan_disruption,
+                            kwargs={
+                                "ride_name": attr["name"],
+                                "park_name": attr["park_name"],
+                                "park_key": park_key,
+                                "disruption_type": "went_down",
+                                "plan_id": target_plan,
+                                "ride_id": ride_id,
+                            },
                         ))
                     for fav_user in favoriters:
                         candidates.append(alert_routing.AlertCandidate(
                             user_id=fav_user,
                             priority=alert_routing.PRIORITY_FAVORITE,
-                            notifier_fn=notifier.alert_low_wait,
-                            kwargs=dict(low_wait_kwargs),
+                            notifier_fn=notifier.alert_ride_down,
+                            kwargs={
+                                "ride_name": attr["name"],
+                                "park_name": attr["park_name"],
+                                "park_key": park_key,
+                            },
                         ))
 
                     resolved = alert_routing.resolve_alert_recipients(candidates)
-                    if resolved:
-                        # Cooldown is set per-ride (not per-recipient)
-                        # — same pattern as DOWN. Set it only when we
-                        # actually fan out so a window with no
-                        # recipients can still alert the next user who
-                        # favorites/plans the ride.
-                        db.mark_low_wait_alert_sent(ride_id)
-                        # Log which baseline(s) tripped so post-hoc
-                        # log analysis can audit false-positive rate
-                        # per signal.
-                        triggers = []
-                        if historical_fire:
-                            triggers.append(f"typical~{typical_for_msg}m")
-                        if forecast_fire:
-                            triggers.append(f"forecast={forecast_wait}m")
-                        print(
-                            f"[poller] {attr['name']} LOW WAIT "
-                            f"({new_wait}m, {', '.join(triggers)}): "
-                            f"{len(favoriters)} favoriters, "
-                            f"{len(plan_targets)} plan targets → "
-                            f"{len(resolved)} unique recipients"
-                        )
-                        # Dedupe by Pushover key (owner implicit + web
-                        # opt-in under their sub = same key, one push).
-                        for target_user, user_key, candidate in (
-                            alert_routing.dedupe_resolved_by_key(
-                                resolved, get_user_key
-                            )
-                        ):
-                            if candidate.notifier_fn(user_key, **candidate.kwargs):
-                                total_alerts += 1
+                    print(
+                        f"[poller] {attr['name']} DOWN: {len(subscribers)} park subs, "
+                        f"{len(favoriters)} favoriters, {len(plan_targets)} plan "
+                        f"targets → {len(resolved)} unique recipients"
+                    )
+                    # Dedupe by Pushover key: the owner is implicit AND may
+                    # also be opted in under their sub via the web toggle —
+                    # same key, one push (see alert_routing docstring).
+                    for target_user, user_key, candidate in (
+                        alert_routing.dedupe_resolved_by_key(resolved, get_user_key)
+                    ):
+                        if candidate.notifier_fn(user_key, **candidate.kwargs):
+                            total_alerts += 1
 
-            # No status change → nothing more to do for this ride.
-            if new_status == old_status:
-                continue
+                # ── BACK UP: was DOWN, now OPERATING ───────────────────
+                elif new_status == "OPERATING" and old_status == "DOWN":
+                    went_down = db.get_down_since(ride_id)
+                    actual_mins = None
+                    if went_down:
+                        actual_mins = round((now_dt - went_down).total_seconds() / 60)
+                    db.clear_down_since(ride_id)
 
-            total_changes += 1
-            db.record_status_change(
-                ride_id=ride_id,
-                ride_name=attr["name"],
-                park_name=attr["park_name"],
-                park_key=park_key,
-                old_status=old_status,
-                new_status=new_status,
-                wait_mins=new_wait,
-                changed_at=now_iso,
-            )
+                    # Park-hours gate also applies to "back up" alerts —
+                    # if we suppressed the DOWN alert at park-close, the
+                    # matching UP alert at park-open the next morning
+                    # would be confusing context-free noise.
+                    if not alerts_allowed(park_key):
+                        continue
 
-            # ── DOWN: just went out of service ─────────────────────
-            if new_status == "DOWN":
-                db.set_down_since(ride_id, now_dt)
+                    # Cooldown gate: flap protection. themeparks.wiki
+                    # sometimes reports a ride OPERATING→DOWN→OPERATING
+                    # repeatedly within minutes. Without this, every UP
+                    # transition fires a fresh BACK UP push. We still
+                    # record the state transition (above) so DOWN_SINCE
+                    # is cleared correctly; we just skip the alert.
+                    if db.is_back_up_alert_on_cooldown(ride_id):
+                        print(f"[poller] Skipping BACK UP alert for {attr['name']} (cooldown)")
+                        continue
 
-                # Park-hours gate: still record the change above (so
-                # analytics + DOWN_SINCE tracking work), but don't
-                # send the alert if we're outside operating hours or
-                # within the closing buffer.
-                if not alerts_allowed(park_key):
-                    continue
+                    # Set cooldown BEFORE fanning out, same pattern as
+                    # DOWN cooldown — even if no users get pinged today
+                    # (no favoriters, no plan watchers), we still want
+                    # the cooldown to prevent flap spam if a user adds
+                    # the favorite / plan mid-window.
+                    db.mark_back_up_alert_sent(ride_id)
 
-                # Cooldown check: don't re-alert if we already pinged
-                # for this ride in the last DOWN_ALERT_COOLDOWN_SECS.
-                # (Themeparks.wiki occasionally flaps a ride
-                # OPERATING→DOWN→OPERATING within minutes.)
-                if db.is_down_alert_on_cooldown(ride_id):
-                    print(f"[poller] Skipping DOWN alert for {attr['name']} (cooldown)")
-                    continue
+                    # NOTE (2026-06-17, deliberate — don't "fix"): a plan
+                    # watcher who ACTIVATED their plan after the ride went down
+                    # gets this BACK UP without ever having received the
+                    # matching DOWN (they weren't in the active set at
+                    # down-time). Accepted: it provides useful context ("a ride
+                    # in your plan had a hiccup but it's operational now") as
+                    # they head in. Suppressing it would need per-user
+                    # down-notified tracking — not worth the small noise it'd
+                    # remove.
 
-                # Cooldown is set per-ride (not per-recipient) on
-                # purpose: even if zero users get the alert today
-                # (no one favorited this ride), we still want the
-                # cooldown to prevent flap-induced spam if a user
-                # adds the favorite mid-window. They'll catch the
-                # next event.
-                db.mark_down_alert_sent(ride_id)
+                    # Mirror of the DOWN path's resolver-based dispatch.
+                    # Plan-aware alert (priority 100) beats generic
+                    # favoriter alert (priority 50) when a user matches
+                    # both sources. See alert_routing.py for the rationale.
+                    favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
+                    plan_targets = db.lookup_plan_targets(
+                        plan_ride_index, ride_id, attr["name"]
+                    )
 
-                # Two alert sources can match the same user for one
-                # DOWN event: favoriting the ride generally, OR having
-                # it in TODAY's plan. The plan-aware alert is more
-                # actionable (names the plan, prompts a re-sequence),
-                # so it must win when both apply. Build candidates
-                # from each source and let alert_routing pick.
-                favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
-                plan_targets = db.lookup_plan_targets(
-                    plan_ride_index, ride_id, attr["name"]
-                )
+                    candidates: list[alert_routing.AlertCandidate] = []
+                    for target_user, target_plan in plan_targets:
+                        candidates.append(alert_routing.AlertCandidate(
+                            user_id=target_user,
+                            priority=alert_routing.PRIORITY_PLAN,
+                            notifier_fn=notifier.alert_plan_disruption,
+                            kwargs={
+                                "ride_name": attr["name"],
+                                "park_name": attr["park_name"],
+                                "park_key": park_key,
+                                "disruption_type": "back_up",
+                                "plan_id": target_plan,
+                                "wait_mins": new_wait,
+                            },
+                        ))
+                    for fav_user in favoriters:
+                        candidates.append(alert_routing.AlertCandidate(
+                            user_id=fav_user,
+                            priority=alert_routing.PRIORITY_FAVORITE,
+                            notifier_fn=notifier.alert_ride_up,
+                            kwargs={
+                                "ride_name": attr["name"],
+                                "park_name": attr["park_name"],
+                                "park_key": park_key,
+                                "wait_mins": new_wait,
+                                "actual_downtime_mins": actual_mins,
+                            },
+                        ))
 
-                candidates: list[alert_routing.AlertCandidate] = []
-                for target_user, target_plan in plan_targets:
-                    candidates.append(alert_routing.AlertCandidate(
-                        user_id=target_user,
-                        priority=alert_routing.PRIORITY_PLAN,
-                        notifier_fn=notifier.alert_plan_disruption,
-                        kwargs={
-                            "ride_name": attr["name"],
-                            "park_name": attr["park_name"],
-                            "park_key": park_key,
-                            "disruption_type": "went_down",
-                            "plan_id": target_plan,
-                            "ride_id": ride_id,
-                        },
-                    ))
-                for fav_user in favoriters:
-                    candidates.append(alert_routing.AlertCandidate(
-                        user_id=fav_user,
-                        priority=alert_routing.PRIORITY_FAVORITE,
-                        notifier_fn=notifier.alert_ride_down,
-                        kwargs={
-                            "ride_name": attr["name"],
-                            "park_name": attr["park_name"],
-                            "park_key": park_key,
-                        },
-                    ))
+                    resolved = alert_routing.resolve_alert_recipients(candidates)
+                    print(
+                        f"[poller] {attr['name']} BACK UP: {len(subscribers)} park subs, "
+                        f"{len(favoriters)} favoriters, {len(plan_targets)} plan "
+                        f"targets → {len(resolved)} unique recipients"
+                    )
+                    # Dedupe by Pushover key: the owner is implicit AND may
+                    # also be opted in under their sub via the web toggle —
+                    # same key, one push (see alert_routing docstring).
+                    for target_user, user_key, candidate in (
+                        alert_routing.dedupe_resolved_by_key(resolved, get_user_key)
+                    ):
+                        if candidate.notifier_fn(user_key, **candidate.kwargs):
+                            total_alerts += 1
 
-                resolved = alert_routing.resolve_alert_recipients(candidates)
+                # CLOSED transitions intentionally don't alert — too noisy
+                # at park closing time.
+            except Exception:
                 print(
-                    f"[poller] {attr['name']} DOWN: {len(subscribers)} park subs, "
-                    f"{len(favoriters)} favoriters, {len(plan_targets)} plan "
-                    f"targets → {len(resolved)} unique recipients"
+                    f"[poller] ERROR processing ride "
+                    f"{attr.get('name') or attr.get('id') or '?'} "
+                    f"({park_key}) — contained, continuing:\n"
+                    f"{traceback.format_exc()}"
                 )
-                # Dedupe by Pushover key: the owner is implicit AND may
-                # also be opted in under their sub via the web toggle —
-                # same key, one push (see alert_routing docstring).
-                for target_user, user_key, candidate in (
-                    alert_routing.dedupe_resolved_by_key(resolved, get_user_key)
-                ):
-                    if candidate.notifier_fn(user_key, **candidate.kwargs):
-                        total_alerts += 1
-
-            # ── BACK UP: was DOWN, now OPERATING ───────────────────
-            elif new_status == "OPERATING" and old_status == "DOWN":
-                went_down = db.get_down_since(ride_id)
-                actual_mins = None
-                if went_down:
-                    actual_mins = round((now_dt - went_down).total_seconds() / 60)
-                db.clear_down_since(ride_id)
-
-                # Park-hours gate also applies to "back up" alerts —
-                # if we suppressed the DOWN alert at park-close, the
-                # matching UP alert at park-open the next morning
-                # would be confusing context-free noise.
-                if not alerts_allowed(park_key):
-                    continue
-
-                # Cooldown gate: flap protection. themeparks.wiki
-                # sometimes reports a ride OPERATING→DOWN→OPERATING
-                # repeatedly within minutes. Without this, every UP
-                # transition fires a fresh BACK UP push. We still
-                # record the state transition (above) so DOWN_SINCE
-                # is cleared correctly; we just skip the alert.
-                if db.is_back_up_alert_on_cooldown(ride_id):
-                    print(f"[poller] Skipping BACK UP alert for {attr['name']} (cooldown)")
-                    continue
-
-                # Set cooldown BEFORE fanning out, same pattern as
-                # DOWN cooldown — even if no users get pinged today
-                # (no favoriters, no plan watchers), we still want
-                # the cooldown to prevent flap spam if a user adds
-                # the favorite / plan mid-window.
-                db.mark_back_up_alert_sent(ride_id)
-
-                # NOTE (2026-06-17, deliberate — don't "fix"): a plan
-                # watcher who ACTIVATED their plan after the ride went down
-                # gets this BACK UP without ever having received the
-                # matching DOWN (they weren't in the active set at
-                # down-time). Accepted: it provides useful context ("a ride
-                # in your plan had a hiccup but it's operational now") as
-                # they head in. Suppressing it would need per-user
-                # down-notified tracking — not worth the small noise it'd
-                # remove.
-
-                # Mirror of the DOWN path's resolver-based dispatch.
-                # Plan-aware alert (priority 100) beats generic
-                # favoriter alert (priority 50) when a user matches
-                # both sources. See alert_routing.py for the rationale.
-                favoriters = filter_to_favoriters(subscribers, park_key, ride_id)
-                plan_targets = db.lookup_plan_targets(
-                    plan_ride_index, ride_id, attr["name"]
-                )
-
-                candidates: list[alert_routing.AlertCandidate] = []
-                for target_user, target_plan in plan_targets:
-                    candidates.append(alert_routing.AlertCandidate(
-                        user_id=target_user,
-                        priority=alert_routing.PRIORITY_PLAN,
-                        notifier_fn=notifier.alert_plan_disruption,
-                        kwargs={
-                            "ride_name": attr["name"],
-                            "park_name": attr["park_name"],
-                            "park_key": park_key,
-                            "disruption_type": "back_up",
-                            "plan_id": target_plan,
-                            "wait_mins": new_wait,
-                        },
-                    ))
-                for fav_user in favoriters:
-                    candidates.append(alert_routing.AlertCandidate(
-                        user_id=fav_user,
-                        priority=alert_routing.PRIORITY_FAVORITE,
-                        notifier_fn=notifier.alert_ride_up,
-                        kwargs={
-                            "ride_name": attr["name"],
-                            "park_name": attr["park_name"],
-                            "park_key": park_key,
-                            "wait_mins": new_wait,
-                            "actual_downtime_mins": actual_mins,
-                        },
-                    ))
-
-                resolved = alert_routing.resolve_alert_recipients(candidates)
-                print(
-                    f"[poller] {attr['name']} BACK UP: {len(subscribers)} park subs, "
-                    f"{len(favoriters)} favoriters, {len(plan_targets)} plan "
-                    f"targets → {len(resolved)} unique recipients"
-                )
-                # Dedupe by Pushover key: the owner is implicit AND may
-                # also be opted in under their sub via the web toggle —
-                # same key, one push (see alert_routing docstring).
-                for target_user, user_key, candidate in (
-                    alert_routing.dedupe_resolved_by_key(resolved, get_user_key)
-                ):
-                    if candidate.notifier_fn(user_key, **candidate.kwargs):
-                        total_alerts += 1
-
-            # CLOSED transitions intentionally don't alert — too noisy
-            # at park closing time.
 
     # ── Second alert sweep: rides down >= SECOND_ALERT_MINS ───────
     # Runs once per invocation after all parks processed.
@@ -886,7 +916,9 @@ def handler(event, context):
         if plan_id in seen_drift_plans:
             continue
         seen_drift_plans.add(plan_id)
-        net, n = _compute_plan_drift(plan.get("rides") or [], current_waits)
+        net, n = _compute_plan_drift(
+            plan.get("rides") or [], current_waits, plan.get("ll_holds") or {}
+        )
         if n < 2 or abs(net) < PLAN_DRIFT_THRESHOLD_MIN:
             continue
         park_key = plan.get("park_key") or "magic_kingdom"

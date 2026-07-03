@@ -328,6 +328,10 @@ export class DisneyStack extends cdk.Stack {
         // stamped at write time, so the table converges over ~180 days as
         // existing 365-day rows age out.
         WAIT_OBSERVATION_RETENTION_DAYS: "180",
+        // Plan-drift nudge: ON since 2026-07-03 — the drift math now
+        // excludes held-LL rides (the false "busier than planned" source
+        // that had this gated off). Flip to "false" as the kill switch.
+        PLAN_DRIFT_ENABLED: "true",
       },
       // No reserved concurrency — account-wide cap is 10 and
       // an earlier project already uses ~3-4 concurrent slots. The poller
