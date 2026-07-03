@@ -761,3 +761,27 @@ class TestSplitDroppedRides:
         plan = {"ride_sequence": [{"ride_id": "a"}], "dropped_ride_ids": {"a"}}
         still, dropped = _tool_impls.split_dropped_rides(plan)
         assert still == [] and [r["ride_id"] for r in dropped] == ["a"]
+
+
+class TestParseLLTime:
+    def test_full_iso_passthrough(self):
+        import _tool_impls
+        assert _tool_impls.parse_ll_time(
+            "2026-07-03T15:00:00-04:00", "2026-07-03"
+        ) == "2026-07-03T15:00:00-04:00"
+
+    def test_12h_and_24h_forms(self):
+        import _tool_impls
+        for s in ("3:00 PM", "3pm", "15:00"):
+            out = _tool_impls.parse_ll_time(s, "2026-07-03")
+            assert out is not None and "T15:00" in out
+
+    def test_noon_midnight_edges(self):
+        import _tool_impls
+        assert "T12:00" in _tool_impls.parse_ll_time("12:00 PM", "2026-07-03")
+        assert "T00:00" in _tool_impls.parse_ll_time("12:00 AM", "2026-07-03")
+
+    def test_garbage_returns_none(self):
+        import _tool_impls
+        assert _tool_impls.parse_ll_time("later", "2026-07-03") is None
+        assert _tool_impls.parse_ll_time("", "2026-07-03") is None

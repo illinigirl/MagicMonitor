@@ -2622,6 +2622,77 @@ def _compute_calibration_summary(
     }
 
 
+def parse_ll_time(time_str: str, date_iso: str) -> str | None:
+    """Turn a held-LL time into a full ET ISO timestamp comparable to the
+    poller's return_start.
+
+    Accepts a full ISO ("2026-07-03T15:00:00-04:00"), a 24h "HH:MM", or a
+    12h "3:00 PM" / "3pm" — combined with `date_iso` (the plan's day) in
+    America/New_York. Returns None if unparseable.
+    """
+    s = (time_str or "").strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is not None:
+            return dt.isoformat()
+    except ValueError:
+        pass
+    m = _re.match(r"^(\d{1,2}):(\d{2})\s*([AaPp][Mm])?$", s)
+    m2 = _re.match(r"^(\d{1,2})\s*([AaPp][Mm])$", s)
+    if m:
+        hh, mm, ap = int(m.group(1)), int(m.group(2)), (m.group(3) or "").lower()
+    elif m2:
+        hh, mm, ap = int(m2.group(1)), 0, m2.group(2).lower()
+    else:
+        return None
+    if ap == "pm" and hh != 12:
+        hh += 12
+    elif ap == "am" and hh == 12:
+        hh = 0
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        return None
+    try:
+        day = datetime.fromisoformat(date_iso).date()
+    except ValueError:
+        return None
+    return datetime.combine(day, time(hh, mm), tzinfo=_EASTERN).isoformat()
+
+
+def apply_held_ll(table, user_id, ride_id, return_iso, plan_rows):
+    """Set (return_iso) or clear (None) a held Lightning Lane for `ride_id`
+    on each matching plan row's ll_holds map. Atomic per-key map update —
+    ll_holds is ensured first so `SET ll_holds.#r` can't fail on a missing
+    map; no ride_sequence surgery, so it can't race a plan edit. Returns
+    the affected planned_for_dates.
+    """
+    updated = []
+    for r in plan_rows:
+        key = {"PK": f"USER#{user_id}", "SK": r["SK"]}
+        if return_iso:
+            table.update_item(
+                Key=key,
+                UpdateExpression="SET ll_holds = if_not_exists(ll_holds, :empty)",
+                ExpressionAttributeValues={":empty": {}},
+                ConditionExpression="attribute_exists(PK)",
+            )
+            table.update_item(
+                Key=key,
+                UpdateExpression="SET ll_holds.#r = :t",
+                ExpressionAttributeNames={"#r": ride_id},
+                ExpressionAttributeValues={":t": return_iso},
+            )
+        else:
+            table.update_item(
+                Key=key,
+                UpdateExpression="REMOVE ll_holds.#r",
+                ExpressionAttributeNames={"#r": ride_id},
+            )
+        updated.append(r.get("planned_for_date") or r["SK"])
+    return updated
+
+
 def split_dropped_rides(
     plan: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

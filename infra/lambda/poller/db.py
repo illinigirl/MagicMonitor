@@ -611,14 +611,19 @@ def build_active_plan_ride_index(
                 for r in (item.get("ride_sequence") or [])
                 if r.get("ride_id") and r.get("ride_id") not in dropped
             ]
+            # Held Lightning Lanes for this plan (ride_id → return ISO),
+            # set via the MCP set_held_ll tool. Used by the LL-earlier
+            # precision check (only alert when a slot beats what you hold).
+            held_ll = item.get("ll_holds") or {}
             for recipient in recipients:
                 active_plans.append({
                     "user_id":   recipient,
                     "plan_id":   plan_id,
                     "park_key":  item.get("park_key"),
-                    # Same rides for every recipient of a plan; the drift
-                    # check dedupes by plan_id before using them.
+                    # Same rides/holds for every recipient of a plan; the
+                    # drift + LL checks dedupe by plan_id before using them.
                     "rides":     plan_rides,
+                    "ll_holds":  dict(held_ll),
                 })
             for ride in item.get("ride_sequence", []) or []:
                 ride_id = ride.get("ride_id")
