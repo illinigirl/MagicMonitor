@@ -17,11 +17,13 @@
 //      into FEED_URL below. Treat that URL like a password.
 //   4. Long-press home screen → add a Scriptable widget → choose
 //      "MM Waits". Small fits ~5 rides; medium/large fit more.
-//   5. (Optional) Pin a park: long-press the widget → Edit Widget →
-//      Parameter → type a park (epcot, MK, "hollywood studios", AK…).
-//      A pinned widget always stays on that park. Leave it blank to
-//      auto-follow today's plan. (So: pin the parks you always want to
-//      watch, and keep one blank widget as your plan-of-the-day.)
+//   5. (Optional) Pin a park: TAP this script inside Scriptable to open a
+//      park picker that copies the code for you, OR just type one into
+//      the widget Parameter (long-press widget → Edit Widget →
+//      Parameter): epcot, MK, "hollywood studios", AK — matching is
+//      forgiving. A pinned widget always stays on that park; leave it
+//      blank to auto-follow today's plan. (Pin the parks you always
+//      want to watch; keep one blank widget as your plan-of-the-day.)
 //
 // iOS refreshes widgets on its own cadence (~5–15 min); tap to open
 // /waits for live-now numbers.
@@ -37,30 +39,63 @@ function rideBudget() {
   }
 }
 
-// Loose match of a pinned-park string to a feed park group. Accepts the
-// key (magic_kingdom), the name (Magic Kingdom), or a short code (MK).
-const SHORT_CODES = {
-  mk: "magic_kingdom",
-  ep: "epcot",
-  epcot: "epcot",
-  hs: "hollywood_studios",
-  dhs: "hollywood_studios",
-  ak: "animal_kingdom",
-};
+// The four parks — the source of truth for both the picker and matching.
+const PARKS = [
+  { key: "magic_kingdom", code: "MK", name: "Magic Kingdom" },
+  { key: "epcot", code: "EP", name: "EPCOT" },
+  { key: "hollywood_studios", code: "HS", name: "Hollywood Studios" },
+  { key: "animal_kingdom", code: "AK", name: "Animal Kingdom" },
+];
+
+// Loose match of a pinned-park string to a feed park group. Deliberately
+// forgiving so you don't have to remember an exact abbreviation: the key
+// (magic_kingdom), the code (MK), the name, or any distinctive substring
+// (magic / hollywood / animal) all resolve.
 function matchPark(groups, raw) {
   if (!raw) return null;
   const q = raw.trim().toLowerCase();
-  const code = SHORT_CODES[q];
-  return (
-    groups.find((g) => g.park_key === q) ||
-    groups.find((g) => g.park_name.toLowerCase() === q) ||
-    (code && groups.find((g) => g.park_key === code)) ||
-    groups.find((g) => g.park_name.toLowerCase().includes(q)) ||
-    null
-  );
+  if (!q) return null;
+  const park =
+    PARKS.find((p) => p.code.toLowerCase() === q) ||
+    PARKS.find((p) => p.key === q) ||
+    PARKS.find((p) => p.name.toLowerCase() === q) ||
+    PARKS.find((p) => p.name.toLowerCase().includes(q) || q.includes(p.code.toLowerCase()));
+  return park ? groups.find((g) => g.park_key === park.key) ?? null : null;
+}
+
+// Tap the script inside the Scriptable app → pick a park → its code is
+// copied to the clipboard so you can paste it into the widget's
+// Parameter field (iOS gives no dropdown there, so this is the "picker").
+async function parkPicker() {
+  const a = new Alert();
+  a.title = "Pin a park to this widget";
+  a.message =
+    "Tap a park to copy its code, then: long-press the widget → " +
+    "Edit Widget → Parameter → paste. Pick Auto to follow your plan.";
+  PARKS.forEach((p) => a.addAction(`${p.name}  (${p.code})`));
+  a.addAction("Auto — follow today's plan");
+  a.addCancelAction("Cancel");
+  const idx = await a.presentSheet();
+  if (idx < 0) return;
+  const code = idx < PARKS.length ? PARKS[idx].code : ""; // "" = Auto
+  Pasteboard.copy(code);
+  const done = new Alert();
+  done.title = code ? `Copied "${code}"` : "Copied blank (Auto)";
+  done.message =
+    "Long-press the widget → Edit Widget → Parameter → paste" +
+    (code ? "." : " (clears it so the widget follows your plan).");
+  done.addAction("OK");
+  await done.presentAlert();
 }
 
 async function run() {
+  // Tapping the script in the Scriptable app opens the park picker
+  // instead of rendering a preview — that's how you set the Parameter.
+  if (!config.runsInWidget) {
+    await parkPicker();
+    return;
+  }
+
   const w = new ListWidget();
   w.backgroundColor = new Color("#141210");
   w.url = "https://magicmonitor.megillini.dev/waits";
@@ -82,6 +117,10 @@ async function run() {
   const groups = data.parks ?? [];
   const pinned = matchPark(groups, args.widgetParameter);
   const planActive = data.plan && data.plan.rides.length > 0;
+  // A non-empty Parameter that resolved to nothing = a typo or a park
+  // with no favorites; surface the valid codes rather than silently
+  // falling back.
+  const badParam = (args.widgetParameter || "").trim() && !pinned;
   let parkLabel, rides, planning = false;
 
   if (pinned) {
@@ -162,6 +201,14 @@ async function run() {
     const more = w.addText(`+${rides.length - budget} more — tap`);
     more.font = Font.systemFont(9);
     more.textColor = new Color("#8a8378");
+  }
+
+  // Unrecognized Parameter: teach the codes in place.
+  if (badParam) {
+    w.addSpacer(2);
+    const hint = w.addText("park? use MK · EP · HS · AK");
+    hint.font = Font.systemFont(9);
+    hint.textColor = new Color("#e0a24b");
   }
 
   return finish(w);
