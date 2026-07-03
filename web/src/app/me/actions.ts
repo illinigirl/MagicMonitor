@@ -129,6 +129,62 @@ export async function saveSettings(
   return { ok: true, savedAt: new Date().toISOString() };
 }
 
+export type TestNotifResult = { ok: true } | { ok: false; error: string };
+
+// Warm-Lambda-scoped debounce for the test button — swallows rapid
+// double-taps without a DDB write. Best-effort (not durable across cold
+// starts or instances), which is all a debounce needs to be; the client
+// also disables the button mid-flight.
+const testCooldown: Map<string, number> =
+  ((globalThis as { __mmTestCooldown?: Map<string, number> }).__mmTestCooldown ??=
+    new Map());
+const TEST_COOLDOWN_MS = 5000;
+
+/**
+ * Send a one-off Pushover "test alert" to the signed-in user's SAVED
+ * key — the self-serve "is my Pushover actually wired up?" check.
+ *
+ * Uses the key already on the profile (not the form field), so if the
+ * user just typed a new key they should Save first; the button hint says
+ * so. Identity is the session sub — no client-supplied user id, same
+ * contract as every other action here.
+ */
+export async function sendTestNotification(): Promise<TestNotifResult> {
+  const session = await auth();
+  const sub = session?.user?.id;
+  if (!sub) return { ok: false, error: "Not signed in." };
+
+  const profile = await getUserProfile(sub);
+  if (!profile?.pushoverUserKey) {
+    return {
+      ok: false,
+      error: "Save a Pushover user key first, then send a test.",
+    };
+  }
+
+  const now = Date.now();
+  if (now - (testCooldown.get(sub) ?? 0) < TEST_COOLDOWN_MS) {
+    return { ok: false, error: "Just sent one — give it a few seconds." };
+  }
+  testCooldown.set(sub, now);
+
+  try {
+    await sendPushoverMessage(
+      profile.pushoverUserKey,
+      "🎢 Test alert from Magic Monitor — if you can see this, your alerts are set up correctly.",
+      { title: "Magic Monitor — test", url: settingsUrl(), urlTitle: "My alerts" },
+    );
+  } catch (err) {
+    // Surface as a soft error — most likely a stale/rotated key.
+    console.warn("[me/test] test push failed:", err);
+    return {
+      ok: false,
+      error: "Couldn't send — double-check your Pushover key and try again.",
+    };
+  }
+  return { ok: true };
+}
+
 function buildSubscriptionChangeBody(active: Set<ParkKey>): string {
   if (active.size === 0) {
     return "You're no longer subscribed to alerts for any park. Visit Settings to opt back in.";
