@@ -132,6 +132,26 @@ export interface ReplanSuggestion {
   reasons: Record<string, string>;
 }
 
+/**
+ * One prompt line per planned ride. The `[ride_id]` bracket is
+ * LOAD-BEARING: order/drop/add must contain exact ride_ids, and the
+ * validator silently discards anything else. Until 2026-07-03 the plan
+ * lines carried names only (the catalog had ids, the plan didn't), so
+ * the model COULD NOT reference a planned ride validly — every drop it
+ * proposed was filtered to nothing and the original order was rebuilt,
+ * while the summary narrated the drops. Exported for the test that pins
+ * the bracket in place.
+ */
+export function formatPlanRideLine(r: ReplanRideInput): string {
+  const bits = [
+    `${r.ride_name} [${r.ride_id}]`,
+    `now ${r.status === "DOWN" ? "DOWN" : r.current_wait ?? "?"}`,
+    r.predicted_wait_min != null ? `planned ~${r.predicted_wait_min}m` : null,
+    r.held_ll ? `HELD LL (ignore standby)` : null,
+  ].filter(Boolean);
+  return `- ${bits.join(", ")}`;
+}
+
 const TOOL = {
   name: "propose_replan",
   description:
@@ -203,17 +223,7 @@ export async function proposeReplan(input: {
 }): Promise<ReplanSuggestion> {
   const client = new Anthropic({ apiKey: await getKey() });
 
-  const rideLines = input.rides
-    .map((r) => {
-      const bits = [
-        `${r.ride_name}`,
-        `now ${r.status === "DOWN" ? "DOWN" : r.current_wait ?? "?"}`,
-        r.predicted_wait_min != null ? `planned ~${r.predicted_wait_min}m` : null,
-        r.held_ll ? `HELD LL (ignore standby)` : null,
-      ].filter(Boolean);
-      return `- ${bits.join(", ")}`;
-    })
-    .join("\n");
+  const rideLines = input.rides.map(formatPlanRideLine).join("\n");
 
   const msg = await client.messages.create({
     model: MODEL,
@@ -246,7 +256,9 @@ export async function proposeReplan(input: {
               `${input.completed_names.join(", ")}.\n\n`
             : "") +
           (input.rides.length
-            ? `Remaining planned rides (current wait vs planned):\n${rideLines}\n\n`
+            ? `Remaining planned rides (current wait vs planned) — the ` +
+              `[bracketed] value is the ride_id to use in order/drop:\n` +
+              `${rideLines}\n\n`
             : `NO planned rides remain — everything is already ridden or ` +
               `dropped. Suggest ADDs from the catalog if the day has time ` +
               `left, or say the day looks complete.\n\n`) +
@@ -273,25 +285,32 @@ export async function proposeReplan(input: {
   const add = rawAdd
     .filter((a) => catalogById.has(a.ride_id) && !planned.has(a.ride_id))
     .map((a) => ({ ride_id: a.ride_id, ride_name: catalogById.get(a.ride_id) ?? a.ride_name }));
+  const addSet = new Set(add.map((a) => a.ride_id));
+  // Valid ride universe = planned + adds.
+  const ids = new Set([...planned, ...addSet]);
+  const rawDrop = out.drop ?? [];
+  const drop = rawDrop.filter((id) => ids.has(id));
+  const dropSet = new Set(drop);
   // Boundary log (2026-07-03): what the model SAID vs what validation
   // kept. Without this, a narrated-but-filtered add ("I'll add Dumbo!")
-  // is indistinguishable from the model never proposing one — the exact
-  // ambiguity that made today's bug hard to pin down.
+  // or a name-instead-of-id drop is indistinguishable from the model
+  // never proposing one — the exact ambiguity that made today's bug
+  // hard to pin down.
   const eaten = rawAdd.filter((a) => !add.some((k) => k.ride_id === a.ride_id));
+  const eatenDrops = rawDrop.filter((id) => !ids.has(id));
   console.log(
     `[replan/ask] sonnet returned order=${(out.order ?? []).length} ` +
-      `drop=${(out.drop ?? []).length} add=${rawAdd.length}; kept add=${add.length}` +
+      `drop=${rawDrop.length} add=${rawAdd.length}; ` +
+      `kept drop=${drop.length} add=${add.length}` +
+      (eatenDrops.length
+        ? ` — FILTERED drops (not exact ride_ids): ${eatenDrops.join(", ")}`
+        : "") +
       (eaten.length
         ? ` — FILTERED adds (bad/duplicate ride_id): ${eaten
             .map((a) => `${a.ride_name ?? "?"}[${a.ride_id}]`)
             .join(", ")}`
         : ""),
   );
-  const addSet = new Set(add.map((a) => a.ride_id));
-  // Valid ride universe = planned + adds.
-  const ids = new Set([...planned, ...addSet]);
-  const drop = (out.drop ?? []).filter((id) => ids.has(id));
-  const dropSet = new Set(drop);
   // Only real, non-dropped ride_ids; append any the model forgot so the
   // order always covers every remaining (and added) ride.
   const order = (out.order ?? []).filter((id) => ids.has(id) && !dropSet.has(id));

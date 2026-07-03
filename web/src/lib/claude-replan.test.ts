@@ -9,7 +9,7 @@ vi.mock("@aws-sdk/client-ssm", () => ({
   GetParameterCommand: class {},
 }));
 
-import { buildReplanModelInput } from "./claude-replan";
+import { buildReplanModelInput, formatPlanRideLine } from "./claude-replan";
 
 const plan = {
   rides: [
@@ -64,6 +64,37 @@ describe("buildReplanModelInput", () => {
   it("catalog excludes even completed plan rides (no re-ride suggestions)", () => {
     const { catalog } = buildReplanModelInput(plan, live);
     expect(catalog.map((c) => c.ride_id)).not.toContain("space");
+  });
+
+  it("plan ride prompt lines carry the [ride_id] the schema demands", () => {
+    // 2026-07-03 bug #2: plan lines were name-only, so the model could
+    // never emit a valid drop/order id for a planned ride — the
+    // validator silently discarded every drop it proposed.
+    const line = formatPlanRideLine({
+      ride_id: "btm-uuid",
+      ride_name: "Big Thunder",
+      predicted_wait_min: 25,
+      current_wait: null,
+      status: "DOWN",
+      held_ll: null,
+    });
+    expect(line).toContain("[btm-uuid]");
+    expect(line).toContain("now DOWN");
+  });
+
+  it("plan ride lines show wait + held-LL context", () => {
+    const line = formatPlanRideLine({
+      ride_id: "hm",
+      ride_name: "Haunted Mansion",
+      predicted_wait_min: 30,
+      current_wait: 20,
+      status: "OPERATING",
+      held_ll: "2026-07-03T16:00:00-04:00",
+    });
+    expect(line).toContain("[hm]");
+    expect(line).toContain("now 20");
+    expect(line).toContain("planned ~30m");
+    expect(line).toContain("HELD LL");
   });
 
   it("handles the all-done day: no remaining rides, full completed list", () => {
