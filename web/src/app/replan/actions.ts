@@ -19,6 +19,7 @@ import {
   setHeldLl,
   setPlanNextUp,
   setPlanOrder,
+  setRideActualWait,
   setRideDone,
   setRideDropped,
 } from "@/lib/dynamodb-writes";
@@ -215,6 +216,35 @@ export async function applyHeldLl(
   }
   revalidatePath("/replan");
   revalidatePath("/trips");
+  return { ok: true };
+}
+
+/**
+ * Record an OPTIONAL actual wait (minutes) for a ride, or clear it
+ * (empty). Never required — Mark done works without it; this just
+ * captures calibration data (predicted vs actual) when the user offers it.
+ */
+export async function applyActualWait(
+  planId: string,
+  rideId: string,
+  minutes: string,
+): Promise<ReplanResult> {
+  const bad = await gate(planId, rideId);
+  if (bad) return bad;
+  let val: number | null = null;
+  if (minutes.trim() !== "") {
+    const n = Number(minutes);
+    if (!Number.isFinite(n) || n < 0 || n > 600) {
+      return { ok: false, error: "Enter minutes (0–600)." };
+    }
+    val = Math.round(n);
+  }
+  try {
+    await setRideActualWait(planId, rideId, val);
+  } catch {
+    return { ok: false, error: "Couldn't save — try again." };
+  }
+  revalidatePath("/replan");
   return { ok: true };
 }
 

@@ -399,6 +399,49 @@ export async function setHeldLl(
   }
 }
 
+/**
+ * Record (minutes) or clear (null) the ACTUAL wait for a ride, in the
+ * actual_waits map — the calibration signal (predicted vs actual). Atomic
+ * per-key map update, ll_holds-style; ensured first so the nested SET
+ * can't fail on a missing map. Paired with Mark done on the schedule.
+ */
+export async function setRideActualWait(
+  planId: string,
+  rideId: string,
+  minutes: number | null,
+): Promise<void> {
+  const Key = { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` };
+  if (minutes !== null) {
+    await client.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key,
+        UpdateExpression: "SET actual_waits = if_not_exists(actual_waits, :empty)",
+        ExpressionAttributeValues: { ":empty": {} },
+        ConditionExpression: "attribute_exists(PK)",
+      }),
+    );
+    await client.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key,
+        UpdateExpression: "SET actual_waits.#r = :m",
+        ExpressionAttributeNames: { "#r": rideId },
+        ExpressionAttributeValues: { ":m": minutes },
+      }),
+    );
+  } else {
+    await client.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key,
+        UpdateExpression: "REMOVE actual_waits.#r",
+        ExpressionAttributeNames: { "#r": rideId },
+      }),
+    );
+  }
+}
+
 // ─── "Ask Claude" daily rate limit (2026-07-03) ──────────────────────
 //
 // The /replan "Ask Claude" server action costs real Anthropic tokens, so

@@ -1878,6 +1878,9 @@ def get_plan_for_day(date: str | None = None) -> dict[str, Any]:
         # Lane on (set via set_held_ll). Those rides' predicted waits are
         # LL returns, not standby — don't treat their standby as a signal.
         "held_lls": chosen.get("ll_holds", {}),
+        # {ride_id: actual wait min} captured from the phone on Mark done —
+        # calibration signal (predicted vs actual) for done-via-web rides.
+        "actual_waits": chosen.get("actual_waits", {}),
         "completed_rides": chosen.get("completed_rides", []),
         "dropped_rides": chosen.get("dropped_rides", []),
         "show_selections": chosen.get("show_selections", []),

@@ -132,6 +132,7 @@ export default async function ReplanPage({
                   initiallyDropped={droppedSet.has(r.ride_id)}
                   initiallyNext={isNext}
                   initiallyDone={doneSet.has(r.ride_id)}
+                  initialActual={ctx.actual_waits[r.ride_id] ?? null}
                   emphasize={isAffected ? affectedEmphasis : "drop"}
                 />
               </div>
