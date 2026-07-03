@@ -339,6 +339,11 @@ export async function setRideDone(
  * ride_sequence surgery, so it can't race with an MCP edit. Web /trips,
  * /replan, and the MCP planner all present next_up first so everyone
  * shares "what's next." Setting a new ride replaces the prior next_up.
+ *
+ * next_up_since (2026-07-03) rides along on every SET: the ISO moment
+ * this ride became next up. It's the anchor for the poller's future
+ * "probably off the ride — done? / grab this LL next" nudge (PICKUP #3):
+ * next_up_since + expected wait + ride duration ≈ when to ask.
  */
 export async function setPlanNextUp(
   planId: string,
@@ -348,11 +353,72 @@ export async function setPlanNextUp(
     new UpdateCommand({
       TableName: tableName,
       Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
-      UpdateExpression: rideId ? "SET next_up = :r" : "REMOVE next_up",
-      ...(rideId ? { ExpressionAttributeValues: { ":r": rideId } } : {}),
+      UpdateExpression: rideId
+        ? "SET next_up = :r, next_up_since = :ts"
+        : "REMOVE next_up, next_up_since",
+      ...(rideId
+        ? {
+            ExpressionAttributeValues: {
+              ":r": rideId,
+              ":ts": new Date().toISOString(),
+            },
+          }
+        : {}),
       ConditionExpression: "attribute_exists(PK)",
     }),
   );
+}
+
+// ─── One-tap "✓ Done" capability token (2026-07-03) ──────────────────
+//
+// The /done page marks a plan ride complete from a Pushover alert tap
+// with NO Cognito session — the token in the URL is the auth, exactly
+// the widget-feed pattern above (and it sidesteps the Pushover in-app
+// browser's separate cookie jar entirely). Per-PLAN token stored on the
+// plan row itself so the poller — which already reads plan rows every
+// poll — can mint alert links later without any extra secret channel.
+// Documented tradeoff: anyone holding a link can mark rides done on
+// that one plan (family-only distribution, day-scoped rows, undoable).
+// Revoke by deleting the done_token attribute.
+
+/** Get the plan's done-link token, creating one on first use. Same
+ *  if_not_exists convergence as getOrCreateWidgetSecret; never creates
+ *  the plan row itself. Returns null when the plan doesn't exist. */
+export async function getOrCreatePlanDoneToken(
+  planId: string,
+): Promise<string | null> {
+  const { randomBytes } = await import("crypto");
+  const fresh = randomBytes(16).toString("hex");
+  try {
+    const resp = await client.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+        UpdateExpression: "SET done_token = if_not_exists(done_token, :s)",
+        ExpressionAttributeValues: { ":s": fresh },
+        ConditionExpression: "attribute_exists(PK)",
+        ReturnValues: "UPDATED_NEW",
+      }),
+    );
+    return (resp.Attributes?.done_token as string) ?? fresh;
+  } catch {
+    return null; // plan row missing (condition failed) — nothing to mint
+  }
+}
+
+/** The stored done-link token (null when never provisioned) — for /done
+ *  verification. Projection-only read; never mints. */
+export async function getPlanDoneToken(
+  planId: string,
+): Promise<string | null> {
+  const resp = await client.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+      ProjectionExpression: "done_token",
+    }),
+  );
+  return (resp.Item?.done_token as string | undefined) ?? null;
 }
 
 /**

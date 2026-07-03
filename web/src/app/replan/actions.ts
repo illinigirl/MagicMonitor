@@ -25,6 +25,7 @@ import {
   setRideDropped,
 } from "@/lib/dynamodb-writes";
 import { proposeReplan, type ReplanSuggestion } from "@/lib/claude-replan";
+import { completeRideAndAdvance } from "@/lib/plan-complete";
 import { getCurrentConditions } from "@/lib/weather";
 import { isTripsAllowed } from "@/lib/trips-access";
 
@@ -271,7 +272,13 @@ export async function applyActualWait(
   return { ok: true };
 }
 
-/** Mark a ride done (done=true) or un-done (false) from /replan. */
+/**
+ * Mark a ride done (done=true) or un-done (false) from /replan.
+ * Done goes through completeRideAndAdvance (shared with the /done
+ * one-tap link) so finishing your next_up ride advances next_up to the
+ * following remaining ride and stamps next_up_since. Un-done stays a
+ * plain set-DELETE — we don't try to guess the prior next_up back.
+ */
 export async function applyDone(
   planId: string,
   rideId: string,
@@ -280,7 +287,11 @@ export async function applyDone(
   const bad = await gate(planId, rideId);
   if (bad) return bad;
   try {
-    await setRideDone(planId, rideId, done);
+    if (done) {
+      await completeRideAndAdvance(planId, rideId);
+    } else {
+      await setRideDone(planId, rideId, false);
+    }
   } catch {
     return { ok: false, error: "Couldn't update — try again." };
   }

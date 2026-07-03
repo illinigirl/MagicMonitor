@@ -13,6 +13,7 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import { getParkRides, getReplanContext } from "@/lib/dynamodb";
+import { getOrCreatePlanDoneToken } from "@/lib/dynamodb-writes";
 import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
 
@@ -42,6 +43,16 @@ export default async function ReplanPage({
   // wait / earlier LL / back-up) → Do next; "storm"/absent → neutral.
   const kind = sp.type ?? "";
   const ctx = planId ? await getReplanContext(planId) : null;
+  // Provision the plan's one-tap ✓-Done capability token (idempotent)
+  // so the poller can put /done links on this plan's alerts without a
+  // mint path of its own. Best-effort — the page renders fine without.
+  if (ctx) {
+    try {
+      await getOrCreatePlanDoneToken(ctx.plan_id);
+    } catch {
+      /* token minting is never worth failing the page over */
+    }
+  }
   // Live waits for the plan's park, to show current wait per ride.
   const liveWaits = ctx ? await getParkRides(ctx.park_key) : [];
   const waitById = new Map(liveWaits.map((r) => [r.ride_id, r]));

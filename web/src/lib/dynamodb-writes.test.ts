@@ -172,24 +172,60 @@ describe("setRideDropped", () => {
 });
 
 describe("setPlanNextUp", () => {
-  it("atomically SETs next_up on the shared plan", async () => {
+  it("atomically SETs next_up + stamps next_up_since on the shared plan", async () => {
     sendMock.mockResolvedValue({});
     const { setPlanNextUp } = await import("./dynamodb-writes");
     await setPlanNextUp("p1", "sm");
     const input = sendMock.mock.calls[0][0].input;
     expect(input.Key).toEqual({ PK: "USER#megan", SK: "PLAN#p1" });
-    expect(input.UpdateExpression).toBe("SET next_up = :r");
+    expect(input.UpdateExpression).toBe(
+      "SET next_up = :r, next_up_since = :ts",
+    );
     expect(input.ExpressionAttributeValues[":r"]).toBe("sm");
+    // next_up_since is the nudge anchor (PICKUP #3) — a real ISO instant.
+    expect(input.ExpressionAttributeValues[":ts"]).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+    );
     expect(input.ConditionExpression).toBe("attribute_exists(PK)");
   });
 
-  it("REMOVEs next_up when cleared (null)", async () => {
+  it("REMOVEs next_up AND next_up_since when cleared (null)", async () => {
     sendMock.mockResolvedValue({});
     const { setPlanNextUp } = await import("./dynamodb-writes");
     await setPlanNextUp("p1", null);
     const input = sendMock.mock.calls[0][0].input;
-    expect(input.UpdateExpression).toBe("REMOVE next_up");
+    expect(input.UpdateExpression).toBe("REMOVE next_up, next_up_since");
     expect(input.ExpressionAttributeValues).toBeUndefined();
+  });
+});
+
+describe("plan done-token (one-tap ✓ Done capability link)", () => {
+  it("mints via if_not_exists on the plan row, never creating it", async () => {
+    sendMock.mockResolvedValue({ Attributes: { done_token: "existing123" } });
+    const { getOrCreatePlanDoneToken } = await import("./dynamodb-writes");
+    const token = await getOrCreatePlanDoneToken("p1");
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input.Key).toEqual({ PK: "USER#megan", SK: "PLAN#p1" });
+    expect(input.UpdateExpression).toBe(
+      "SET done_token = if_not_exists(done_token, :s)",
+    );
+    expect(input.ConditionExpression).toBe("attribute_exists(PK)");
+    // Converges on whichever token actually landed on the row.
+    expect(token).toBe("existing123");
+  });
+
+  it("returns null when the plan row doesn't exist (condition fails)", async () => {
+    sendMock.mockRejectedValue(new Error("ConditionalCheckFailedException"));
+    const { getOrCreatePlanDoneToken } = await import("./dynamodb-writes");
+    expect(await getOrCreatePlanDoneToken("ghost")).toBeNull();
+  });
+
+  it("getPlanDoneToken reads projection-only and never mints", async () => {
+    sendMock.mockResolvedValue({ Item: {} });
+    const { getPlanDoneToken } = await import("./dynamodb-writes");
+    expect(await getPlanDoneToken("p1")).toBeNull();
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input.ProjectionExpression).toBe("done_token");
   });
 });
 
