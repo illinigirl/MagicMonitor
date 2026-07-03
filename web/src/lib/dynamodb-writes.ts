@@ -123,6 +123,45 @@ export async function getUserProfile(
   };
 }
 
+// ─── Widget feed secret (2026-07-03) ─────────────────────────────────
+//
+// The iOS widget can't carry a NextAuth session, so the JSON feed
+// (/api/widget/waits) authenticates with a per-user CAPABILITY TOKEN:
+// `<sub>.<secret>`, where the secret lives on the user's PROFILE row.
+// Deliberate, documented tradeoff: anyone holding the URL can read that
+// user's ride names + waits (low sensitivity, no writes). Revoke by
+// deleting the widget_secret attribute (a fresh one mints on next visit
+// to /waits).
+
+/** Get the user's widget secret, creating one on first use. Handles the
+ *  concurrent-first-call race via if_not_exists — both callers converge
+ *  on whichever secret landed. */
+export async function getOrCreateWidgetSecret(sub: string): Promise<string> {
+  const { randomBytes } = await import("crypto");
+  const fresh = randomBytes(16).toString("hex");
+  const resp = await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${sub}`, SK: "PROFILE" },
+      UpdateExpression: "SET widget_secret = if_not_exists(widget_secret, :s)",
+      ExpressionAttributeValues: { ":s": fresh },
+      ReturnValues: "ALL_NEW",
+    }),
+  );
+  return (resp.Attributes?.widget_secret as string) ?? fresh;
+}
+
+/** The stored secret (null when never provisioned) — for feed verification. */
+export async function getWidgetSecret(sub: string): Promise<string | null> {
+  const resp = await client.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${sub}`, SK: "PROFILE" },
+    }),
+  );
+  return (resp.Item?.widget_secret as string | undefined) ?? null;
+}
+
 // ─── Park subscriptions ──────────────────────────────────────────────
 
 /**
