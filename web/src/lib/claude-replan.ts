@@ -58,7 +58,9 @@ export interface ReplanSuggestion {
   order: string[];
   /** ride_ids to drop entirely (down / not worth it). */
   drop: string[];
-  /** Optional short note per ride_id explaining a move/drop. */
+  /** New rides to ADD (from the park catalog): ride_id + name. */
+  add: { ride_id: string; ride_name: string }[];
+  /** Optional short note per ride_id explaining a move/drop/add. */
   reasons: Record<string, string>;
 }
 
@@ -92,6 +94,19 @@ const TOOL = {
         items: { type: "string" },
         description: "ride_ids to drop (down or not worth the time).",
       },
+      add: {
+        type: "array",
+        description:
+          "New rides to add — ONLY ride_ids from the provided catalog. Empty unless the family asked or it clearly helps.",
+        items: {
+          type: "object",
+          properties: {
+            ride_id: { type: "string" },
+            ride_name: { type: "string" },
+          },
+          required: ["ride_id", "ride_name"],
+        },
+      },
       reasons: {
         type: "object",
         description:
@@ -108,7 +123,11 @@ export async function proposeReplan(input: {
   date: string;
   weather: string | null;
   trigger: string | null;
+  /** Free-text context the family typed (e.g. "leaving by 5, skip water rides"). */
+  note: string | null;
   rides: ReplanRideInput[];
+  /** Other rides in the park (not in the plan) Claude may add from. */
+  catalog: { ride_id: string; ride_name: string; current_wait: number | null; status: string }[];
 }): Promise<ReplanSuggestion> {
   const client = new Anthropic({ apiKey: await getKey() });
 
@@ -137,9 +156,11 @@ export async function proposeReplan(input: {
       "A ride marked HELD LL means they hold a Lightning Lane for it — IGNORE " +
       "its standby wait; keep it where it fits their LL time, don't reorder " +
       "around the standby. Drop rides that are DOWN or clearly not worth the " +
-      "time. Reorder ONLY the ride_ids given — never invent rides. Put every " +
-      "non-dropped ride_id in `order`. If the current order is already good, " +
-      "set no_change=true but still return the order. Keep summary + reasons short.",
+      "time. You may ADD rides — but ONLY ride_ids from the provided catalog, " +
+      "and only when the family asked or it clearly helps (e.g. time to spare). " +
+      "Never invent a ride_id. Put every non-dropped ride_id (planned + added) " +
+      "in `order`. If nothing needs changing, set no_change=true but still " +
+      "return the order. Keep summary + reasons short.",
     messages: [
       {
         role: "user",
@@ -147,31 +168,47 @@ export async function proposeReplan(input: {
           `Park: ${input.park_name} (${input.date}). ` +
           `Weather: ${input.weather ?? "n/a"}. ` +
           `Alert that prompted this: ${input.trigger ?? "manual check"}.\n\n` +
+          (input.note ? `From the family: "${input.note}". Weigh this heavily.\n\n` : "") +
           `Remaining planned rides (current wait vs planned):\n${rideLines}\n\n` +
-          `Propose changes or confirm no changes are needed.`,
+          (input.catalog.length
+            ? `Other rides in the park you may ADD (use these exact ride_ids only):\n` +
+              input.catalog
+                .map((c) => `- ${c.ride_name} [${c.ride_id}] now ${c.status === "DOWN" ? "DOWN" : c.current_wait ?? "?"}`)
+                .join("\n") + "\n\n"
+            : "") +
+          `Re-sequence, drop, and/or add as needed. Only add when the family asked or it clearly helps.`,
       },
     ],
   });
 
   const block = msg.content.find((b) => b.type === "tool_use");
   if (!block || block.type !== "tool_use") {
-    return { no_change: true, summary: "No suggestion available right now.", order: [], drop: [], reasons: {} };
+    return { no_change: true, summary: "No suggestion available right now.", order: [], drop: [], add: [], reasons: {} };
   }
   const out = block.input as ReplanSuggestion;
-  const ids = new Set(input.rides.map((r) => r.ride_id));
+  const catalogById = new Map(input.catalog.map((c) => [c.ride_id, c.ride_name]));
+  // Adds must be real catalog ride_ids not already planned.
+  const planned = new Set(input.rides.map((r) => r.ride_id));
+  const add = (out.add ?? [])
+    .filter((a) => catalogById.has(a.ride_id) && !planned.has(a.ride_id))
+    .map((a) => ({ ride_id: a.ride_id, ride_name: catalogById.get(a.ride_id) ?? a.ride_name }));
+  const addSet = new Set(add.map((a) => a.ride_id));
+  // Valid ride universe = planned + adds.
+  const ids = new Set([...planned, ...addSet]);
   const drop = (out.drop ?? []).filter((id) => ids.has(id));
   const dropSet = new Set(drop);
-  // Only real, non-dropped ride_ids, and append any the model forgot so
-  // the order always covers every remaining ride.
+  // Only real, non-dropped ride_ids; append any the model forgot so the
+  // order always covers every remaining (and added) ride.
   const order = (out.order ?? []).filter((id) => ids.has(id) && !dropSet.has(id));
-  for (const r of input.rides) {
-    if (!dropSet.has(r.ride_id) && !order.includes(r.ride_id)) order.push(r.ride_id);
+  for (const id of ids) {
+    if (!dropSet.has(id) && !order.includes(id)) order.push(id);
   }
   return {
     no_change: Boolean(out.no_change),
     summary: out.summary ?? "",
     order,
     drop,
+    add,
     reasons: out.reasons ?? {},
   };
 }

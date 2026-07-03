@@ -15,6 +15,7 @@ import { revalidatePath } from "next/cache";
 import { auth } from "@/auth";
 import { getParkRides, getReplanContext } from "@/lib/dynamodb";
 import {
+  addRidesToSequence,
   bumpReplanLlmCount,
   setHeldLl,
   setPlanNextUp,
@@ -79,6 +80,7 @@ export type AskClaudeResult =
 export async function askClaudeReplan(
   planId: string,
   trigger?: string | null,
+  note?: string | null,
 ): Promise<AskClaudeResult> {
   const session = await auth();
   const sub = session?.user?.id;
@@ -122,12 +124,26 @@ export async function askClaudeReplan(
         };
       });
 
+    // Catalog of rides in the park NOT already in the plan, so Claude can
+    // suggest adds (from real ride_ids only).
+    const planned = new Set(ctx.rides.map((r) => r.ride_id));
+    const catalog = state
+      .filter((r) => !planned.has(r.ride_id) && r.status !== "CLOSED")
+      .map((r) => ({
+        ride_id: r.ride_id,
+        ride_name: r.name,
+        current_wait: r.wait_mins,
+        status: r.status,
+      }));
+
     const suggestion = await proposeReplan({
       park_name: ctx.park_name,
       date: ctx.date,
       weather: weather ? `${weather.condition}, ${weather.temp_f}°` : null,
       trigger: trigger ?? null,
+      note: (note ?? "").trim().slice(0, 500) || null,
       rides,
+      catalog,
     });
     return { ok: true, suggestion };
   } catch (err) {
@@ -146,17 +162,24 @@ export async function applyReplanOrder(
   planId: string,
   order: string[],
   drop: string[],
+  add: { ride_id: string; ride_name: string }[] = [],
 ): Promise<ReplanResult> {
   const session = await auth();
   if (!session?.user?.id) return { ok: false, error: "Not signed in." };
   if (!isTripsAllowed(session.user?.email)) {
     return { ok: false, error: "Family accounts only." };
   }
-  const clean = (order ?? []).filter((s) => typeof s === "string").slice(0, 50);
+  const clean = (order ?? []).filter((s) => typeof s === "string").slice(0, 60);
   if (!planId || clean.length === 0) {
     return { ok: false, error: "Nothing to apply." };
   }
   try {
+    // Add new rides FIRST (so they exist in ride_sequence before the
+    // order + poller reference them), then order, then drops.
+    const cleanAdds = (add ?? [])
+      .filter((a) => a && typeof a.ride_id === "string" && typeof a.ride_name === "string")
+      .slice(0, 20);
+    if (cleanAdds.length) await addRidesToSequence(planId, cleanAdds);
     await setPlanOrder(planId, clean);
     await Promise.all(
       (drop ?? [])
