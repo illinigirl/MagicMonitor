@@ -604,8 +604,14 @@ def build_active_plan_ride_index(
                     # PARK_NAME lookup the notifier uses. Leaving the slot
                     # here for clarity.
                 })
+            # Rides dropped via the /replan approve flow leave the watch
+            # set (atomic dropped_ride_ids set — never mutates
+            # ride_sequence, so the MCP planner's view is intact).
+            dropped = item.get("dropped_ride_ids") or set()
             for ride in item.get("ride_sequence", []) or []:
                 ride_id = ride.get("ride_id")
+                if ride_id and ride_id in dropped:
+                    continue
                 ride_name = ride.get("ride_name")
                 for key in filter(None, (ride_id, (ride_name or "").lower())):
                     for recipient in recipients:

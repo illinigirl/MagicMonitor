@@ -45,12 +45,23 @@ def _get_app_token() -> str:
     return _app_token
 
 
-def _send(user_key: str, title: str, message: str, priority: int = 0) -> bool:
+def _send(
+    user_key: str,
+    title: str,
+    message: str,
+    priority: int = 0,
+    url: str | None = None,
+    url_title: str | None = None,
+) -> bool:
     """POST a single Pushover message. Returns True on success.
 
     Priority: 0 = normal, -1 = quiet (no sound), 1 = high (bypass quiet
     hours). DOWN alerts use priority 1 so they punch through; LOW WAIT
     and back-up alerts use priority 0.
+
+    `url`/`url_title`: Pushover's supplementary URL — a tappable deep
+    link (e.g. the /replan approve page) so an alert is actionable
+    without the Claude app.
     """
     try:
         # _get_app_token() is inside the try on purpose: it hits SSM lazily
@@ -66,6 +77,10 @@ def _send(user_key: str, title: str, message: str, priority: int = 0) -> bool:
             "message":  message,
             "priority": priority,
         }
+        if url:
+            payload["url"] = url
+            if url_title:
+                payload["url_title"] = url_title
         resp = requests.post(PUSHOVER_URL, data=payload, timeout=10)
         resp.raise_for_status()
         return True
@@ -196,6 +211,24 @@ def alert_plan_low_wait(
     return _send(user_key, title, body, priority=0)
 
 
+# Public dashboard base; the /replan deep-link target. Overridable via
+# env for non-prod, defaults to the live domain (already public).
+_APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://magicmonitor.megillini.dev")
+
+
+def _replan_url(plan_id: str | None, ride_id: str | None) -> str | None:
+    """Deep-link to the /replan approve page for a plan+ride, or None
+    when we lack the ids to target it (the alert stays informational)."""
+    if not plan_id or not ride_id:
+        return None
+    from urllib.parse import quote
+
+    return (
+        f"{_APP_BASE_URL}/replan?plan={quote(plan_id, safe='')}"
+        f"&ride={quote(ride_id, safe='')}"
+    )
+
+
 def _fmt_return_time(iso: str | None) -> str | None:
     """A LL returnStart ISO ('2026-07-03T14:15:00-04:00') → '2:15 PM'.
     Returns None if unparseable so callers can degrade gracefully."""
@@ -252,6 +285,7 @@ def alert_plan_disruption(
     disruption_type: str,
     plan_id: Optional[str] = None,
     wait_mins: Optional[int] = None,
+    ride_id: Optional[str] = None,
 ) -> bool:
     """Fire when a ride in the recipient's active plan for today
     transitions DOWN or BACK UP. Separate from the favoriter-based
@@ -267,14 +301,22 @@ def alert_plan_disruption(
     back_up (good news, less urgent).
     """
     emoji = PARK_EMOJI.get(park_key, "🎢")
+    # Deep-link to the /replan approve page so the alert is actionable
+    # without the Claude app (anyone with Pushover + a browser).
+    url = _replan_url(plan_id, ride_id)
+    url_title = None
     if disruption_type == "went_down":
         title = f"{emoji} Plan disruption — {ride_name} DOWN"
+        tail = (
+            "Tap to drop it or keep it in your plan."
+            if url
+            else "Check with Claude — you may want to re-sequence the day."
+        )
         body = (
             f"{park_name}\n"
-            f"{ride_name} just went down and it's in your plan today. "
-            f"Check with Claude when you can — you may want to "
-            f"re-sequence the rest of the day."
+            f"{ride_name} just went down and it's in your plan today. {tail}"
         )
+        url_title = "Drop it or re-plan"
         priority = 1
     elif disruption_type == "back_up":
         wait_blurb = f" Current wait: {wait_mins} min." if wait_mins is not None else ""
@@ -284,13 +326,14 @@ def alert_plan_disruption(
             f"{ride_name} is operating again and it's in your plan today."
             f"{wait_blurb} Let Claude know if you want to slot it back in."
         )
+        url = None  # back-up is good news; nothing to approve
         priority = 0
     else:
         # Defensive: unknown disruption_type. Don't crash the poller —
         # log + skip rather than throw on a typo.
         print(f"[notifier] Unknown plan disruption_type: {disruption_type!r} (ride={ride_name})")
         return False
-    return _send(user_key, title, body, priority=priority)
+    return _send(user_key, title, body, priority=priority, url=url, url_title=url_title)
 
 
 def alert_plan_weather_shift(

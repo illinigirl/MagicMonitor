@@ -148,3 +148,25 @@ describe("setPlanAlertSubscription", () => {
     );
   });
 });
+
+describe("setRideDropped", () => {
+  it("atomically ADDs the ride to dropped_ride_ids on the shared plan", async () => {
+    sendMock.mockResolvedValue({});
+    const { setRideDropped } = await import("./dynamodb-writes");
+    await setRideDropped("p1", "sm", true);
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input.Key).toEqual({ PK: "USER#megan", SK: "PLAN#p1" });
+    expect(input.UpdateExpression).toBe("ADD dropped_ride_ids :r");
+    expect(input.ExpressionAttributeValues[":r"]).toEqual(new Set(["sm"]));
+    expect(input.ConditionExpression).toBe("attribute_exists(PK)");
+  });
+
+  it("uses atomic DELETE to un-drop (keep)", async () => {
+    sendMock.mockResolvedValue({});
+    const { setRideDropped } = await import("./dynamodb-writes");
+    await setRideDropped("p1", "sm", false);
+    expect(sendMock.mock.calls[0][0].input.UpdateExpression).toBe(
+      "DELETE dropped_ride_ids :r",
+    );
+  });
+});

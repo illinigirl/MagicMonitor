@@ -635,6 +635,7 @@ def handler(event, context):
                             "park_key": park_key,
                             "disruption_type": "went_down",
                             "plan_id": target_plan,
+                            "ride_id": ride_id,
                         },
                     ))
                 for fav_user in favoriters:

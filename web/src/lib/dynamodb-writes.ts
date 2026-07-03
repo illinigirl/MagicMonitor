@@ -273,6 +273,40 @@ export async function setPlanAlertSubscription(
   );
 }
 
+// ─── Re-plan: drop/keep a ride (2026-07-03) ──────────────────────────
+//
+// The /replan approve action moves a disrupted ride out of the poller's
+// watch set. Like setPlanAlertSubscription, it's an ATOMIC set ADD/DELETE
+// on the shared plan row (dropped_ride_ids) — NOT a read-modify-write of
+// the ride_sequence list, so it can't race with or clobber a concurrent
+// MCP plan edit. The poller filters dropped_ride_ids out of its active-
+// plan index; ride_sequence itself is left intact so the MCP planner's
+// view is unchanged and a "keep" (DELETE) cleanly restores watching.
+
+/**
+ * Drop a ride from the poller's watch set for a shared plan (dropped=
+ * true), or un-drop it (false), via atomic ADD/DELETE on
+ * dropped_ride_ids. Never mutates ride_sequence, so it can't race with an
+ * MCP plan edit.
+ */
+export async function setRideDropped(
+  planId: string,
+  rideId: string,
+  dropped: boolean,
+): Promise<void> {
+  await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+      UpdateExpression: dropped
+        ? "ADD dropped_ride_ids :r"
+        : "DELETE dropped_ride_ids :r",
+      ExpressionAttributeValues: { ":r": new Set([rideId]) },
+      ConditionExpression: "attribute_exists(PK)",
+    }),
+  );
+}
+
 // ─── Favorite rides (M3 Phase 2) ─────────────────────────────────────
 //
 // Schema: USER#<sub> / FAV_RIDE#<ride_id> with denormalized park_key.

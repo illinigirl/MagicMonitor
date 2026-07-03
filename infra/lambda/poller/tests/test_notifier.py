@@ -120,3 +120,46 @@ class TestAlertLLEarlier:
             "key", ride_name="X", park_name="P", park_key="epcot",
             new_return_start="not-a-time",
         ) is True
+
+
+class TestReplanDeepLink:
+    """went_down disruption alerts carry a /replan deep-link when they
+    have both plan_id + ride_id; back_up alerts don't (nothing to
+    approve)."""
+
+    def _capture(self, monkeypatch):
+        monkeypatch.setattr(notifier, "_get_app_token", lambda: "tok")
+        sent = {}
+        monkeypatch.setattr(
+            notifier.requests, "post",
+            lambda url, data=None, timeout=None: (sent.update(data=data) or _FakeResp()),
+        )
+        return sent
+
+    def test_went_down_includes_replan_url(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_plan_disruption(
+            "key", ride_name="Space Mountain", park_name="Magic Kingdom",
+            park_key="magic_kingdom", disruption_type="went_down",
+            plan_id="p1", ride_id="sm",
+        )
+        url = sent["data"]["url"]
+        assert "/replan?plan=p1" in url and "ride=sm" in url
+        assert sent["data"]["url_title"] == "Drop it or re-plan"
+
+    def test_back_up_has_no_url(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_plan_disruption(
+            "key", ride_name="Space Mountain", park_name="Magic Kingdom",
+            park_key="magic_kingdom", disruption_type="back_up",
+            plan_id="p1", ride_id="sm", wait_mins=20,
+        )
+        assert "url" not in sent["data"]
+
+    def test_went_down_without_ids_stays_informational(self, monkeypatch):
+        sent = self._capture(monkeypatch)
+        notifier.alert_plan_disruption(
+            "key", ride_name="X", park_name="MK", park_key="magic_kingdom",
+            disruption_type="went_down",
+        )
+        assert "url" not in sent["data"]
