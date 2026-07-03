@@ -16,7 +16,7 @@
  */
 import "server-only";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, QueryCommand, type QueryCommandOutput } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, QueryCommand, type QueryCommandOutput } from "@aws-sdk/lib-dynamodb";
 
 import { findPark, type ParkKey } from "./parks";
 
@@ -108,6 +108,39 @@ export async function getParkRides(parkKey: ParkKey): Promise<RideState[]> {
 // to the family at the page layer (NOT per logged-in sub, unlike /me).
 
 const SHARED_TRIP_USER = "megan";
+
+/**
+ * Cognito sub of the human who owns the shared trip space (Megan). The
+ * poller alerts the shared owner ("megan") implicitly on every plan, so
+ * on /trips this viewer is always subscribed and never appears in a
+ * plan's alert_subscribers set. Hardcoded here alongside SHARED_TRIP_USER
+ * (same convention); the sub is already public in infra/cdk.json's
+ * mcp_sub_user_map, so this exposes nothing new.
+ */
+export const SHARED_TRIP_OWNER_SUB = "e1bb9500-40d1-701b-ba48-684e500ecd1d";
+
+/**
+ * Resolve a set of Cognito subs to their friendly profile names (the
+ * `name` on USER#<sub>/PROFILE). Used to render the /trips alert roster —
+ * "who's getting alerts for this trip" — so MCP- or web-set subscriptions
+ * are visible by name. One GetItem per sub (tiny N: the family). Unknown
+ * subs fall back to a short id so the row never renders blank.
+ */
+export async function getMemberNames(
+  subs: string[],
+): Promise<Record<string, string>> {
+  const unique = [...new Set(subs)].filter(Boolean);
+  const entries = await Promise.all(
+    unique.map(async (sub) => {
+      const resp = await client.send(
+        new GetCommand({ TableName: tableName, Key: { PK: `USER#${sub}`, SK: "PROFILE" } }),
+      );
+      const name = (resp.Item?.name as string | undefined)?.trim();
+      return [sub, name || `${sub.slice(0, 6)}…`] as const;
+    }),
+  );
+  return Object.fromEntries(entries);
+}
 
 export interface TripDay {
   date: string;
