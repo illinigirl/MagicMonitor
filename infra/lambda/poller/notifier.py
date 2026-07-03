@@ -13,6 +13,7 @@ up with the existing app.
 
 import os
 import time
+from datetime import datetime
 from typing import Optional
 
 import boto3
@@ -191,6 +192,54 @@ def alert_plan_low_wait(
     if forecast_wait_mins is not None:
         parts.append(f"Today's forecast: {forecast_wait_mins} min.")
     parts.append("Good time to jump to it if you're close.")
+    body = f"{park_name}\n" + " ".join(parts)
+    return _send(user_key, title, body, priority=0)
+
+
+def _fmt_return_time(iso: str | None) -> str | None:
+    """A LL returnStart ISO ('2026-07-03T14:15:00-04:00') → '2:15 PM'.
+    Returns None if unparseable so callers can degrade gracefully."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return None
+    return dt.strftime("%-I:%M %p")
+
+
+def alert_ll_earlier(
+    user_key: str,
+    ride_name: str,
+    park_name: str,
+    park_key: str,
+    new_return_start: str,
+    prior_return_start: str | None = None,
+    in_plan: bool = False,
+    price: str | None = None,
+) -> bool:
+    """An earlier Lightning Lane return window just opened for a ride the
+    recipient is watching (an active-plan ride, or a favorite they opted
+    into). Return times usually march LATER through the day, so an earlier
+    one is a genuine, time-sensitive opportunity to grab or modify a LL.
+
+    Priority 0 — an opportunity, not a disruption. No cooldown: fires on
+    each improvement (return_start earlier than the prior poll's).
+    """
+    emoji = PARK_EMOJI.get(park_key, "🎢")
+    new_t = _fmt_return_time(new_return_start) or "earlier"
+    title = f"{emoji} Earlier LL — {ride_name} {new_t}"
+    lead = "in your plan today" if in_plan else "on your watch list"
+    parts: list[str] = [f"{ride_name}'s Lightning Lane return moved earlier"]
+    prior_t = _fmt_return_time(prior_return_start)
+    if prior_t:
+        parts.append(f"(was {prior_t}, now {new_t})")
+    else:
+        parts.append(f"— now returning {new_t}")
+    parts.append(f"— it's {lead}.")
+    if price:
+        parts.append(f"{price}.")
+    parts.append("Grab it or move your existing LL earlier while it lasts.")
     body = f"{park_name}\n" + " ".join(parts)
     return _send(user_key, title, body, priority=0)
 

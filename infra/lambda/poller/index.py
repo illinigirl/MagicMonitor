@@ -89,6 +89,32 @@ def _low_wait_threshold(ride_id: str, hour_et: int) -> int | None:
     return by_hour.get(str(hour_et))
 
 
+def _ll_became_earlier(prior_ll: dict | None, new_ll: dict | None) -> bool:
+    """True when a ride's Lightning Lane return window moved EARLIER than
+    the prior poll — the LL-watch trigger.
+
+    The STATE row's ll is overwritten each poll, so `prior_ll` is exactly
+    last poll's offer: no separate baseline needed. Parsed to datetimes
+    (not lexical string compare) so a tz-offset or format change can't
+    silently invert the comparison. First appearance (no prior return
+    time) is NOT "earlier" — it's a different signal, deferred.
+    """
+    new_rs = _parse_iso((new_ll or {}).get("return_start"))
+    old_rs = _parse_iso((prior_ll or {}).get("return_start"))
+    if new_rs is None or old_rs is None:
+        return False
+    return new_rs < old_rs
+
+
+def _parse_iso(iso: str | None):
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return None
+
+
 def handler(event, context):
     """EventBridge invokes this with no meaningful payload — the schedule
     *is* the trigger. We process every park on every invocation."""
@@ -106,6 +132,11 @@ def handler(event, context):
     # At ~10 users × 4 parks = 40 queries per poll = ~28K/day, well
     # within free tier.
     favorites_cache: dict[tuple[str, str], set[str]] = {}
+
+    # LL-watch opt-ins per (user, park) — favorites with ll_watch=true.
+    # Same lazy-cache shape as favorites_cache; only queried for park
+    # subscribers when an LL improvement actually fires.
+    ll_watch_cache: dict[tuple[str, str], set[str]] = {}
 
     # Cache park hours per park (one schedule call per invocation).
     # Returns True if alerts should fire for this park right now,
@@ -155,6 +186,13 @@ def handler(event, context):
         if cache_key not in favorites_cache:
             favorites_cache[cache_key] = db.get_user_favorites_for_park(user_id, park_key)
         return favorites_cache[cache_key]
+
+    def get_ll_watched(user_id: str, park_key: str) -> set[str]:
+        """Lazily fetch + cache the rides a user opted into LL-watching."""
+        cache_key = (user_id, park_key)
+        if cache_key not in ll_watch_cache:
+            ll_watch_cache[cache_key] = db.get_user_ll_watched_rides(user_id, park_key)
+        return ll_watch_cache[cache_key]
 
     def filter_to_favoriters(
         subscribers: list[str], park_key: str, ride_id: str
@@ -358,6 +396,56 @@ def handler(event, context):
             # nobody was subscribed at the time it went down.
             if new_status == "DOWN":
                 currently_down.append((ride_id, attr))
+
+            # ── EARLIER LIGHTNING LANE (watch) ─────────────────────
+            # Fire when a ride's LL return window moved earlier than the
+            # prior poll. Recipients: the active-plan party for this ride
+            # (always watched) PLUS park-subscribers who opted into
+            # LL-watch on this ride (favorites, default-off). Any
+            # improvement, no cooldown (per design); dedupe by Pushover
+            # key so a plan+favorite overlap is one push, plan framing
+            # winning. Park-hours gated like every other alert.
+            if alerts_allowed(park_key) and _ll_became_earlier(
+                (existing or {}).get("ll"), attr.get("ll")
+            ):
+                new_ll = attr["ll"]
+                prior_ll = (existing or {}).get("ll") or {}
+                # Plan party for this ride (by ride_id or lowercased name,
+                # mirroring the DOWN/UP plan lookup).
+                plan_users = {
+                    u for (u, _pid) in plan_ride_index.get(ride_id, [])
+                }
+                plan_users |= {
+                    u
+                    for (u, _pid) in plan_ride_index.get(attr["name"].lower(), [])
+                }
+                # Favoriters who opted in (park-subscribers only).
+                watch_favs = {
+                    s
+                    for s in subscribers
+                    if ride_id in get_ll_watched(s, park_key)
+                }
+                # Dedupe by Pushover key; in_plan sticky-True per key.
+                ll_by_key: dict[str, tuple[str, bool]] = {}
+                for uid in plan_users | watch_favs:
+                    key = get_user_key(uid)
+                    if not key:
+                        continue
+                    in_plan = uid in plan_users
+                    prev = ll_by_key.get(key)
+                    ll_by_key[key] = (uid, in_plan or bool(prev and prev[1]))
+                for key, (uid, in_plan) in ll_by_key.items():
+                    if notifier.alert_ll_earlier(
+                        key,
+                        ride_name=attr["name"],
+                        park_name=attr["park_name"],
+                        park_key=park_key,
+                        new_return_start=new_ll["return_start"],
+                        prior_return_start=prior_ll.get("return_start"),
+                        in_plan=in_plan,
+                        price=new_ll.get("price"),
+                    ):
+                        total_alerts += 1
 
             # ── LOW WAIT (two baselines, shared cooldown) ──────────
             # Two independent signals share the COOLDOWN#LOW_WAIT row
