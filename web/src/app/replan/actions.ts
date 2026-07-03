@@ -16,6 +16,7 @@ import { auth } from "@/auth";
 import { getParkRides, getReplanContext } from "@/lib/dynamodb";
 import {
   bumpReplanLlmCount,
+  setHeldLl,
   setPlanNextUp,
   setPlanOrder,
   setRideDone,
@@ -164,6 +165,53 @@ export async function applyReplanOrder(
     );
   } catch {
     return { ok: false, error: "Couldn't apply — try again." };
+  }
+  revalidatePath("/replan");
+  revalidatePath("/trips");
+  return { ok: true };
+}
+
+/** America/New_York UTC offset (e.g. "-04:00") for a given ISO date. */
+function etOffset(dateIso: string): string {
+  try {
+    const d = new Date(`${dateIso}T12:00:00Z`);
+    const tz = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      timeZoneName: "longOffset",
+    })
+      .formatToParts(d)
+      .find((p) => p.type === "timeZoneName")?.value;
+    const off = (tz ?? "GMT-04:00").replace("GMT", "");
+    return /^[+-]\d{2}:\d{2}$/.test(off) ? off : "-04:00";
+  } catch {
+    return "-04:00";
+  }
+}
+
+/**
+ * Record (or clear) a held Lightning Lane for a ride from /replan — the
+ * self-serve version of set_held_ll. `time` is "HH:MM" (24h, from a time
+ * input) or "" to clear; combined with the plan's date in ET.
+ */
+export async function applyHeldLl(
+  planId: string,
+  rideId: string,
+  dateIso: string,
+  time: string,
+): Promise<ReplanResult> {
+  const bad = await gate(planId, rideId);
+  if (bad) return bad;
+  let iso: string | null = null;
+  if (time) {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(time);
+    if (!m) return { ok: false, error: "Enter a time like 3:00 PM." };
+    const hh = String(Number(m[1])).padStart(2, "0");
+    iso = `${dateIso}T${hh}:${m[2]}:00${etOffset(dateIso)}`;
+  }
+  try {
+    await setHeldLl(planId, rideId, iso);
+  } catch {
+    return { ok: false, error: "Couldn't save — try again." };
   }
   revalidatePath("/replan");
   revalidatePath("/trips");

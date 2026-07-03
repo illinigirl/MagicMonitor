@@ -355,6 +355,50 @@ export async function setPlanNextUp(
   );
 }
 
+/**
+ * Set (isoOrNull) or clear a held Lightning Lane return time for a ride
+ * on a plan, in the ll_holds map. Atomic per-key map update — ll_holds is
+ * ensured first so the nested SET can't fail on a missing map; never
+ * touches ride_sequence. Mirrors the MCP apply_held_ll so web + Claude
+ * agree. isoOrNull=null clears the hold.
+ */
+export async function setHeldLl(
+  planId: string,
+  rideId: string,
+  isoOrNull: string | null,
+): Promise<void> {
+  const Key = { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` };
+  if (isoOrNull) {
+    await client.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key,
+        UpdateExpression: "SET ll_holds = if_not_exists(ll_holds, :empty)",
+        ExpressionAttributeValues: { ":empty": {} },
+        ConditionExpression: "attribute_exists(PK)",
+      }),
+    );
+    await client.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key,
+        UpdateExpression: "SET ll_holds.#r = :t",
+        ExpressionAttributeNames: { "#r": rideId },
+        ExpressionAttributeValues: { ":t": isoOrNull },
+      }),
+    );
+  } else {
+    await client.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key,
+        UpdateExpression: "REMOVE ll_holds.#r",
+        ExpressionAttributeNames: { "#r": rideId },
+      }),
+    );
+  }
+}
+
 // ─── "Ask Claude" daily rate limit (2026-07-03) ──────────────────────
 //
 // The /replan "Ask Claude" server action costs real Anthropic tokens, so

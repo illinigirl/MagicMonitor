@@ -214,3 +214,27 @@ describe("setPlanOrder + bumpReplanLlmCount", () => {
     expect(input.UpdateExpression).toContain("ADD #c :one");
   });
 });
+
+describe("setHeldLl", () => {
+  it("ensures the map then sets the ride's held-LL key", async () => {
+    sendMock.mockResolvedValue({});
+    const { setHeldLl } = await import("./dynamodb-writes");
+    await setHeldLl("p1", "tron", "2026-07-03T15:00:00-04:00");
+    expect(sendMock).toHaveBeenCalledTimes(2);
+    expect(sendMock.mock.calls[0][0].input.UpdateExpression).toContain(
+      "if_not_exists(ll_holds",
+    );
+    const set = sendMock.mock.calls[1][0].input;
+    expect(set.UpdateExpression).toBe("SET ll_holds.#r = :t");
+    expect(set.ExpressionAttributeNames["#r"]).toBe("tron");
+    expect(set.ExpressionAttributeValues[":t"]).toBe("2026-07-03T15:00:00-04:00");
+  });
+
+  it("REMOVEs the key when cleared (null)", async () => {
+    sendMock.mockResolvedValue({});
+    const { setHeldLl } = await import("./dynamodb-writes");
+    await setHeldLl("p1", "tron", null);
+    expect(sendMock).toHaveBeenCalledOnce();
+    expect(sendMock.mock.calls[0][0].input.UpdateExpression).toBe("REMOVE ll_holds.#r");
+  });
+});
