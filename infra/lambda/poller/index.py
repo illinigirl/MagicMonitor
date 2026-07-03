@@ -411,14 +411,13 @@ def handler(event, context):
                 new_ll = attr["ll"]
                 prior_ll = (existing or {}).get("ll") or {}
                 # Plan party for this ride (by ride_id or lowercased name,
-                # mirroring the DOWN/UP plan lookup).
-                plan_users = {
-                    u for (u, _pid) in plan_ride_index.get(ride_id, [])
-                }
-                plan_users |= {
-                    u
-                    for (u, _pid) in plan_ride_index.get(attr["name"].lower(), [])
-                }
+                # mirroring the DOWN/UP plan lookup). Keep each user's
+                # plan_id so an in-plan recipient's /replan link targets it.
+                plan_pid_by_uid: dict[str, str] = {}
+                for keyname in (ride_id, attr["name"].lower()):
+                    for u, pid in plan_ride_index.get(keyname, []):
+                        plan_pid_by_uid.setdefault(u, pid)
+                plan_users = set(plan_pid_by_uid)
                 # Favoriters who opted in (park-subscribers only).
                 watch_favs = {
                     s
@@ -444,6 +443,8 @@ def handler(event, context):
                         prior_return_start=prior_ll.get("return_start"),
                         in_plan=in_plan,
                         price=new_ll.get("price"),
+                        plan_id=plan_pid_by_uid.get(uid),
+                        ride_id=ride_id,
                     ):
                         total_alerts += 1
 
@@ -526,7 +527,8 @@ def handler(event, context):
                             user_id=target_user,
                             priority=alert_routing.PRIORITY_PLAN,
                             notifier_fn=notifier.alert_plan_low_wait,
-                            kwargs={**low_wait_kwargs, "plan_id": target_plan},
+                            kwargs={**low_wait_kwargs, "plan_id": target_plan,
+                                    "ride_id": ride_id},
                         ))
                     for fav_user in favoriters:
                         candidates.append(alert_routing.AlertCandidate(

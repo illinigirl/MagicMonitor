@@ -1871,6 +1871,9 @@ def get_plan_for_day(date: str | None = None) -> dict[str, Any]:
         "plan_window": chosen.get("plan_window"),
         "ride_sequence": still_planned,
         "dropped_via_replan": dropped_via_replan,
+        # ride_id the family marked "do next" from the phone (/replan), or
+        # None — honor it when re-sequencing.
+        "next_up": chosen.get("next_up"),
         "completed_rides": chosen.get("completed_rides", []),
         "dropped_rides": chosen.get("dropped_rides", []),
         "show_selections": chosen.get("show_selections", []),

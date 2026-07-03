@@ -307,6 +307,28 @@ export async function setRideDropped(
   );
 }
 
+/**
+ * Mark a ride as "do next" for a shared plan (rideId), or clear it
+ * (null). A single scalar next_up set atomically (SET/REMOVE) — no
+ * ride_sequence surgery, so it can't race with an MCP edit. Web /trips,
+ * /replan, and the MCP planner all present next_up first so everyone
+ * shares "what's next." Setting a new ride replaces the prior next_up.
+ */
+export async function setPlanNextUp(
+  planId: string,
+  rideId: string | null,
+): Promise<void> {
+  await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+      UpdateExpression: rideId ? "SET next_up = :r" : "REMOVE next_up",
+      ...(rideId ? { ExpressionAttributeValues: { ":r": rideId } } : {}),
+      ConditionExpression: "attribute_exists(PK)",
+    }),
+  );
+}
+
 // ─── Favorite rides (M3 Phase 2) ─────────────────────────────────────
 //
 // Schema: USER#<sub> / FAV_RIDE#<ride_id> with denormalized park_key.

@@ -170,3 +170,25 @@ describe("setRideDropped", () => {
     );
   });
 });
+
+describe("setPlanNextUp", () => {
+  it("atomically SETs next_up on the shared plan", async () => {
+    sendMock.mockResolvedValue({});
+    const { setPlanNextUp } = await import("./dynamodb-writes");
+    await setPlanNextUp("p1", "sm");
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input.Key).toEqual({ PK: "USER#megan", SK: "PLAN#p1" });
+    expect(input.UpdateExpression).toBe("SET next_up = :r");
+    expect(input.ExpressionAttributeValues[":r"]).toBe("sm");
+    expect(input.ConditionExpression).toBe("attribute_exists(PK)");
+  });
+
+  it("REMOVEs next_up when cleared (null)", async () => {
+    sendMock.mockResolvedValue({});
+    const { setPlanNextUp } = await import("./dynamodb-writes");
+    await setPlanNextUp("p1", null);
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input.UpdateExpression).toBe("REMOVE next_up");
+    expect(input.ExpressionAttributeValues).toBeUndefined();
+  });
+});

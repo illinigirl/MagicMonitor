@@ -1,71 +1,144 @@
 "use client";
 
 /**
- * Approve/Dismiss controls for one disrupted ride on /replan. Drop moves
- * it out of the poller's watch set (atomic); Keep un-drops. State comes
- * down from the server (dropped_ride_ids), so it survives reloads and
- * reflects MCP-side changes.
+ * Per-ride re-plan controls on /replan: Drop (skip, atomic) and Do next
+ * (prioritize, atomic next_up). Both states come down from the server so
+ * they survive reloads and reflect MCP-side changes. The alert's `kind`
+ * decides which action is emphasized (down → Drop, next → Do next).
  */
 
 import { useState, useTransition } from "react";
 
-import { applyDrop, type ReplanResult } from "./actions";
+import { applyDrop, applyNextUp, type ReplanResult } from "./actions";
 
 export default function ReplanControls({
   planId,
   rideId,
   rideName,
   initiallyDropped,
+  initiallyNext,
+  emphasize,
 }: {
   planId: string;
   rideId: string;
   rideName: string;
   initiallyDropped: boolean;
+  initiallyNext: boolean;
+  /** Which action to lead with for this ride. */
+  emphasize: "drop" | "next";
 }) {
   const [pending, startTransition] = useTransition();
   const [dropped, setDropped] = useState(initiallyDropped);
+  const [isNext, setIsNext] = useState(initiallyNext);
   const [error, setError] = useState<string | null>(null);
 
-  const run = (next: boolean) => {
+  const act = (fn: () => Promise<ReplanResult>, onOk: () => void) => {
     setError(null);
     startTransition(async () => {
-      const res: ReplanResult = await applyDrop(planId, rideId, next);
-      if (res.ok) setDropped(next);
+      const res = await fn();
+      if (res.ok) onOk();
       else setError(res.error ?? "Couldn't update.");
     });
   };
 
+  const drop = () =>
+    act(() => applyDrop(planId, rideId, true), () => {
+      setDropped(true);
+      setIsNext(false);
+    });
+  const undrop = () => act(() => applyDrop(planId, rideId, false), () => setDropped(false));
+  const doNext = () =>
+    act(() => applyNextUp(planId, rideId, true), () => {
+      setIsNext(true);
+      setDropped(false);
+    });
+  const clearNext = () => act(() => applyNextUp(planId, rideId, false), () => setIsNext(false));
+
   if (dropped) {
     return (
-      <div className="flex items-center gap-3">
+      <Row>
         <span className="rounded-full bg-bad/15 px-3 py-1 text-xs font-medium text-bad">
-          Dropped from today
+          Dropped
         </span>
-        <button
-          type="button"
-          onClick={() => run(false)}
-          disabled={pending}
-          className="text-xs text-fg-3 underline hover:text-fg-1 disabled:opacity-50"
-        >
-          {pending ? "…" : "Undo"}
-        </button>
-        {error && <span className="text-xs text-warn">{error}</span>}
-      </div>
+        <TextBtn onClick={undrop} disabled={pending} label="Undo" />
+        <Err error={error} />
+      </Row>
     );
   }
 
-  return (
-    <div className="flex items-center gap-2">
-      <button
-        type="button"
-        onClick={() => run(true)}
-        disabled={pending}
-        className="rounded-md border border-bad/40 bg-bad/10 px-3 py-1.5 text-sm font-medium text-bad hover:bg-bad/20 disabled:opacity-50"
-      >
-        {pending ? "…" : `Drop ${rideName}`}
-      </button>
-      <span className="text-xs text-fg-3">or leave it — it may come back up</span>
-      {error && <span className="text-xs text-warn">{error}</span>}
-    </div>
+  const nextBtn = isNext ? (
+    <Row>
+      <span className="rounded-full bg-ok/15 px-3 py-1 text-xs font-medium text-ok">
+        Next up ✓
+      </span>
+      <TextBtn onClick={clearNext} disabled={pending} label="Clear" />
+    </Row>
+  ) : (
+    <button
+      type="button"
+      onClick={doNext}
+      disabled={pending}
+      className={
+        "rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50 " +
+        (emphasize === "next"
+          ? "bg-gold text-gold-ink hover:opacity-90"
+          : "border border-line bg-bg-1 text-fg-1 hover:bg-bg-2")
+      }
+    >
+      {pending ? "…" : "Do next"}
+    </button>
   );
+
+  const dropBtn = (
+    <button
+      type="button"
+      onClick={drop}
+      disabled={pending}
+      className={
+        "rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50 " +
+        (emphasize === "drop"
+          ? "border border-bad/40 bg-bad/10 text-bad hover:bg-bad/20"
+          : "border border-line bg-bg-1 text-fg-2 hover:bg-bg-2 hover:text-fg-1")
+      }
+    >
+      Drop
+    </button>
+  );
+
+  // Lead with the emphasized action.
+  return (
+    <Row>
+      {emphasize === "next" ? (
+        <>
+          {nextBtn}
+          {!isNext && dropBtn}
+        </>
+      ) : (
+        <>
+          {dropBtn}
+          {nextBtn}
+        </>
+      )}
+      <Err error={error} />
+    </Row>
+  );
+}
+
+function Row({ children }: { children: React.ReactNode }) {
+  return <div className="flex flex-wrap items-center gap-2">{children}</div>;
+}
+function TextBtn({ onClick, disabled, label }: { onClick: () => void; disabled: boolean; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="text-xs text-fg-3 underline hover:text-fg-1 disabled:opacity-50"
+    >
+      {label}
+    </button>
+  );
+}
+function Err({ error }: { error: string | null }) {
+  return error ? <span className="text-xs text-warn">{error}</span> : null;
 }

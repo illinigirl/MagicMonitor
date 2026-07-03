@@ -22,7 +22,7 @@ export const dynamic = "force-dynamic";
 export default async function ReplanPage({
   searchParams,
 }: {
-  searchParams: Promise<{ plan?: string; ride?: string }>;
+  searchParams: Promise<{ plan?: string; ride?: string; type?: string }>;
 }) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -39,6 +39,9 @@ export default async function ReplanPage({
   const sp = await searchParams;
   const planId = sp.plan ?? "";
   const rideId = sp.ride ?? "";
+  // Alert kind sets which action leads. "down" → Drop; "next" (short
+  // wait / earlier LL / back-up) → Do next; "storm"/absent → neutral.
+  const kind = sp.type ?? "";
   const ctx = planId ? await getReplanContext(planId) : null;
 
   if (!ctx) {
@@ -55,27 +58,41 @@ export default async function ReplanPage({
 
   const affected = ctx.rides.find((r) => r.ride_id === rideId);
   const droppedSet = new Set(ctx.dropped_ride_ids);
+  // "down" alerts lead with Drop; everything else (short wait, earlier
+  // LL, back-up) leads with Do next. The affected ride follows the alert
+  // kind; other rides default to Drop-lead.
+  const affectedEmphasis: "drop" | "next" = kind === "down" ? "drop" : "next";
+
+  const heading = affected
+    ? kind === "down"
+      ? `${affected.ride_name} was disrupted`
+      : `${affected.ride_name} — do it next?`
+    : kind === "storm"
+      ? "Storm coming — adjust your day"
+      : "Today’s plan";
+  const lede = affected
+    ? kind === "down"
+      ? "Drop it so you stop getting alerts and it’s out of your sequence, or leave it — it may come back up."
+      : "Short wait / earlier LL — mark it “Do next,” or adjust any other ride."
+    : kind === "storm"
+      ? "Disney pauses outdoor rides in a storm. Drop outdoor rides or mark an indoor one “Do next.”"
+      : "Mark a ride “Do next,” or drop one you’re skipping. Undo anytime.";
 
   return (
     <div className="mx-auto max-w-md px-6 py-12">
       <p className="label-meta">Adjust plan · {ctx.park_name}</p>
-      <h2 className="display text-2xl font-medium mt-2">
-        {affected ? `${affected.ride_name} was disrupted` : "Today’s plan"}
-      </h2>
-      <p className="text-fg-2 text-sm mt-2">
-        {affected
-          ? "Drop it so you stop getting alerts and it’s out of your sequence, or leave it — it may come back up. You can adjust any other ride too."
-          : "Drop any ride you’re skipping — it leaves your sequence and stops alerting. Undo anytime."}
-      </p>
+      <h2 className="display text-2xl font-medium mt-2">{heading}</h2>
+      <p className="text-fg-2 text-sm mt-2">{lede}</p>
 
       <div className="mt-6 rounded-lg border border-line bg-bg-1 divide-y divide-line-soft shadow-[var(--shadow-card)]">
         {ctx.rides.map((r, i) => {
           const isAffected = r.ride_id === rideId;
+          const isNext = ctx.next_up === r.ride_id;
           return (
             <div
               key={r.ride_id}
               className={
-                "px-4 py-3 " + (isAffected ? "bg-warn/5" : "")
+                "px-4 py-3 " + (isAffected ? "bg-warn/5" : isNext ? "bg-ok/5" : "")
               }
             >
               <div className="flex items-center gap-3">
@@ -83,7 +100,7 @@ export default async function ReplanPage({
                 <span className="text-fg-0 text-sm flex-1">{r.ride_name}</span>
                 {isAffected && (
                   <span className="rounded-full bg-warn/15 px-2 py-0.5 text-xs text-warn">
-                    disrupted
+                    alert
                   </span>
                 )}
               </div>
@@ -93,6 +110,8 @@ export default async function ReplanPage({
                   rideId={r.ride_id}
                   rideName={r.ride_name}
                   initiallyDropped={droppedSet.has(r.ride_id)}
+                  initiallyNext={isNext}
+                  emphasize={isAffected ? affectedEmphasis : "drop"}
                 />
               </div>
             </div>
