@@ -149,7 +149,7 @@ export interface TripDay {
   active: boolean;
   ride_count: number;
   outcome_recorded: boolean;
-  rides: { ride_name: string; ride_id?: string }[];
+  rides: { ride_name: string; ride_id?: string; done?: boolean }[];
   /** ADDITIONAL alert recipients opted in on this day (Cognito subs).
    *  The plan owner is implicit and never stored. Powers the /trips
    *  "get alerts" toggle state. */
@@ -172,8 +172,46 @@ interface PlanRow {
   active?: boolean;
   outcome_recorded?: boolean;
   ride_sequence?: { ride_name?: string; ride_id?: string }[];
-  // DDB String Set — the DocumentClient unmarshalls SS to a JS Set.
+  plan_order?: string[];
+  // DDB String Sets — the DocumentClient unmarshalls SS to a JS Set.
   alert_subscribers?: Set<string> | string[];
+  dropped_ride_ids?: Set<string> | string[];
+  completed_ride_ids?: Set<string> | string[];
+}
+
+/**
+ * A day's rides AS THE PLAN CURRENTLY STANDS: plan_order honored (a
+ * Claude-applied re-sequence ranks first; unranked rides keep their
+ * original position after), dropped rides excluded, done rides flagged.
+ * Before 2026-07-03 /trips rendered raw ride_sequence, so an applied
+ * re-plan still LOOKED like the original plan ("did the replan not
+ * persist?" — it had; the page was lying). Exported for tests.
+ */
+export function orderedDayRides(
+  r: Pick<
+    PlanRow,
+    "ride_sequence" | "plan_order" | "dropped_ride_ids" | "completed_ride_ids"
+  >,
+): { ride_name: string; ride_id?: string; done: boolean }[] {
+  const droppedSet = new Set([...(r.dropped_ride_ids ?? [])]);
+  const doneSet = new Set([...(r.completed_ride_ids ?? [])]);
+  const rides = (r.ride_sequence ?? [])
+    .filter((rd) => !(rd.ride_id && droppedSet.has(rd.ride_id)))
+    .map((rd) => ({
+      ride_name: rd.ride_name ?? "(unnamed)",
+      ride_id: rd.ride_id,
+      done: Boolean(rd.ride_id && doneSet.has(rd.ride_id)),
+    }));
+  const order = r.plan_order ?? [];
+  if (order.length > 0) {
+    const rank = new Map(order.map((id, i) => [id, i]));
+    rides.sort(
+      (a, b) =>
+        (rank.get(a.ride_id ?? "") ?? Number.MAX_SAFE_INTEGER) -
+        (rank.get(b.ride_id ?? "") ?? Number.MAX_SAFE_INTEGER),
+    );
+  }
+  return rides;
 }
 
 interface TripRow {
@@ -261,21 +299,21 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
       name: hdr.name ?? null,
       start_date: rows[0].planned_for_date!,
       end_date: endDate,
-      days: rows.map((r) => ({
-        date: r.planned_for_date!,
-        park_key: (r.park_key ?? "magic_kingdom") as ParkKey,
-        plan_id: r.SK.slice("PLAN#".length),
-        active: Boolean(r.active),
-        ride_count: (r.ride_sequence ?? []).length,
-        outcome_recorded: Boolean(r.outcome_recorded),
-        rides: (r.ride_sequence ?? []).map((rd) => ({
-          ride_name: rd.ride_name ?? "(unnamed)",
-          ride_id: rd.ride_id,
-        })),
-        // Set (from DDB SS) or array — normalize to a serializable array
-        // (a JS Set can't cross the Server Component boundary as a prop).
-        alert_subscribers: [...(r.alert_subscribers ?? [])].sort(),
-      })),
+      days: rows.map((r) => {
+        const rides = orderedDayRides(r);
+        return {
+          date: r.planned_for_date!,
+          park_key: (r.park_key ?? "magic_kingdom") as ParkKey,
+          plan_id: r.SK.slice("PLAN#".length),
+          active: Boolean(r.active),
+          ride_count: rides.length,
+          outcome_recorded: Boolean(r.outcome_recorded),
+          rides,
+          // Set (from DDB SS) or array — normalize to a serializable array
+          // (a JS Set can't cross the Server Component boundary as a prop).
+          alert_subscribers: [...(r.alert_subscribers ?? [])].sort(),
+        };
+      }),
     });
   }
 
@@ -301,6 +339,7 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
   for (const r of soloByDate.values()) {
     const date = r.planned_for_date!;
     const parkKey = (r.park_key ?? "magic_kingdom") as ParkKey;
+    const rides = orderedDayRides(r);
     trips.push({
       trip_id: `solo:${date}`,
       // A same-day plan reads as "Today's plan"; a standalone future day
@@ -314,12 +353,9 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
           park_key: parkKey,
           plan_id: r.SK.slice("PLAN#".length),
           active: Boolean(r.active),
-          ride_count: (r.ride_sequence ?? []).length,
+          ride_count: rides.length,
           outcome_recorded: Boolean(r.outcome_recorded),
-          rides: (r.ride_sequence ?? []).map((rd) => ({
-            ride_name: rd.ride_name ?? "(unnamed)",
-            ride_id: rd.ride_id,
-          })),
+          rides,
           alert_subscribers: [...(r.alert_subscribers ?? [])].sort(),
         },
       ],

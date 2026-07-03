@@ -207,7 +207,11 @@ function DayCard({ day }: { day: TripDay }) {
         {day.rides.length > 0 ? (
           <ul className="mt-3 flex flex-wrap gap-x-2 gap-y-1 text-sm text-fg-2">
             {day.rides.map((r, i) => (
-              <li key={`${r.ride_id ?? r.ride_name}-${i}`}>
+              <li
+                key={`${r.ride_id ?? r.ride_name}-${i}`}
+                className={r.done ? "text-fg-3" : undefined}
+              >
+                {r.done && <span aria-label="done">✓ </span>}
                 {r.ride_name}
                 {i < day.rides.length - 1 && (
                   <span className="text-fg-3" aria-hidden>

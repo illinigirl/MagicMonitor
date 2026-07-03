@@ -429,3 +429,44 @@ describe("getMemberNames", () => {
     expect(names["beef1234-bbbb"]).toBe("beef12…");
   });
 });
+
+describe("orderedDayRides", () => {
+  // Pins the /trips fix from 2026-07-03: the page rendered raw
+  // ride_sequence, so an APPLIED re-plan still displayed the original
+  // order with dropped rides present ("did the replan not persist?").
+  const row = {
+    ride_sequence: [
+      { ride_name: "Space Mountain", ride_id: "space" },
+      { ride_name: "Big Thunder", ride_id: "btm" },
+      { ride_name: "Tiana's Bayou", ride_id: "tiana" },
+      { ride_name: "PhilharMagic", ride_id: "phil" }, // added via replan
+    ],
+    plan_order: ["btm", "phil"],
+    dropped_ride_ids: new Set(["tiana"]),
+    completed_ride_ids: new Set(["space"]),
+  };
+
+  it("honors plan_order, excludes dropped, flags done", async () => {
+    const { orderedDayRides } = await import("./dynamodb");
+    const rides = orderedDayRides(row);
+    expect(rides.map((r) => r.ride_id)).toEqual(["btm", "phil", "space"]);
+    expect(rides.find((r) => r.ride_id === "space")?.done).toBe(true);
+    expect(rides.find((r) => r.ride_id === "btm")?.done).toBe(false);
+  });
+
+  it("no plan_order → original sequence order, drops still excluded", async () => {
+    const { orderedDayRides } = await import("./dynamodb");
+    const rides = orderedDayRides({ ...row, plan_order: undefined });
+    expect(rides.map((r) => r.ride_id)).toEqual(["space", "btm", "phil"]);
+  });
+
+  it("handles DDB Sets or arrays for the id sets", async () => {
+    const { orderedDayRides } = await import("./dynamodb");
+    const rides = orderedDayRides({
+      ...row,
+      dropped_ride_ids: ["tiana"],
+      completed_ride_ids: ["space"],
+    });
+    expect(rides.map((r) => r.ride_id)).toEqual(["btm", "phil", "space"]);
+  });
+});
