@@ -535,3 +535,31 @@ describe("orderedDayRides target_time passthrough", () => {
     expect(rides[1].target_time).toBeNull();
   });
 });
+
+describe("findTodayDay (plan-widget feed)", () => {
+  const day = (date: string, active: boolean, plan_id: string) => ({
+    date, active, plan_id,
+    park_key: "epcot" as const, ride_count: 0, outcome_recorded: false,
+    rides: [], reservations: [], shows: [], alert_subscribers: [],
+  });
+  const trip = (days: ReturnType<typeof day>[]) => ({
+    trip_id: "t", name: null, start_date: "", end_date: "", days,
+  });
+
+  it("prefers the ACTIVE plan when today appears twice", async () => {
+    const { findTodayDay } = await import("./dynamodb");
+    const found = findTodayDay(
+      [trip([day("2026-07-04", false, "dormant")]),
+       trip([day("2026-07-04", true, "live")])],
+      "2026-07-04",
+    );
+    expect(found?.plan_id).toBe("live");
+  });
+
+  it("null when no plan today", async () => {
+    const { findTodayDay } = await import("./dynamodb");
+    expect(
+      findTodayDay([trip([day("2026-07-05", true, "x")])], "2026-07-04"),
+    ).toBeNull();
+  });
+});

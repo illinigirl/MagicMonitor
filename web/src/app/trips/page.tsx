@@ -29,6 +29,8 @@ import { findPark } from "@/lib/parks";
 import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
 
+import { getOrCreatePlanWidgetSecret } from "@/lib/dynamodb-writes";
+
 import TripAlertToggle from "./TripAlertToggle";
 
 // Shared, family-scoped, low-traffic — always render fresh.
@@ -73,6 +75,11 @@ export default async function TripsPage() {
   // Android devices get Google Maps nav links (native app); others Apple.
   const android = isAndroidUa((await headers()).get("user-agent"));
 
+  // Today's-plan phone-widget token. Minted HERE (and only here) on
+  // purpose: this page sits behind the family gate, so holding the
+  // token proves the user passed it once (see dynamodb-writes.ts).
+  const planWidgetSecret = await getOrCreatePlanWidgetSecret(viewerSub);
+
   return (
     <div className="mx-auto max-w-2xl px-6 py-12">
       <header className="mb-8">
@@ -106,6 +113,24 @@ export default async function TripsPage() {
           ))}
         </div>
       )}
+
+      <details className="mt-10 text-sm text-fg-3">
+        <summary className="cursor-pointer">Phone widget setup — today’s plan</summary>
+        <div className="mt-2 space-y-2">
+          <p>
+            Your private plan-feed URL (treat it like a password — it can
+            read the family’s plan):
+          </p>
+          <code className="block break-all rounded bg-bg-0 border border-line px-2 py-1 text-xs">
+            {`https://magicmonitor.megillini.dev/api/widget/plan?t=${viewerSub}.${planWidgetSecret}`}
+          </code>
+          <p>
+            Paste it into <code>tools/widget/scriptable-plan.js</code> (repo)
+            in the Scriptable app to get a home-screen widget of today’s
+            schedule — rides, meals, shows, ✓ done, 🎟 holds.
+          </p>
+        </div>
+      </details>
     </div>
   );
 }

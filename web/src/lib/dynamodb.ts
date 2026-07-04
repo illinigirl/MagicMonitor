@@ -290,8 +290,20 @@ interface TripRow {
 
 /** Today's date as YYYY-MM-DD in Eastern (the parks' tz), matching the
  *  planner's planned_for_date convention. */
-function todayEtIso(): string {
+export function todayEtIso(): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
+/**
+ * Today's day-plan out of the upcoming trips, for the phone widget.
+ * Prefers an ACTIVE day when today appears in more than one place
+ * (e.g. a trip day plus a standalone same-day plan). Pure — exported
+ * for tests.
+ */
+export function findTodayDay(trips: Trip[], today: string): TripDay | null {
+  const todays = trips.flatMap((t) => t.days.filter((d) => d.date === today));
+  if (todays.length === 0) return null;
+  return todays.find((d) => d.active) ?? todays[0];
 }
 
 /** Paginated Query of USER#<SHARED_TRIP_USER> rows whose SK begins_with

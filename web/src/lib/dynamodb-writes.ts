@@ -162,6 +162,45 @@ export async function getWidgetSecret(sub: string): Promise<string | null> {
   return (resp.Item?.widget_secret as string | undefined) ?? null;
 }
 
+// ─── Plan-widget secret (2026-07-04) ─────────────────────────────────
+//
+// A SEPARATE capability token for the today's-plan widget feed. The
+// waits token above is mintable by ANY signed-in user (their own data);
+// the plan feed returns SHARED FAMILY data, so its token is minted only
+// on /trips — behind the family email allowlist — and possession proves
+// the holder passed that gate once. Distinct attribute so a non-family
+// waits token can never read the plan. Same revocation story: delete
+// plan_widget_secret; a fresh one mints on the next /trips visit.
+
+/** Get the user's plan-widget secret, creating one on first use. ONLY
+ *  call from behind the family gate (/trips). */
+export async function getOrCreatePlanWidgetSecret(sub: string): Promise<string> {
+  const { randomBytes } = await import("crypto");
+  const fresh = randomBytes(16).toString("hex");
+  const resp = await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${sub}`, SK: "PROFILE" },
+      UpdateExpression:
+        "SET plan_widget_secret = if_not_exists(plan_widget_secret, :s)",
+      ExpressionAttributeValues: { ":s": fresh },
+      ReturnValues: "UPDATED_NEW",
+    }),
+  );
+  return (resp.Attributes?.plan_widget_secret as string) ?? fresh;
+}
+
+/** The stored plan-widget secret (null when never provisioned). */
+export async function getPlanWidgetSecret(sub: string): Promise<string | null> {
+  const resp = await client.send(
+    new GetCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${sub}`, SK: "PROFILE" },
+    }),
+  );
+  return (resp.Item?.plan_widget_secret as string | undefined) ?? null;
+}
+
 // ─── Park subscriptions ──────────────────────────────────────────────
 
 /**
