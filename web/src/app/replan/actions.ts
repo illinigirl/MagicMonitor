@@ -31,6 +31,8 @@ import {
   type ReplanSuggestion,
 } from "@/lib/claude-replan";
 import { completeRideAndAdvance } from "@/lib/plan-complete";
+import { formatEtTime } from "@/lib/format-et";
+import { pickNextLl } from "@/lib/next-ll";
 import { getCurrentConditions } from "@/lib/weather";
 import { isTripsAllowed } from "@/lib/trips-access";
 
@@ -39,6 +41,14 @@ const ASK_CLAUDE_DAILY_CAP = 20;
 export interface ReplanResult {
   ok: boolean;
   error?: string;
+  /** After a successful Mark done: the hold-aware "next LL worth
+   *  grabbing" pick, when one exists (see lib/next-ll.ts). */
+  ll_suggestion?: {
+    ride_name: string;
+    return_label: string;
+    price: string | null;
+    standby_mins: number | null;
+  };
 }
 
 async function gate(
@@ -276,9 +286,39 @@ export async function applyDone(
 ): Promise<ReplanResult> {
   const bad = await gate(planId, rideId);
   if (bad) return bad;
+  let llSuggestion: ReplanResult["ll_suggestion"];
   try {
     if (done) {
-      await completeRideAndAdvance(planId, rideId);
+      const ctx = await getReplanContext(planId);
+      if (!ctx) return { ok: false, error: "Plan not found." };
+      await completeRideAndAdvance(planId, rideId, ctx);
+      // The mark-done moment is when the family asks "what should we
+      // book next?" — same hold-aware pick as /done and the poller
+      // nudge. Best-effort: a live-read failure never fails the action.
+      try {
+        const live = await getParkRides(ctx.park_key);
+        const gone = new Set([
+          ...ctx.completed_ride_ids,
+          ...ctx.dropped_ride_ids,
+          rideId,
+        ]);
+        const pick = pickNextLl({
+          rides: ctx.rides.filter((r) => !gone.has(r.ride_id)),
+          holds: ctx.held_lls,
+          live,
+          now: new Date(),
+        });
+        if (pick) {
+          llSuggestion = {
+            ride_name: pick.ride_name,
+            return_label: formatEtTime(pick.return_start),
+            price: pick.price,
+            standby_mins: pick.standby_mins,
+          };
+        }
+      } catch {
+        /* suggestion is a bonus */
+      }
     } else {
       await setRideDone(planId, rideId, false);
     }
@@ -287,7 +327,7 @@ export async function applyDone(
   }
   revalidatePath("/replan");
   revalidatePath("/trips");
-  return { ok: true };
+  return { ok: true, ll_suggestion: llSuggestion };
 }
 
 /** Mark a ride "do next" (on=true) or clear the plan's next_up (on=false). */

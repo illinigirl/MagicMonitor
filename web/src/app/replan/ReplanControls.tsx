@@ -42,6 +42,7 @@ export default function ReplanControls({
   const [isNext, setIsNext] = useState(initiallyNext);
   const [done, setDone] = useState(initiallyDone);
   const [error, setError] = useState<string | null>(null);
+  const [llSug, setLlSug] = useState<ReplanResult["ll_suggestion"]>(undefined);
 
   const act = (fn: () => Promise<ReplanResult>, onOk: () => void) => {
     setError(null);
@@ -64,27 +65,49 @@ export default function ReplanControls({
       setDropped(false);
     });
   const clearNext = () => act(() => applyNextUp(planId, rideId, false), () => setIsNext(false));
-  const markDone = () =>
-    act(() => applyDone(planId, rideId, true), () => {
-      setDone(true);
-      setIsNext(false);
+  const markDone = () => {
+    setError(null);
+    startTransition(async () => {
+      const res = await applyDone(planId, rideId, true);
+      if (res.ok) {
+        setDone(true);
+        setIsNext(false);
+        // Show the hold-aware "next LL worth grabbing" pick right at
+        // the decision moment (the reason the family checks rides off).
+        setLlSug(res.ll_suggestion);
+      } else {
+        setError(res.error ?? "Couldn't update.");
+      }
     });
+  };
   const unDone = () => act(() => applyDone(planId, rideId, false), () => setDone(false));
 
   if (done) {
     return (
-      <Row>
-        <span className="rounded-full bg-ok/15 px-3 py-1 text-xs font-medium text-ok">
-          Done ✓
-        </span>
-        <ActualWait
-          planId={planId}
-          rideId={rideId}
-          initial={initialActual}
-        />
-        <TextBtn onClick={unDone} disabled={pending} label="Undo" />
-        <Err error={error} />
-      </Row>
+      <div className="space-y-1.5">
+        <Row>
+          <span className="rounded-full bg-ok/15 px-3 py-1 text-xs font-medium text-ok">
+            Done ✓
+          </span>
+          <ActualWait
+            planId={planId}
+            rideId={rideId}
+            initial={initialActual}
+          />
+          <TextBtn onClick={unDone} disabled={pending} label="Undo" />
+          <Err error={error} />
+        </Row>
+        {llSug && (
+          <p className="text-xs text-gold">
+            🎟 Next LL worth grabbing: {llSug.ride_name} — returns{" "}
+            {llSug.return_label}
+            {llSug.price ? ` (${llSug.price})` : ""}
+            {llSug.standby_mins != null
+              ? `, standby ${llSug.standby_mins}m`
+              : ""}
+          </p>
+        )}
+      </div>
     );
   }
 

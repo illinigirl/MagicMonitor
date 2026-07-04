@@ -17,8 +17,10 @@
  * Marking done advances next_up when the done ride held it (shared
  * semantics with /replan's Mark done — see lib/plan-complete.ts).
  */
-import { getReplanContext } from "@/lib/dynamodb";
+import { getParkRides, getReplanContext } from "@/lib/dynamodb";
 import { getPlanDoneToken, setRideDone } from "@/lib/dynamodb-writes";
+import { formatEtTime } from "@/lib/format-et";
+import { pickNextLl } from "@/lib/next-ll";
 import {
   completeRideAndAdvance,
   pickNextUp,
@@ -117,6 +119,29 @@ export default async function DonePage({
       ? (ctx.rides.find((r) => r.ride_id === ctx.next_up) ?? null)
       : pickNextUp(ctx.rides, ctx.completed_ride_ids, ctx.dropped_ride_ids, rideId);
 
+  // The mark-done moment is when the family asks "what should we book
+  // next?" — surface the hold-aware next-LL pick right here (same rule
+  // as the poller's nudge). Best-effort: a live-read failure must never
+  // break the confirmation page.
+  const gone = new Set([
+    ...ctx.completed_ride_ids,
+    ...ctx.dropped_ride_ids,
+    rideId,
+  ]);
+  const remaining = ctx.rides.filter((r) => !gone.has(r.ride_id));
+  let llSuggestion = null;
+  try {
+    const live = await getParkRides(ctx.park_key);
+    llSuggestion = pickNextLl({
+      rides: remaining,
+      holds: ctx.held_lls,
+      live,
+      now: new Date(),
+    });
+  } catch {
+    /* suggestion is a bonus, never a blocker */
+  }
+
   return (
     <Shell park={ctx.park_name}>
       <h2 className="display text-2xl font-medium mt-2">
@@ -129,6 +154,18 @@ export default async function DonePage({
             : `Still up next: ${upNext.ride_name}.`
           : "That was the last one — nice day! 🎉"}
       </p>
+      {llSuggestion && (
+        <p className="mt-3 rounded-md border border-gold/40 bg-gold/10 px-3 py-2 text-sm text-fg-1">
+          🎟 Next LL worth grabbing:{" "}
+          <span className="font-medium">{llSuggestion.ride_name}</span> —
+          returns {formatEtTime(llSuggestion.return_start)}
+          {llSuggestion.price ? ` (${llSuggestion.price})` : ""}
+          {llSuggestion.standby_mins != null
+            ? `, standby now ${llSuggestion.standby_mins}m`
+            : ""}
+          .
+        </p>
+      )}
       <Links
         planId={planId}
         extra={{ href: doneUrl(rideId, true), label: "Undo" }}
