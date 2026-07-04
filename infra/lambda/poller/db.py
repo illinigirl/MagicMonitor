@@ -350,6 +350,33 @@ def mark_still_down_alert_sent(ride_id: str, cooldown_secs: int) -> None:
     )
 
 
+# ─── LL-reappeared cooldown (2026-07-04) ─────────────────────────────
+# An LL offer coming back in stock can flap (Disney releases inventory
+# in waves) — one "LL available" push per ride per window, not one per
+# wave. Separate from the earlier-LL path, which stays uncooled by
+# design (each meaningful improvement is individually actionable).
+
+LL_REAPPEAR_COOLDOWN_SECS = int(os.environ.get("LL_REAPPEAR_COOLDOWN_SECS", "1800"))
+
+
+def is_ll_reappear_on_cooldown(ride_id: str) -> bool:
+    resp = _table.get_item(
+        Key={"PK": f"RIDE#{ride_id}", "SK": "COOLDOWN#LL_REAPPEAR"}
+    )
+    return _cooldown_active(resp)
+
+
+def mark_ll_reappear_alert_sent(ride_id: str) -> None:
+    _table.put_item(
+        Item={
+            "PK":      f"RIDE#{ride_id}",
+            "SK":      "COOLDOWN#LL_REAPPEAR",
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "ttl":     int(time.time()) + LL_REAPPEAR_COOLDOWN_SECS,
+        }
+    )
+
+
 # ─── Next-up nudge cooldown (M10) ────────────────────────────────────
 # One "off the ride? mark it done" push per (plan, next_up ride) — the
 # nudge is a question, and asking it twice is nagging. Keyed on the PLAN

@@ -107,7 +107,7 @@ def _ll_became_earlier(prior_ll: dict | None, new_ll: dict | None) -> bool:
     last poll's offer: no separate baseline needed. Parsed to datetimes
     (not lexical string compare) so a tz-offset or format change can't
     silently invert the comparison. First appearance (no prior return
-    time) is NOT "earlier" — it's a different signal, deferred.
+    time) is a different signal — see _ll_reappeared.
     """
     new_rs = _parse_iso((new_ll or {}).get("return_start"))
     old_rs = _parse_iso((prior_ll or {}).get("return_start"))
@@ -115,6 +115,33 @@ def _ll_became_earlier(prior_ll: dict | None, new_ll: dict | None) -> bool:
         return False
     improvement_min = (old_rs - new_rs).total_seconds() / 60
     return improvement_min >= LL_MIN_IMPROVEMENT_MIN
+
+
+def _ll_reappeared(prior_ll: dict | None, new_ll: dict | None) -> bool:
+    """True when a ride gained an LL offer it didn't have last poll —
+    the sold-out-then-reappears case (2026-07-04): a family hunting an
+    MLL for a plan ride (the tier-unlock chain) needs to know the moment
+    inventory comes back, and 'earlier' can never fire when there was no
+    prior offer to improve on. Cooldown-gated by the caller (offers can
+    flap as Disney releases inventory in waves).
+    """
+    new_rs = _parse_iso((new_ll or {}).get("return_start"))
+    old_rs = _parse_iso((prior_ll or {}).get("return_start"))
+    return new_rs is not None and old_rs is None
+
+
+# Suppress LL alerts (earlier + reappeared) when the ride's CURRENT
+# standby is at/under this — a Lightning Lane for a 15-minute wait is
+# noise, just walk on (Mission: Space, 2026-07-04). DOWN rides and rides
+# without a wait still alert: no standby to walk onto. Env-tunable.
+LL_MIN_STANDBY_MINS = int(os.environ.get("LL_MIN_STANDBY_MINS", "25"))
+
+
+def _ll_worth_alerting(status: str, wait_mins) -> bool:
+    """False when standby is so short the LL alert is pointless."""
+    if status == "OPERATING" and wait_mins is not None:
+        return int(wait_mins) > LL_MIN_STANDBY_MINS
+    return True
 
 
 def _parse_iso(iso: str | None):
@@ -517,11 +544,30 @@ def handler(event, context):
                     _avail = _parse_iso((attr.get("ll") or {}).get("return_start"))
                     _held_dt = _parse_iso(_held)
                     _ll_beats_held = bool(_avail and _held_dt and _avail < _held_dt)
+                # Two LL events share this block: the return window moved
+                # EARLIER, or an offer REAPPEARED after none (sold-out →
+                # back in stock — the MLL-hunting case, 2026-07-04).
+                # Reappearance is cooldown-gated (offers flap as Disney
+                # releases inventory in waves); earlier stays per-design
+                # uncooled. Both suppressed when standby is walk-on short.
+                _prior_ll_state = (existing or {}).get("ll")
+                _ll_event = None
+                if _ll_became_earlier(_prior_ll_state, attr.get("ll")):
+                    _ll_event = "earlier"
+                elif _ll_reappeared(_prior_ll_state, attr.get("ll")):
+                    _ll_event = "reappeared"
                 if (
-                    alerts_allowed(park_key)
+                    _ll_event
+                    and alerts_allowed(park_key)
                     and _ll_beats_held
-                    and _ll_became_earlier((existing or {}).get("ll"), attr.get("ll"))
+                    and _ll_worth_alerting(new_status, new_wait)
+                    and not (
+                        _ll_event == "reappeared"
+                        and db.is_ll_reappear_on_cooldown(ride_id)
+                    )
                 ):
+                    if _ll_event == "reappeared":
+                        db.mark_ll_reappear_alert_sent(ride_id)
                     new_ll = attr["ll"]
                     prior_ll = (existing or {}).get("ll") or {}
                     # Plan party for this ride (by ride_id or lowercased name,
@@ -559,6 +605,7 @@ def handler(event, context):
                             price=new_ll.get("price"),
                             plan_id=plan_pid_by_uid.get(uid),
                             ride_id=ride_id,
+                            reappeared=(_ll_event == "reappeared"),
                         ):
                             total_alerts += 1
 

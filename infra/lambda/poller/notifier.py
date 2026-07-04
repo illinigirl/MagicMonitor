@@ -265,26 +265,40 @@ def alert_ll_earlier(
     price: str | None = None,
     plan_id: str | None = None,
     ride_id: str | None = None,
+    reappeared: bool = False,
 ) -> bool:
-    """An earlier Lightning Lane return window just opened for a ride the
-    recipient is watching (an active-plan ride, or a favorite they opted
-    into). Return times usually march LATER through the day, so an earlier
-    one is a genuine, time-sensitive opportunity to grab or modify a LL.
+    """A Lightning Lane opportunity for a ride the recipient is watching
+    (an active-plan ride, or a favorite they opted into). Two flavors:
 
-    Priority 0 — an opportunity, not a disruption. No cooldown: fires on
-    each improvement (return_start earlier than the prior poll's).
+    • earlier (default): the return window moved meaningfully earlier —
+      return times usually march LATER through the day, so this is a
+      genuine, time-sensitive chance to grab or move an LL. No cooldown:
+      each improvement is individually actionable.
+    • reappeared=True: the ride had NO offer last poll and has one now —
+      sold-out inventory came back (the hunting-an-MLL case). Cooldown-
+      gated by the caller since offers flap in waves.
+
+    Priority 0 — an opportunity, not a disruption.
     """
     emoji = PARK_EMOJI.get(park_key, "🎢")
-    new_t = _fmt_return_time(new_return_start) or "earlier"
-    title = f"{emoji} Earlier LL — {ride_name} {new_t}"
+    new_t = _fmt_return_time(new_return_start) or "soon"
     lead = "in your plan today" if in_plan else "on your watch list"
-    parts: list[str] = [f"{ride_name}'s Lightning Lane return moved earlier"]
-    prior_t = _fmt_return_time(prior_return_start)
-    if prior_t:
-        parts.append(f"(was {prior_t}, now {new_t})")
+    parts: list[str]
+    if reappeared:
+        title = f"{emoji} LL available — {ride_name} {new_t}"
+        parts = [
+            f"{ride_name}'s Lightning Lane just came back in stock, "
+            f"returning {new_t} — it's {lead}."
+        ]
     else:
-        parts.append(f"— now returning {new_t}")
-    parts.append(f"— it's {lead}.")
+        title = f"{emoji} Earlier LL — {ride_name} {new_t}"
+        parts = [f"{ride_name}'s Lightning Lane return moved earlier"]
+        prior_t = _fmt_return_time(prior_return_start)
+        if prior_t:
+            parts.append(f"(was {prior_t}, now {new_t})")
+        else:
+            parts.append(f"— now returning {new_t}")
+        parts.append(f"— it's {lead}.")
     if price:
         parts.append(f"{price}.")
     parts.append("Grab it or move your existing LL earlier while it lasts.")

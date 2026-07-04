@@ -72,3 +72,43 @@ class TestHeldLLPrecision:
         avail = self._parse("2026-07-03T14:00:00-04:00")
         held = self._parse("2026-07-03T15:00:00-04:00")
         assert avail < held  # gate fires
+
+
+# ─── LL reappearance + short-standby suppression (2026-07-04) ─────────
+
+
+class TestLlReappeared:
+    def test_no_offer_to_offer_is_reappearance(self):
+        assert index._ll_reappeared(None, {"return_start": "2026-07-04T16:40:00-04:00"})
+        assert index._ll_reappeared({}, {"return_start": "2026-07-04T16:40:00-04:00"})
+
+    def test_existing_offer_is_not_reappearance(self):
+        # An offer that merely CHANGED belongs to the earlier-LL rule.
+        assert not index._ll_reappeared(
+            {"return_start": "2026-07-04T18:00:00-04:00"},
+            {"return_start": "2026-07-04T16:40:00-04:00"},
+        )
+
+    def test_offer_disappearing_is_not_an_event(self):
+        assert not index._ll_reappeared(
+            {"return_start": "2026-07-04T16:40:00-04:00"}, None
+        )
+
+    def test_unparseable_new_offer_never_fires(self):
+        assert not index._ll_reappeared(None, {"return_start": "soon-ish"})
+
+
+class TestLlWorthAlerting:
+    def test_short_standby_suppresses(self):
+        # Mission: Space at 15m — an LL alert is noise, walk on instead.
+        assert not index._ll_worth_alerting("OPERATING", 15)
+        assert not index._ll_worth_alerting("OPERATING", 25)  # at threshold
+
+    def test_long_standby_alerts(self):
+        assert index._ll_worth_alerting("OPERATING", 26)
+        assert index._ll_worth_alerting("OPERATING", 90)
+
+    def test_down_or_unknown_wait_still_alerts(self):
+        # No standby to walk onto — the LL info is genuinely useful.
+        assert index._ll_worth_alerting("DOWN", None)
+        assert index._ll_worth_alerting("OPERATING", None)
