@@ -91,6 +91,18 @@ def _low_wait_threshold(ride_id: str, hour_et: int) -> int | None:
     return by_hour.get(str(hour_et))
 
 
+def _historically_interesting(ride_id: str) -> bool:
+    """The Pi app's low-wait eligibility rule, extended to BOTH baselines
+    (2026-07-04): a ride is worth a low-wait push only if its typical
+    wait is ever long (it has baselines-generated thresholds — the
+    generator's MIN_INTERESTING_AVG_WAIT=25 gate). Without this, the
+    forecast-vs-today path alerted on walk-ons whenever a holiday
+    forecast inflated them (Gran Fiesta "10 min!" on July 4th) — a
+    perpetual walk-on beating its forecast isn't an opportunity.
+    """
+    return ride_id in _LOW_WAIT_THRESHOLDS
+
+
 # Minimum minutes-earlier for an LL improvement to be worth a push. A
 # 5-min improvement isn't actionable; this kills that triviality. (The
 # deeper "you already hold an LL hours earlier" case needs the held-LL
@@ -644,6 +656,7 @@ def handler(event, context):
                     new_status == "OPERATING"
                     and new_wait is not None
                     and alerts_allowed(park_key)
+                    and _historically_interesting(ride_id)
                     and not db.is_low_wait_alert_on_cooldown(ride_id)
                 ):
                     now_et = datetime.now(_EASTERN)
@@ -655,7 +668,8 @@ def handler(event, context):
                     )
                     typical_for_msg = threshold * 2 if threshold else None
 
-                    # Forecast-aware baseline check
+                    # Forecast-aware baseline check (eligibility already
+                    # gated above by the Pi rule: interesting rides only)
                     forecast_wait = forecast_signal.find_forecast_for_hour(
                         attr.get("forecast"), now_et
                     )
