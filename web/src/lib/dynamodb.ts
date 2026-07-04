@@ -149,7 +149,13 @@ export interface TripDay {
   active: boolean;
   ride_count: number;
   outcome_recorded: boolean;
-  rides: { ride_name: string; ride_id?: string; done?: boolean }[];
+  rides: {
+    ride_name: string;
+    ride_id?: string;
+    done?: boolean;
+    /** Held Lightning Lane return ISO, when the party holds one. */
+    held_ll?: string | null;
+  }[];
   /** ADDITIONAL alert recipients opted in on this day (Cognito subs).
    *  The plan owner is implicit and never stored. Powers the /trips
    *  "get alerts" toggle state. */
@@ -173,6 +179,8 @@ interface PlanRow {
   outcome_recorded?: boolean;
   ride_sequence?: { ride_name?: string; ride_id?: string }[];
   plan_order?: string[];
+  /** ride_id → held Lightning Lane return ISO (set_held_ll / /replan). */
+  ll_holds?: Record<string, string>;
   // DDB String Sets — the DocumentClient unmarshalls SS to a JS Set.
   alert_subscribers?: Set<string> | string[];
   dropped_ride_ids?: Set<string> | string[];
@@ -190,17 +198,28 @@ interface PlanRow {
 export function orderedDayRides(
   r: Pick<
     PlanRow,
-    "ride_sequence" | "plan_order" | "dropped_ride_ids" | "completed_ride_ids"
+    | "ride_sequence"
+    | "plan_order"
+    | "dropped_ride_ids"
+    | "completed_ride_ids"
+    | "ll_holds"
   >,
-): { ride_name: string; ride_id?: string; done: boolean }[] {
+): {
+  ride_name: string;
+  ride_id?: string;
+  done: boolean;
+  held_ll: string | null;
+}[] {
   const droppedSet = new Set([...(r.dropped_ride_ids ?? [])]);
   const doneSet = new Set([...(r.completed_ride_ids ?? [])]);
+  const holds = r.ll_holds ?? {};
   const rides = (r.ride_sequence ?? [])
     .filter((rd) => !(rd.ride_id && droppedSet.has(rd.ride_id)))
     .map((rd) => ({
       ride_name: rd.ride_name ?? "(unnamed)",
       ride_id: rd.ride_id,
       done: Boolean(rd.ride_id && doneSet.has(rd.ride_id)),
+      held_ll: (rd.ride_id && holds[rd.ride_id]) || null,
     }));
   const order = r.plan_order ?? [];
   if (order.length > 0) {

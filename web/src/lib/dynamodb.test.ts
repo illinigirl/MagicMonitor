@@ -470,3 +470,22 @@ describe("orderedDayRides", () => {
     expect(rides.map((r) => r.ride_id)).toEqual(["btm", "phil", "space"]);
   });
 });
+
+describe("orderedDayRides held-LL passthrough", () => {
+  // Pins the 2026-07-04 trip-page gap: holds existed in the row but the
+  // day cards had no way to show them.
+  it("carries held-LL return times through, null when unheld", async () => {
+    const { orderedDayRides } = await import("./dynamodb");
+    const rides = orderedDayRides({
+      ride_sequence: [
+        { ride_name: "Big Thunder", ride_id: "btm" },
+        { ride_name: "PhilharMagic", ride_id: "phil" },
+      ],
+      ll_holds: { btm: "2026-07-04T14:30:00-04:00" },
+    });
+    expect(rides.find((r) => r.ride_id === "btm")?.held_ll).toBe(
+      "2026-07-04T14:30:00-04:00",
+    );
+    expect(rides.find((r) => r.ride_id === "phil")?.held_ll).toBeNull();
+  });
+});
