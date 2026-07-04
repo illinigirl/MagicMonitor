@@ -20,6 +20,7 @@ import {
   setHeldLl,
   setPlanNextUp,
   setPlanOrder,
+  setPlanTargetTimes,
   setRideActualWait,
   setRideDone,
   setRideDropped,
@@ -173,6 +174,7 @@ export async function applyReplanOrder(
   order: string[],
   drop: string[],
   add: { ride_id: string; ride_name: string }[] = [],
+  times: Record<string, string> = {},
 ): Promise<ReplanResult> {
   const session = await auth();
   if (!session?.user?.id) return { ok: false, error: "Not signed in." };
@@ -203,6 +205,20 @@ export async function applyReplanOrder(
     if (news.length) await addRidesToSequence(planId, news);
     await Promise.all(restores.map((id) => setRideDropped(planId, id, false)));
     if (clean.length) await setPlanOrder(planId, clean);
+    // Times land WITH the order so the schedule stays one story
+    // (2026-07-04: applied orders kept the morning's stale times and
+    // the day read as scrambled). Only ride_ids in this apply; ET-ISO
+    // values were validated in proposeReplan.
+    const cleanTimes = Object.fromEntries(
+      Object.entries(times ?? {}).filter(
+        ([id, t]) =>
+          typeof t === "string" &&
+          (clean.includes(id) || cleanAdds.some((a) => a.ride_id === id)),
+      ),
+    );
+    if (Object.keys(cleanTimes).length) {
+      await setPlanTargetTimes(planId, cleanTimes);
+    }
     await Promise.all(cleanDrops.map((id) => setRideDropped(planId, id, true)));
   } catch {
     return { ok: false, error: "Couldn't apply — try again." };

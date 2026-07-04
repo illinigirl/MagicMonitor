@@ -2660,6 +2660,63 @@ def parse_ll_time(time_str: str, date_iso: str) -> str | None:
     return datetime.combine(day, time(hh, mm), tzinfo=_EASTERN).isoformat()
 
 
+def _norm_ride_name(s: str) -> str:
+    """Punctuation-insensitive, case-insensitive name form: 'Mission:
+    SPACE' → 'mission space'. Collapses runs of non-alphanumerics to
+    single spaces so colons/dashes/apostrophes can't defeat a match."""
+    return " ".join(_re.split(r"[^a-z0-9]+", s.lower())).strip()
+
+
+def match_plan_ride(
+    ride_sequence: list[dict[str, Any]],
+    query: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Resolve a user-supplied ride reference against a plan's own
+    ride_sequence. Returns (ride, None) or (None, error_payload).
+
+    Matching ladder — hardened 2026-07-04 after first-substring-wins
+    silently put a hold on the wrong ride TWICE ('space' matches
+    'SpaceSHIP Earth' before 'Mission: SPACE', and the colon defeats an
+    exact-name match):
+      1. exact ride_id;
+      2. punctuation-normalized exact name ('mission space' ==
+         'Mission: SPACE');
+      3. normalized substring — but ONLY when exactly one ride matches.
+         Multiple matches return an AMBIGUOUS error naming the
+         candidates instead of guessing; zero matches say so.
+    """
+    q_raw = (query or "").strip()
+    q = _norm_ride_name(q_raw)
+    if not q_raw:
+        return None, {"error": "Ride required",
+                      "error_message": "Pass a ride name or ride_id."}
+    for r in ride_sequence:
+        if r.get("ride_id") == q_raw:
+            return r, None
+    for r in ride_sequence:
+        if _norm_ride_name(r.get("ride_name") or "") == q:
+            return r, None
+    partial = [
+        r for r in ride_sequence
+        if q and q in _norm_ride_name(r.get("ride_name") or "")
+    ]
+    if len(partial) == 1:
+        return partial[0], None
+    if len(partial) > 1:
+        names = ", ".join(sorted(r.get("ride_name") or "?" for r in partial))
+        return None, {
+            "error": "Ambiguous ride",
+            "error_message": (
+                f"'{q_raw}' matches more than one plan ride ({names}). "
+                "Use the exact name or ride_id — nothing was changed."
+            ),
+        }
+    return None, {
+        "error": "Ride not in plan",
+        "error_message": f"'{q_raw}' doesn't match any ride in the plan.",
+    }
+
+
 def resolve_ll_holds(
     ll_holds: dict[str, str] | None,
     ride_sequence: list[dict[str, Any]],
@@ -2676,25 +2733,26 @@ def resolve_ll_holds(
     """
     if not ll_holds:
         return None, None
-    by_id = {r.get("ride_id"): r for r in ride_sequence if r.get("ride_id")}
     resolved: dict[str, str] = {}
     for key, raw_time in ll_holds.items():
-        q = (key or "").strip().lower()
-        match = by_id.get(key) or next(
-            (
-                r for r in ride_sequence
-                if (r.get("ride_name") or "").lower() == q
-                or (q and q in (r.get("ride_name") or "").lower())
-            ),
-            None,
-        )
-        if not match or not match.get("ride_id"):
+        # Same hardened matching as set_held_ll: exact id → normalized
+        # exact name → UNIQUE partial; ambiguity fails loud.
+        match, match_err = match_plan_ride(ride_sequence, key)
+        if match_err is not None:
             return None, {
                 "error": "Held-LL ride not in plan",
                 "error_message": (
-                    f"ll_holds entry '{key}' doesn't match any ride in "
-                    "ride_sequence (by ride_id or name). Fix the plan or "
-                    "the hold — nothing was saved."
+                    f"ll_holds entry '{key}': "
+                    f"{match_err.get('error_message', 'no match')} "
+                    "Nothing was saved."
+                ),
+            }
+        if not match.get("ride_id"):
+            return None, {
+                "error": "Held-LL ride not in plan",
+                "error_message": (
+                    f"ll_holds entry '{key}' matched a ride without a "
+                    "ride_id. Nothing was saved."
                 ),
             }
         iso = parse_ll_time(raw_time, date_iso)

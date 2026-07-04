@@ -190,6 +190,10 @@ interface PlanRow {
     target_time?: string;
   }[];
   plan_order?: string[];
+  /** ride_id → target time (ET ISO) from an APPLIED re-plan. Read paths
+   *  prefer this over each ride_sequence entry's original target_time,
+   *  so an applied order and its times stay one story. */
+  target_times?: Record<string, string>;
   /** ride_id → held Lightning Lane return ISO (set_held_ll / /replan). */
   ll_holds?: Record<string, string>;
   /** Booked dining/other reservations: [{name, time(ET ISO), type?}]. */
@@ -219,6 +223,7 @@ export function orderedDayRides(
     PlanRow,
     | "ride_sequence"
     | "plan_order"
+    | "target_times"
     | "dropped_ride_ids"
     | "completed_ride_ids"
     | "ll_holds"
@@ -233,6 +238,7 @@ export function orderedDayRides(
   const droppedSet = new Set([...(r.dropped_ride_ids ?? [])]);
   const doneSet = new Set([...(r.completed_ride_ids ?? [])]);
   const holds = r.ll_holds ?? {};
+  const appliedTimes = r.target_times ?? {};
   const rides = (r.ride_sequence ?? [])
     .filter((rd) => !(rd.ride_id && droppedSet.has(rd.ride_id)))
     .map((rd) => ({
@@ -240,7 +246,9 @@ export function orderedDayRides(
       ride_id: rd.ride_id,
       done: Boolean(rd.ride_id && doneSet.has(rd.ride_id)),
       held_ll: (rd.ride_id && holds[rd.ride_id]) || null,
-      target_time: rd.target_time ?? null,
+      // Applied re-plan times win over the original at-plan-time ones.
+      target_time:
+        (rd.ride_id && appliedTimes[rd.ride_id]) || rd.target_time || null,
     }));
   const order = r.plan_order ?? [];
   if (order.length > 0) {
@@ -517,6 +525,7 @@ export async function getReplanContext(
       })
     | undefined;
   if (!r) return null;
+  const appliedTimes = r.target_times ?? {};
   const rides = (r.ride_sequence ?? [])
     .filter((rd) => rd.ride_id)
     .map((rd) => ({
@@ -524,7 +533,8 @@ export async function getReplanContext(
       ride_id: rd.ride_id!,
       predicted_wait_min:
         typeof rd.predicted_wait_min === "number" ? rd.predicted_wait_min : null,
-      target_time: rd.target_time ?? null,
+      // Applied re-plan times win over the original at-plan-time ones.
+      target_time: appliedTimes[rd.ride_id!] ?? rd.target_time ?? null,
     }));
   // Honor a Claude-applied order (plan_order): rides listed there first,
   // in that order; anything not listed keeps its original position after.

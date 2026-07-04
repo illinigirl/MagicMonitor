@@ -631,6 +631,29 @@ export async function setPlanOrder(
   );
 }
 
+/**
+ * Set the plan's per-ride target times ({ride_id: ET ISO}) from an
+ * applied re-plan. Wholesale SET of the target_times map attribute —
+ * ride_sequence entries keep their original at-plan-time target_time
+ * untouched (read paths prefer this map), so this can't race an MCP
+ * plan edit. Order + times land together at apply, keeping them one
+ * story (2026-07-04: they diverged and the schedule read as scrambled).
+ */
+export async function setPlanTargetTimes(
+  planId: string,
+  times: Record<string, string>,
+): Promise<void> {
+  await client.send(
+    new UpdateCommand({
+      TableName: tableName,
+      Key: { PK: `USER#${SHARED_TRIP_USER}`, SK: `PLAN#${planId}` },
+      UpdateExpression: "SET target_times = :t",
+      ExpressionAttributeValues: { ":t": times },
+      ConditionExpression: "attribute_exists(PK)",
+    }),
+  );
+}
+
 // ─── Favorite rides (M3 Phase 2) ─────────────────────────────────────
 //
 // Schema: USER#<sub> / FAV_RIDE#<ride_id> with denormalized park_key.

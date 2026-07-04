@@ -15,6 +15,8 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 
+import { parseEtTime } from "./format-et";
+
 const region = process.env.DISNEY_REGION ?? "us-east-2";
 const MODEL = "claude-sonnet-4-6";
 
@@ -146,6 +148,10 @@ export interface ReplanSuggestion {
   drop: string[];
   /** New rides to ADD (from the park catalog): ride_id + name. */
   add: { ride_id: string; ride_name: string }[];
+  /** ride_id → suggested clock time, resolved to ET ISO after
+   *  validation. Applying writes these as the rides' target times, so
+   *  order and times stay one story (2026-07-04: they diverged). */
+  times: Record<string, string>;
   /** Optional short note per ride_id explaining a move/drop/add. */
   reasons: Record<string, string>;
 }
@@ -238,6 +244,15 @@ const TOOL = {
           required: ["ride_id", "ride_name"],
         },
       },
+      times: {
+        type: "object",
+        description:
+          "ride_id → suggested clock time ('3:15 PM' / '15:15') for EVERY " +
+          "ride in `order` (planned + added), reflecting YOUR new sequence. " +
+          "These become the displayed schedule times when applied — omitting " +
+          "them leaves stale times from the previous plan on screen.",
+        additionalProperties: { type: "string" },
+      },
       reasons: {
         type: "object",
         description:
@@ -245,7 +260,7 @@ const TOOL = {
         additionalProperties: { type: "string" },
       },
     },
-    required: ["no_change", "summary", "order", "drop"],
+    required: ["no_change", "summary", "order", "drop", "times"],
   },
 };
 
@@ -291,8 +306,11 @@ export async function proposeReplan(input: {
       "A catalog ride marked as dropped earlier is usually one that was DOWN — " +
       "if it's back up and the day has room, re-ADDing it is often the best move. " +
       "Never invent a ride_id. Put every non-dropped ride_id (planned + added) " +
-      "in `order`. If nothing needs changing, set no_change=true but still " +
-      "return the order. Keep summary + reasons short.",
+      "in `order`, AND give each one a suggested clock time in `times` that " +
+      "matches your sequence (times are what the family's schedule displays " +
+      "— an order without times leaves stale ones on screen). If nothing " +
+      "needs changing, set no_change=true but still return order + times. " +
+      "Keep summary + reasons short.",
     messages: [
       {
         role: "user",
@@ -331,7 +349,7 @@ export async function proposeReplan(input: {
 
   const block = msg.content.find((b) => b.type === "tool_use");
   if (!block || block.type !== "tool_use") {
-    return { no_change: true, summary: "No suggestion available right now.", order: [], drop: [], add: [], reasons: {} };
+    return { no_change: true, summary: "No suggestion available right now.", order: [], drop: [], add: [], times: {}, reasons: {} };
   }
   const out = block.input as ReplanSuggestion;
   const catalogById = new Map(input.catalog.map((c) => [c.ride_id, c.ride_name]));
@@ -347,6 +365,18 @@ export async function proposeReplan(input: {
   const rawDrop = out.drop ?? [];
   const drop = rawDrop.filter((id) => ids.has(id));
   const dropSet = new Set(drop);
+  // Suggested times → ET ISO on the plan's date. Advisory (the human
+  // approves the suggestion), so bad entries are logged + skipped
+  // rather than failing the whole suggestion.
+  const rawTimes = out.times ?? {};
+  const times: Record<string, string> = {};
+  const badTimes: string[] = [];
+  for (const [id, t] of Object.entries(rawTimes)) {
+    if (!ids.has(id) || dropSet.has(id)) continue;
+    const iso = parseEtTime(String(t), input.date);
+    if (iso) times[id] = iso;
+    else badTimes.push(`${id}=${String(t)}`);
+  }
   // Boundary log (2026-07-03): what the model SAID vs what validation
   // kept. Without this, a narrated-but-filtered add ("I'll add Dumbo!")
   // or a name-instead-of-id drop is indistinguishable from the model
@@ -356,8 +386,9 @@ export async function proposeReplan(input: {
   const eatenDrops = rawDrop.filter((id) => !ids.has(id));
   console.log(
     `[replan/ask] sonnet returned order=${(out.order ?? []).length} ` +
-      `drop=${rawDrop.length} add=${rawAdd.length}; ` +
-      `kept drop=${drop.length} add=${add.length}` +
+      `drop=${rawDrop.length} add=${rawAdd.length} ` +
+      `times=${Object.keys(rawTimes).length}; ` +
+      `kept drop=${drop.length} add=${add.length} times=${Object.keys(times).length}` +
       (eatenDrops.length
         ? ` — FILTERED drops (not exact ride_ids): ${eatenDrops.join(", ")}`
         : "") +
@@ -365,6 +396,9 @@ export async function proposeReplan(input: {
         ? ` — FILTERED adds (bad/duplicate ride_id): ${eaten
             .map((a) => `${a.ride_name ?? "?"}[${a.ride_id}]`)
             .join(", ")}`
+        : "") +
+      (badTimes.length
+        ? ` — FILTERED times (unparseable): ${badTimes.join(", ")}`
         : ""),
   );
   // Only real, non-dropped ride_ids; append any the model forgot so the
@@ -379,6 +413,7 @@ export async function proposeReplan(input: {
     order,
     drop,
     add,
+    times,
     reasons: out.reasons ?? {},
   };
 }

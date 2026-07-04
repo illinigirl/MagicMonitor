@@ -946,3 +946,59 @@ class TestRecordPlanStructuredFields:
         server.record_plan("EPCOT", [dict(r) for r in self.RIDES])
         stored = stub.items[("USER#megan", f"PLAN#{plan_id}")]
         assert [r["name"] for r in stored["reservations"]] == ["Crystal Palace"]
+
+
+# ─── match_plan_ride (hardened ride matching, 2026-07-04) ─────────────
+# First-substring-wins put a hold on Spaceship Earth twice when the
+# intended ride was another "space" ride; colons defeated exact match.
+
+
+class TestMatchPlanRide:
+    SEQ = [
+        {"ride_id": "sse", "ride_name": "Spaceship Earth"},
+        {"ride_id": "ms", "ride_name": "Mission: SPACE"},
+        {"ride_id": "tt", "ride_name": "Test Track"},
+    ]
+
+    def test_exact_id_wins(self):
+        import _tool_impls
+        m, err = _tool_impls.match_plan_ride(self.SEQ, "ms")
+        assert err is None and m["ride_id"] == "ms"
+
+    def test_punctuation_normalized_exact_name(self):
+        import _tool_impls
+        # "mission space" == "Mission: SPACE" despite the colon.
+        m, err = _tool_impls.match_plan_ride(self.SEQ, "mission space")
+        assert err is None and m["ride_id"] == "ms"
+
+    def test_ambiguous_partial_fails_loud_with_candidates(self):
+        import _tool_impls
+        # "space" hits BOTH space rides → error naming them, never a guess.
+        m, err = _tool_impls.match_plan_ride(self.SEQ, "space")
+        assert m is None
+        assert err["error"] == "Ambiguous ride"
+        assert "Mission: SPACE" in err["error_message"]
+        assert "Spaceship Earth" in err["error_message"]
+
+    def test_unique_partial_matches(self):
+        import _tool_impls
+        m, err = _tool_impls.match_plan_ride(self.SEQ, "track")
+        assert err is None and m["ride_id"] == "tt"
+
+    def test_no_match_and_empty_query(self):
+        import _tool_impls
+        m, err = _tool_impls.match_plan_ride(self.SEQ, "everest")
+        assert m is None and err["error"] == "Ride not in plan"
+        m, err = _tool_impls.match_plan_ride(self.SEQ, "  ")
+        assert m is None and err["error"] == "Ride required"
+
+    def test_ll_holds_resolution_uses_hardened_matcher(self, stub):
+        # An ambiguous ll_holds key on record_plan fails the whole call.
+        out = server.record_plan(
+            "EPCOT",
+            [dict(r, position=i + 1) for i, r in enumerate(self.SEQ)],
+            ll_holds={"space": "2:35 PM"},
+        )
+        assert out["error"] == "Held-LL ride not in plan"
+        assert "more than one" in out["error_message"]
+        assert stub.items == {}

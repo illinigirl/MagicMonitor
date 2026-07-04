@@ -2535,7 +2535,12 @@ def set_held_ll(
     user books one during the day ("I got TRON at 3pm").
 
     Args:
-        ride: Ride name or ride_id; must be in the day's plan.
+        ride: Ride name or ride_id; must be in the day's plan. Matching
+            is exact-first (id, then punctuation-normalized name), and a
+            partial name only matches when it's UNIQUE — an ambiguous
+            reference (e.g. "space" in a park with two space rides)
+            returns an error naming the candidates rather than guessing.
+            Prefer the ride_id or the full name.
         return_time: The LL return time — "3:00 PM", "3pm", "15:00", or a
             full ISO. OMIT (or null) to CLEAR a held LL for the ride.
         date: Plan date (YYYY-MM-DD). Defaults to today (ET).
@@ -2561,15 +2566,17 @@ def set_held_ll(
                     "error_message": f"No un-recorded plan found for {target}."}
         plans.sort(key=lambda it: it.get("planned_at") or it["SK"], reverse=True)
         plan = next((p for p in plans if p.get("active")), plans[0])
-        # Resolve the ride against the plan's own sequence (name or id).
-        q = ride.strip().lower()
-        match = next(
-            (r for r in plan.get("ride_sequence", [])
-             if r.get("ride_id") == ride or (r.get("ride_name") or "").lower() == q
-             or q in (r.get("ride_name") or "").lower()),
-            None,
+        # Resolve the ride against the plan's own sequence — hardened
+        # matcher (exact id → normalized exact name → UNIQUE partial;
+        # ambiguity errors instead of guessing). First-substring-wins
+        # put a hold on Spaceship Earth twice on 2026-07-04 when the
+        # intended ride was another "space" ride.
+        match, match_err = _tool_impls.match_plan_ride(
+            plan.get("ride_sequence", []), ride
         )
-        if not match or not match.get("ride_id"):
+        if match_err is not None:
+            return match_err
+        if not match.get("ride_id"):
             return {"error": "Ride not in plan",
                     "error_message": f"'{ride}' isn't in the plan for {target}."}
         ride_id = match["ride_id"]

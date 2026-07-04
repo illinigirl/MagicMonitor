@@ -11,6 +11,7 @@
 import { useState, useTransition } from "react";
 
 import { applyReplanOrder, askClaudeReplan, type AskClaudeResult } from "./actions";
+import { formatEtTime } from "@/lib/format-et";
 import type { ReplanSuggestion } from "@/lib/claude-replan";
 
 export default function AskClaude({
@@ -93,6 +94,7 @@ function Suggestion({
         suggestion.order,
         suggestion.drop,
         suggestion.add,
+        suggestion.times,
       );
       if (res.ok) setApplied(true);
       else setError(res.error ?? "Couldn't apply.");
@@ -107,6 +109,11 @@ function Suggestion({
         {suggestion.order.map((id, i) => (
           <li key={id} className="flex items-baseline gap-2 text-sm">
             <span className="text-fg-3 text-xs w-4">{i + 1}.</span>
+            {suggestion.times[id] && (
+              <span className="text-fg-3 text-xs tabular-nums">
+                {formatEtTime(suggestion.times[id])}
+              </span>
+            )}
             <span className="text-fg-0">{name(id)}</span>
             {suggestion.reasons[id] && (
               <span className="text-fg-3 text-xs">— {suggestion.reasons[id]}</span>

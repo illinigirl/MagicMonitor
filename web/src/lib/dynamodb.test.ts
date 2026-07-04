@@ -563,3 +563,22 @@ describe("findTodayDay (plan-widget feed)", () => {
     ).toBeNull();
   });
 });
+
+describe("orderedDayRides applied-times merge (2026-07-04 order/times split)", () => {
+  it("target_times map wins over the entry's original target_time", async () => {
+    const { orderedDayRides } = await import("./dynamodb");
+    const rides = orderedDayRides({
+      ride_sequence: [
+        { ride_name: "Frozen", ride_id: "fz",
+          target_time: "2026-07-04T15:15:00-04:00" }, // stale morning time
+        { ride_name: "Added Ride", ride_id: "new" },  // replan add, no time
+      ],
+      target_times: {
+        fz: "2026-07-04T16:00:00-04:00",
+        new: "2026-07-04T17:00:00-04:00",
+      },
+    });
+    expect(rides[0].target_time).toBe("2026-07-04T16:00:00-04:00");
+    expect(rides[1].target_time).toBe("2026-07-04T17:00:00-04:00");
+  });
+});
