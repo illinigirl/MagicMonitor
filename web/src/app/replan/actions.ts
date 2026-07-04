@@ -30,7 +30,7 @@ import {
   splitReplanAdds,
   type ReplanSuggestion,
 } from "@/lib/claude-replan";
-import { completeRideAndAdvance } from "@/lib/plan-complete";
+import { completeRideAndAdvance, insertIntoPlanOrder } from "@/lib/plan-complete";
 import { formatEtTime } from "@/lib/format-et";
 import { pickNextLl } from "@/lib/next-ll";
 import { getCurrentConditions } from "@/lib/weather";
@@ -75,6 +75,22 @@ export async function applyDrop(
   if (bad) return bad;
   try {
     await setRideDropped(planId, rideId, dropped);
+    if (!dropped) {
+      // Restoring a ride an applied re-plan doesn't rank: without this
+      // it sorts to the bottom of the schedule, behind the done rides
+      // (2026-07-04 Test Track). Slot it into plan_order by its target
+      // time. Best-effort — a failure leaves the ride restored, just
+      // unranked.
+      try {
+        const ctx = await getReplanContext(planId);
+        if (ctx) {
+          const newOrder = insertIntoPlanOrder(ctx.plan_order, ctx.rides, rideId);
+          if (newOrder) await setPlanOrder(planId, newOrder);
+        }
+      } catch {
+        /* ranking is polish; the un-drop already succeeded */
+      }
+    }
   } catch {
     return { ok: false, error: "Couldn't update — try again." };
   }

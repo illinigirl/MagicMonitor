@@ -52,6 +52,37 @@ export function tokenMatches(
   return timingSafeEqual(a, b);
 }
 
+/**
+ * Where a restored (un-dropped) ride belongs in an existing plan_order:
+ * before the first ordered ride whose target_time is LATER than its
+ * own; end of the order when nothing is later or times are missing.
+ * Returns a NEW order array, or null when no insert is needed (no
+ * order, or the ride is already ranked). Pure — exported for tests.
+ *
+ * Why: an applied re-plan ranks only the rides present at apply time,
+ * and unranked rides sort AFTER everything ranked — so a ride dropped
+ * then restored fell to the bottom of the schedule, behind the done
+ * rides (hit for real 2026-07-04 with Test Track).
+ */
+export function insertIntoPlanOrder(
+  order: string[] | undefined,
+  rides: { ride_id: string; target_time?: string | null }[],
+  rideId: string,
+): string[] | null {
+  if (!order || order.length === 0 || order.includes(rideId)) return null;
+  const timeById = new Map(rides.map((r) => [r.ride_id, r.target_time ?? null]));
+  const own = timeById.get(rideId);
+  if (own) {
+    for (let i = 0; i < order.length; i++) {
+      const t = timeById.get(order[i]);
+      if (t && t > own) {
+        return [...order.slice(0, i), rideId, ...order.slice(i)];
+      }
+    }
+  }
+  return [...order, rideId];
+}
+
 export interface CompleteResult {
   ctx: ReplanContext;
   /** New next_up after the advance, null = plan finished or no advance

@@ -52,3 +52,36 @@ describe("tokenMatches", () => {
     expect(tokenMatches(expected, provided)).toBe(false);
   });
 });
+
+describe("insertIntoPlanOrder (un-drop re-slots by time, 2026-07-04)", () => {
+  const rides = [
+    { ride_id: "nemo", target_time: "2026-07-04T11:25:00-04:00" },
+    { ride_id: "sse", target_time: "2026-07-04T12:45:00-04:00" },
+    { ride_id: "tt", target_time: "2026-07-04T13:15:00-04:00" },
+    { ride_id: "gotg", target_time: "2026-07-04T14:30:00-04:00" },
+  ];
+
+  it("inserts before the first LATER-timed ranked ride", async () => {
+    const { insertIntoPlanOrder } = await import("./plan-complete");
+    expect(insertIntoPlanOrder(["nemo", "sse", "gotg"], rides, "tt")).toEqual([
+      "nemo", "sse", "tt", "gotg",
+    ]);
+  });
+
+  it("appends when nothing ranked is later, or the ride has no time", async () => {
+    const { insertIntoPlanOrder } = await import("./plan-complete");
+    expect(insertIntoPlanOrder(["nemo", "sse"], rides, "gotg")).toEqual([
+      "nemo", "sse", "gotg",
+    ]);
+    expect(
+      insertIntoPlanOrder(["nemo", "sse"], [{ ride_id: "x" }], "x"),
+    ).toEqual(["nemo", "sse", "x"]);
+  });
+
+  it("no-ops (null) when there's no order or the ride is already ranked", async () => {
+    const { insertIntoPlanOrder } = await import("./plan-complete");
+    expect(insertIntoPlanOrder(undefined, rides, "tt")).toBeNull();
+    expect(insertIntoPlanOrder([], rides, "tt")).toBeNull();
+    expect(insertIntoPlanOrder(["tt", "sse"], rides, "tt")).toBeNull();
+  });
+});

@@ -480,6 +480,9 @@ export interface ReplanContext {
   completed_ride_ids: string[];
   /** {ride_id: actual wait minutes} captured on Mark done (optional). */
   actual_waits: Record<string, number>;
+  /** The applied re-plan ranking, when one exists (raw — rides above
+   *  are already sorted by it). Un-drop uses it to re-slot a ride. */
+  plan_order: string[];
 }
 
 /**
@@ -547,6 +550,7 @@ export async function getReplanContext(
     held_lls: r.ll_holds ?? {},
     completed_ride_ids: [...(r.completed_ride_ids ?? [])],
     actual_waits: r.actual_waits ?? {},
+    plan_order: r.plan_order ?? [],
     ...dayExtras(r),
   };
 }
