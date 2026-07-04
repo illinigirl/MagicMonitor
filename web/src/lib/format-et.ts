@@ -13,6 +13,27 @@ export function formatEtTime(iso: string): string {
 }
 
 /**
+ * Redemption-window label from a Lightning Lane return start:
+ * "2026-07-04T13:15:00-04:00" → "1:15–2:15 PM" (MLL windows run one
+ * hour). The start's meridiem is shown only when it differs from the
+ * end's ("11:30 AM–12:30 PM").
+ */
+export function formatEtWindow(iso: string, durationMin = 60): string {
+  const m = /T(\d{2}):(\d{2})/.exec(iso);
+  if (!m) return "";
+  const startMins = Number(m[1]) * 60 + Number(m[2]);
+  const endMins = (startMins + durationMin) % (24 * 60);
+  const label = (mins: number, withMeridiem: boolean) => {
+    const h24 = Math.floor(mins / 60);
+    const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+    const mm = String(mins % 60).padStart(2, "0");
+    return `${h12}:${mm}${withMeridiem ? ` ${h24 < 12 ? "AM" : "PM"}` : ""}`;
+  };
+  const sameMeridiem = startMins < 720 === endMins < 720;
+  return `${label(startMins, !sameMeridiem)}–${label(endMins, true)}`;
+}
+
+/**
  * "3:15 PM" / "3pm" / "15:15" / full ISO → ET ISO on `dateIso` — the TS
  * mirror of the MCP's parse_ll_time (mcp/_tool_impls.py, keep the
  * accepted forms in sync). Returns null when unparseable. The offset is

@@ -17,7 +17,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { findTodayDay, getUpcomingTrips, todayEtIso } from "@/lib/dynamodb";
 import { getPlanWidgetSecret } from "@/lib/dynamodb-writes";
-import { formatEtTime } from "@/lib/format-et";
+import { formatEtTime, formatEtWindow } from "@/lib/format-et";
 import { buildDayTimeline } from "@/lib/plan-timeline";
 import { findPark } from "@/lib/parks";
 import { getCurrentConditions } from "@/lib/weather";
@@ -63,7 +63,9 @@ export async function GET(req: NextRequest) {
           name: e.ride.ride_name,
           time: e.ride.target_time ? formatEtTime(e.ride.target_time) : null,
           done: Boolean(e.ride.done),
-          held_ll: e.ride.held_ll ? formatEtTime(e.ride.held_ll) : null,
+          // Full redemption window ("1:15–2:15 PM") — a held LL is a
+          // deadline, and the runway matters more than the start.
+          held_ll: e.ride.held_ll ? formatEtWindow(e.ride.held_ll) : null,
         }
       : {
           kind: e.kind,

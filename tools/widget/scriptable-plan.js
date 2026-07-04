@@ -83,34 +83,32 @@ async function run() {
   w.addSpacer(6);
 
   const entries = data.entries ?? [];
-  // Lead with what's NEXT: skip done rides once the list won't all fit,
-  // but keep one ✓ line of context so progress is visible.
+  // Done rides collapse to one summary line at the bottom — progress
+  // stays visible, and every row above is something still ahead.
+  const doneRides = entries.filter((e) => e.kind === "ride" && e.done);
+  const pending = entries.filter((e) => !(e.kind === "ride" && e.done));
   const budget = rowBudget();
-  let rows = entries;
-  if (entries.length > budget) {
-    const firstPending = entries.findIndex((e) => e.kind !== "ride" || !e.done);
-    const start = Math.max(0, firstPending - 1);
-    rows = entries.slice(start);
-  }
 
   let highlighted = false;
-  for (const e of rows.slice(0, budget)) {
+  for (const e of pending.slice(0, budget)) {
     const line = w.addStack();
     line.centerAlignContent();
 
     if (e.kind === "ride") {
-      const isNext = !e.done && !highlighted;
+      const isNext = !highlighted;
       if (isNext) highlighted = true;
-      const name = line.addText(`${e.done ? "✓ " : ""}${e.name}`);
+      const name = line.addText(e.name);
       name.font = isNext ? Font.boldSystemFont(11) : Font.systemFont(11);
-      name.textColor = e.done ? MUTED : isNext ? GOLD : Color.white();
+      name.textColor = isNext ? GOLD : Color.white();
       name.lineLimit = 1;
       line.addSpacer();
+      // A held LL shows its full redemption window ("🎟 1:15–2:15 PM")
+      // — the deadline is the point. Otherwise the suggested time.
       const right = e.held_ll ? `🎟 ${e.held_ll}` : e.time ?? "";
       if (right) {
         const val = line.addText(right);
         val.font = Font.boldMonospacedSystemFont(10);
-        val.textColor = e.done ? MUTED : Color.white();
+        val.textColor = Color.white();
       }
     } else {
       const icon = e.kind === "show" ? "🎭" : e.booked ? "🍽" : "🥪";
@@ -127,12 +125,21 @@ async function run() {
   }
 
   // Show when we've trimmed, so a hidden stop isn't a silent surprise.
-  const shown = Math.min(rows.length, budget);
-  if (entries.length > shown) {
+  if (pending.length > budget) {
     w.addSpacer(2);
-    const more = w.addText(`+${entries.length - shown} more — tap for the day`);
+    const more = w.addText(`+${pending.length - budget} more — tap for the day`);
     more.font = Font.systemFont(9);
     more.textColor = MUTED;
+  }
+
+  // Progress summary: "✓ 4 done · Remy's, Soarin', …" — one muted line.
+  if (doneRides.length > 0) {
+    w.addSpacer(3);
+    const shortNames = doneRides.map((e) => e.name.split(/:|—| Across | Starring /)[0].trim());
+    const done = w.addText(`✓ ${doneRides.length} done · ${shortNames.join(", ")}`);
+    done.font = Font.systemFont(9);
+    done.textColor = MUTED;
+    done.lineLimit = 1;
   }
 
   return finish(w);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatEtTime, parseEtTime } from "./format-et";
+import { formatEtTime, formatEtWindow, parseEtTime } from "./format-et";
 
 describe("parseEtTime (TS mirror of mcp parse_ll_time)", () => {
   const D = "2026-07-04";
@@ -36,5 +36,25 @@ describe("parseEtTime (TS mirror of mcp parse_ll_time)", () => {
 
   it("round-trips with formatEtTime", () => {
     expect(formatEtTime(parseEtTime("3:15 PM", D)!)).toBe("3:15 PM");
+  });
+});
+
+describe("formatEtWindow (LL redemption windows)", () => {
+  it("hour window, same meridiem → meridiem once", () => {
+    expect(formatEtWindow("2026-07-04T13:15:00-04:00")).toBe("1:15–2:15 PM");
+  });
+
+  it("window crossing noon shows both meridiems", () => {
+    expect(formatEtWindow("2026-07-04T11:30:00-04:00")).toBe(
+      "11:30 AM–12:30 PM",
+    );
+  });
+
+  it("custom duration", () => {
+    expect(formatEtWindow("2026-07-04T13:15:00-04:00", 30)).toBe("1:15–1:45 PM");
+  });
+
+  it("unparseable → empty", () => {
+    expect(formatEtWindow("garbage")).toBe("");
   });
 });
