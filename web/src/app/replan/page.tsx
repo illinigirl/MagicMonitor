@@ -9,6 +9,7 @@
  * Claude-backed re-sequence is the planned next step (cost-gated).
  */
 
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
@@ -16,7 +17,7 @@ import { getParkRides, getReplanContext } from "@/lib/dynamodb";
 import { getOrCreatePlanDoneToken } from "@/lib/dynamodb-writes";
 import { formatEtTime } from "@/lib/format-et";
 import { buildDayTimeline } from "@/lib/plan-timeline";
-import { mapsUrl } from "@/lib/nav-link";
+import { isAndroidUa, mapsUrl } from "@/lib/nav-link";
 import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
 
@@ -80,6 +81,8 @@ export default async function ReplanPage({
   // "3." still means the third RIDE, regardless of interleaved stops.
   const timeline = buildDayTimeline(ctx.rides, ctx.reservations, ctx.shows);
   const rideNumber = new Map(ctx.rides.map((r, i) => [r.ride_id, i]));
+  // Android devices get Google Maps links (native app); others Apple Maps.
+  const android = isAndroidUa((await headers()).get("user-agent"));
   // "down" alerts lead with Drop; everything else (short wait, earlier
   // LL, back-up) leads with Do next. The affected ride follows the alert
   // kind; other rides default to Drop-lead.
@@ -131,7 +134,7 @@ export default async function ReplanPage({
                     {formatEtTime(entry.time)}{" "}
                   </span>
                   <a
-                    href={mapsUrl({ name: entry.name, parkName: ctx.park_name })}
+                    href={mapsUrl({ name: entry.name, parkName: ctx.park_name, android })}
                     target="_blank"
                     rel="noreferrer"
                     className="hover:underline"
@@ -170,6 +173,7 @@ export default async function ReplanPage({
                       ride_id: r.ride_id,
                       name: r.ride_name,
                       parkName: ctx.park_name,
+                      android,
                     })}
                     target="_blank"
                     rel="noreferrer"

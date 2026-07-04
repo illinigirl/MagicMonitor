@@ -11,6 +11,7 @@
  * (the (Y) model), so they never drift from the trip's actual days.
  */
 
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
@@ -23,7 +24,7 @@ import {
 } from "@/lib/dynamodb";
 import { formatEtTime as formatLlTime } from "@/lib/format-et";
 import { buildDayTimeline } from "@/lib/plan-timeline";
-import { mapsUrl } from "@/lib/nav-link";
+import { isAndroidUa, mapsUrl } from "@/lib/nav-link";
 import { findPark } from "@/lib/parks";
 import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
@@ -69,6 +70,9 @@ export default async function TripsPage() {
   }
   const memberNames = await getMemberNames([...allSubs]);
 
+  // Android devices get Google Maps nav links (native app); others Apple.
+  const android = isAndroidUa((await headers()).get("user-agent"));
+
   return (
     <div className="mx-auto max-w-2xl px-6 py-12">
       <header className="mb-8">
@@ -97,6 +101,7 @@ export default async function TripsPage() {
               trip={trip}
               viewerSub={viewerSub}
               memberNames={memberNames}
+              android={android}
             />
           ))}
         </div>
@@ -120,10 +125,12 @@ function TripSection({
   trip,
   viewerSub,
   memberNames,
+  android,
 }: {
   trip: Trip;
   viewerSub: string;
   memberNames: Record<string, string>;
+  android: boolean;
 }) {
   // The toggle applies to days still in play (recorded days are history —
   // their alerts can't fire again).
@@ -182,14 +189,14 @@ function TripSection({
       </div>
       <div className="space-y-3">
         {trip.days.map((day) => (
-          <DayCard key={day.plan_id} day={day} />
+          <DayCard key={day.plan_id} day={day} android={android} />
         ))}
       </div>
     </section>
   );
 }
 
-function DayCard({ day }: { day: TripDay }) {
+function DayCard({ day, android }: { day: TripDay; android: boolean }) {
   const park = findPark(day.park_key);
   return (
     <div className="flex gap-3 rounded-lg border border-line bg-bg-1 shadow-[var(--shadow-card)] overflow-hidden">
@@ -235,7 +242,7 @@ function DayCard({ day }: { day: TripDay }) {
                         {formatLlTime(entry.time)}
                       </span>{" "}
                       <a
-                        href={mapsUrl({ name: entry.name, parkName })}
+                        href={mapsUrl({ name: entry.name, parkName, android })}
                         target="_blank"
                         rel="noreferrer"
                         className="hover:underline"
@@ -264,6 +271,7 @@ function DayCard({ day }: { day: TripDay }) {
                         ride_id: r.ride_id,
                         name: r.ride_name,
                         parkName,
+                        android,
                       })}
                       target="_blank"
                       rel="noreferrer"
