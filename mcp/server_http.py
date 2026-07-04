@@ -1478,6 +1478,7 @@ def record_plan(
     trip_id: str | None = None,
     plan_window: dict[str, Any] | None = None,
     active: bool | None = None,
+    ll_holds: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Persist a plan the user accepted (same-day live-assist, or a
     future day of a trip).
@@ -1507,6 +1508,18 @@ def record_plan(
         plan_window: Optional {"open","close"} ET window; once set +
             activated, alerts fire only inside it.
         active: Override the default (same-day active / future dormant).
+        ll_holds: Lightning Lanes the party ALREADY HOLDS (pre-booked
+            MLL/ILL), as {ride name or ride_id: return time} — times in
+            any natural form ("10:00 AM", "14:30", full ISO). **If the
+            plan mentions a booked LL, it MUST go here (or via a
+            set_held_ll call after)** — LL times written only into
+            `notes` or per-ride notes are INVISIBLE to the trip page and
+            the alert engine (earlier-LL suppression, plan-drift math,
+            nudge timing all read the structured ll_holds field, not
+            free text). Only include LLs actually booked — aspirational
+            "grab it later" LLs stay out so earlier-slot alerts still
+            fire while hunting them. Bad entries (unknown ride,
+            unparseable time) fail the whole call loudly.
 
     Returns:
         Dict with plan_id, planned_for_date, trip_id, active,
@@ -1551,6 +1564,15 @@ def record_plan(
             "error": "Invalid planned_for_date",
             "error_message": f"Could not parse '{planned_for_date}'. Use YYYY-MM-DD.",
         }
+
+    # Resolve pre-booked Lightning Lanes against the plan's own rides
+    # BEFORE any write — a bad entry fails the whole call (see
+    # resolve_ll_holds: silent hold loss is the 2026-07-04 bug class).
+    resolved_holds, holds_err = _tool_impls.resolve_ll_holds(
+        ll_holds, ride_sequence, pfd
+    )
+    if holds_err is not None:
+        return holds_err
 
     try:
         table = _ddb_table()
@@ -1610,6 +1632,8 @@ def record_plan(
         created_by=created_by,
         alert_subscribers=_creator_alert_seed(),
     )
+    if resolved_holds:
+        item["ll_holds"] = resolved_holds
 
     if prior is not None:
         # Upsert means "set this day's plan", but put_item replaces the whole
@@ -1620,6 +1644,10 @@ def record_plan(
         # activation the caller didn't re-specify.
         item["completed_rides"] = prior.get("completed_rides") or []
         item["dropped_rides"] = prior.get("dropped_rides") or []
+        # Held LLs set earlier (set_held_ll / the web) survive a re-record
+        # unless this call explicitly provides its own ll_holds map.
+        if ll_holds is None and prior.get("ll_holds"):
+            item["ll_holds"] = prior.get("ll_holds")
         if plan_window is None and prior.get("plan_window") is not None:
             item["plan_window"] = prior.get("plan_window")
         if active and prior.get("active") and prior.get("activated_at"):
@@ -1663,6 +1691,8 @@ def record_plan(
         "expires_at_epoch": item["ttl"],
         "next_step_hint": hint,
     }
+    if resolved_holds:
+        result["ll_holds_recorded"] = resolved_holds
     if dedup_unchecked:
         result["warning"] = (
             "Couldn't check for an existing plan on this day (read failed), "

@@ -198,6 +198,20 @@ TOOLS: list[dict[str, Any]] = [
                         "future-dated plans stay dormant."
                     ),
                 },
+                "ll_holds": {
+                    "type": "object",
+                    "description": (
+                        "Lightning Lanes the party ALREADY HOLDS "
+                        "(pre-booked MLL/ILL), as {ride name or ride_id: "
+                        "return time like '10:00 AM'}. If the plan "
+                        "mentions a booked LL it MUST go here (or via "
+                        "set_held_ll after) — LL times written only into "
+                        "notes are invisible to the trip page and the "
+                        "alert engine. Only actually-booked LLs; "
+                        "aspirational 'grab later' ones stay out."
+                    ),
+                    "additionalProperties": {"type": "string"},
+                },
                 "user_id": {"type": "string"},
             },
             "required": ["park", "ride_sequence"],

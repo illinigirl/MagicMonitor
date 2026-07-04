@@ -811,3 +811,74 @@ class TestPlanOrderHonored:
         still, dropped = _tool_impls.split_dropped_rides(plan)
         assert [r["ride_id"] for r in still] == ["c", "a"]  # b dropped
         assert [r["ride_id"] for r in dropped] == ["b"]
+
+
+# ─── record_plan ll_holds (pre-booked Lightning Lanes, 2026-07-04) ────
+# Root cause pinned: with no LL parameter on record_plan, pre-booked
+# MLL/ILL times only ever landed in free-text notes — invisible to the
+# trip page and the alert engine (earlier-LL suppression, drift, nudge).
+
+
+class TestRecordPlanLlHolds:
+    RIDES = [
+        {"ride_name": "Remy's Ratatouille Adventure", "ride_id": "remy"},
+        {"ride_name": "Guardians of the Galaxy: Cosmic Rewind", "ride_id": "gotg"},
+        {"ride_name": "Test Track", "ride_id": "tt"},
+    ]
+
+    def test_holds_resolve_by_name_and_id(self, stub):
+        out = server.record_plan(
+            "EPCOT", self.RIDES,
+            ll_holds={"Remy": "10:00 AM", "gotg": "2:30 PM"},
+        )
+        stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]
+        holds = stored["ll_holds"]
+        assert set(holds) == {"remy", "gotg"}
+        assert holds["remy"].startswith(f"{_today()}T10:00:00")
+        assert holds["gotg"].startswith(f"{_today()}T14:30:00")
+        # Result confirms what landed so the model can echo it back.
+        assert out["ll_holds_recorded"] == holds
+
+    def test_future_day_holds_use_that_day(self, stub):
+        fut = _future(10)
+        out = server.record_plan(
+            "EPCOT", self.RIDES, planned_for_date=fut,
+            ll_holds={"Test Track": "15:00"},
+        )
+        stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]
+        assert stored["ll_holds"]["tt"].startswith(f"{fut}T15:00:00")
+
+    def test_unknown_ride_fails_loud_and_writes_nothing(self, stub):
+        out = server.record_plan(
+            "EPCOT", self.RIDES, ll_holds={"Space Mountain": "10:00 AM"},
+        )
+        assert out["error"] == "Held-LL ride not in plan"
+        assert stub.items == {}  # validate-before-write: no partial row
+
+    def test_bad_time_fails_loud_and_writes_nothing(self, stub):
+        out = server.record_plan(
+            "EPCOT", self.RIDES, ll_holds={"Remy": "morningish"},
+        )
+        assert out["error"] == "Invalid held-LL return time"
+        assert stub.items == {}
+
+    def test_upsert_preserves_holds_when_not_respecified(self, stub):
+        out = server.record_plan(
+            "EPCOT", self.RIDES, ll_holds={"Remy": "10:00 AM"},
+        )
+        plan_id = out["plan_id"]
+        # Re-record the day without ll_holds → prior holds survive.
+        server.record_plan("EPCOT", self.RIDES)
+        stored = stub.items[("USER#megan", f"PLAN#{plan_id}")]
+        assert set(stored["ll_holds"]) == {"remy"}
+
+    def test_upsert_with_new_holds_replaces(self, stub):
+        out = server.record_plan(
+            "EPCOT", self.RIDES, ll_holds={"Remy": "10:00 AM"},
+        )
+        plan_id = out["plan_id"]
+        server.record_plan(
+            "EPCOT", self.RIDES, ll_holds={"gotg": "2:30 PM"},
+        )
+        stored = stub.items[("USER#megan", f"PLAN#{plan_id}")]
+        assert set(stored["ll_holds"]) == {"gotg"}

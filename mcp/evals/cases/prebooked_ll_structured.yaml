@@ -1,0 +1,130 @@
+# Eleventh eval case — pre-booked Lightning Lanes land in ll_holds.
+#
+# Root cause it guards (shipped bug, 2026-07-04): record_plan had no LL
+# parameter, so Claude wrote the family's pre-booked MLL/ILL times into
+# free-text notes. Saved, plausible-looking — and INVISIBLE to the trip
+# page and the entire alert engine (earlier-LL suppression, LL-aware
+# plan-drift, nudge timing all read the structured ll_holds field).
+# The fix added an ll_holds param + docstring contract; this case pins
+# the behavior.
+#
+# The load-bearing assertions:
+#   - record_plan is called with ll_holds of EXACTLY 2 entries: the two
+#     LLs the user actually HOLDS (Space Mountain 10:00 AM, TRON 2:30
+#     PM). min 2 = the booked ones made it into the structured field
+#     (not just notes); max 2 = the ASPIRATIONAL Seven Dwarfs LL the
+#     user is "hoping to grab later" stayed OUT (marking it held would
+#     suppress the earlier-slot alerts they want while hunting it).
+#
+# What we deliberately do NOT assert: which map keys Claude uses (names
+# vs ride_ids — the server resolves both) or any time format (the
+# server parses '10:00 AM' / '14:30' / ISO alike).
+
+name: prebooked_ll_structured
+description: >
+  A user with two pre-booked Lightning Lanes (and one they hope to grab
+  later) asks for a plan. Verifies the booked LLs are recorded in the
+  structured ll_holds param — not narrated into notes — and the
+  aspirational one is left out.
+
+prompt: >
+  We're at Magic Kingdom today! I already have two Lightning Lanes
+  booked: Space Mountain with a 10:00 AM return, and TRON at 2:30 PM.
+  I'm also hoping to grab a Seven Dwarfs Lightning Lane later if a good
+  slot shows up, but I don't have one yet. Plan our day around those
+  and lock it in — no need to check back with me first.
+
+tool_responses:
+  get_user_plan_history:
+    response:
+      plans: []
+      calibration_summary:
+        sample_size: 0
+        usage_hint: >
+          No recorded outcomes yet — proceed without calibration
+          adjustments and ask the user to report back after the trip.
+
+  get_planning_context:
+    response:
+      park_key: mk
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "22:00"
+        extra_evening_hours: null
+      weather_summary:
+        forecast_high_f: 86
+        forecast_low_f: 70
+        rain_chance_pct: 15
+      rides:
+        - ride_id: space-mountain
+          ride_name: Space Mountain
+          status: OPERATING
+          wait_mins: 45
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+        - ride_id: tron-lightcycle
+          ride_name: TRON Lightcycle / Run
+          status: OPERATING
+          wait_mins: 80
+          forecast:
+            typical_wait_now: 75
+            confidence: high
+        - ride_id: seven-dwarfs
+          ride_name: Seven Dwarfs Mine Train
+          status: OPERATING
+          wait_mins: 60
+          forecast:
+            typical_wait_now: 55
+            confidence: high
+        - ride_id: haunted-mansion
+          ride_name: Haunted Mansion
+          status: OPERATING
+          wait_mins: 25
+          forecast:
+            typical_wait_now: 30
+            confidence: high
+        - ride_id: pirates-of-the-caribbean
+          ride_name: Pirates of the Caribbean
+          status: OPERATING
+          wait_mins: 20
+          forecast:
+            typical_wait_now: 25
+            confidence: high
+        - ride_id: big-thunder
+          ride_name: Big Thunder Mountain Railroad
+          status: OPERATING
+          wait_mins: 35
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+      currently_down_in_park: []
+
+  record_plan:
+    response:
+      ok: true
+      plan_id: "2026-07-04T14:00:00.000001+00:00"
+      user_id: megan
+      park_key: mk
+      active: true
+      planned_for_date: "2026-07-04"
+      expires_at_epoch: 1783680000
+      ll_holds_recorded:
+        space-mountain: "2026-07-04T10:00:00-04:00"
+        tron-lightcycle: "2026-07-04T14:30:00-04:00"
+      next_step_hint: >
+        Plan saved and ACTIVE — Magic Monitor is now watching its rides
+        for live disruptions.
+
+assertions:
+  - tool_called: get_planning_context
+  - tool_called: record_plan
+  - tool_called_with:
+      tool: record_plan
+      args_min_length:
+        ride_sequence: 4
+        ll_holds: 2
+      args_max_length:
+        ll_holds: 2
+  - stop_reason: end_turn

@@ -2660,6 +2660,57 @@ def parse_ll_time(time_str: str, date_iso: str) -> str | None:
     return datetime.combine(day, time(hh, mm), tzinfo=_EASTERN).isoformat()
 
 
+def resolve_ll_holds(
+    ll_holds: dict[str, str] | None,
+    ride_sequence: list[dict[str, Any]],
+    date_iso: str,
+) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
+    """Resolve a record_plan-style ll_holds map ({ride name or id: return
+    time in any parse_ll_time format}) against the plan's own
+    ride_sequence into the stored shape ({ride_id: full ET ISO}).
+
+    Returns (resolved, None) on success or (None, error_payload) on the
+    first bad entry — FAIL LOUD, never drop silently: a hold that
+    vanishes without an error is exactly the 2026-07-04 bug (LLs written
+    to free-text notes, invisible to the trip page and alert engine).
+    """
+    if not ll_holds:
+        return None, None
+    by_id = {r.get("ride_id"): r for r in ride_sequence if r.get("ride_id")}
+    resolved: dict[str, str] = {}
+    for key, raw_time in ll_holds.items():
+        q = (key or "").strip().lower()
+        match = by_id.get(key) or next(
+            (
+                r for r in ride_sequence
+                if (r.get("ride_name") or "").lower() == q
+                or (q and q in (r.get("ride_name") or "").lower())
+            ),
+            None,
+        )
+        if not match or not match.get("ride_id"):
+            return None, {
+                "error": "Held-LL ride not in plan",
+                "error_message": (
+                    f"ll_holds entry '{key}' doesn't match any ride in "
+                    "ride_sequence (by ride_id or name). Fix the plan or "
+                    "the hold — nothing was saved."
+                ),
+            }
+        iso = parse_ll_time(raw_time, date_iso)
+        if iso is None:
+            return None, {
+                "error": "Invalid held-LL return time",
+                "error_message": (
+                    f"Could not parse ll_holds['{key}'] = {raw_time!r}. "
+                    "Use '3:00 PM', '15:00', or a full ISO timestamp — "
+                    "nothing was saved."
+                ),
+            }
+        resolved[match["ride_id"]] = iso
+    return resolved, None
+
+
 def apply_held_ll(table, user_id, ride_id, return_iso, plan_rows):
     """Set (return_iso) or clear (None) a held Lightning Lane for `ride_id`
     on each matching plan row's ll_holds map. Atomic per-key map update —
