@@ -1497,13 +1497,17 @@ def record_plan(
             fire while hunting them. Entries that don't match a
             ride_sequence ride, or with unparseable times, fail the
             whole call loudly (nothing is saved).
-        reservations: Dining and other booked reservations for the day,
-            as a list of {"name": str, "time": "12:30 PM" | ISO,
-            "type"?: "dining" | other, "notes"?: str}. **Booked meals /
-            reservations MUST go here, not into notes** — the trip page
-            renders this field, and future scheduling logic reads it.
-            Same fail-loud rule: a nameless entry or unparseable time
-            fails the call.
+        reservations: The day's meals and other timed stops, as a list
+            of {"name": str, "time": "12:30 PM" | ISO, "type"?: str,
+            "notes"?: str}. **Every meal in the plan goes here, not
+            into notes** — the trip page renders this field on the
+            day's timeline. Two kinds, distinguished by `type`:
+            BOOKED reservations (type "dining" or omitted) and
+            SUGGESTED quick-service stops the plan recommends (type
+            "quick-service" — e.g. "~11:50 lunch at Sunshine Seasons"),
+            which display as suggestions, not commitments. Same
+            fail-loud rule: a nameless entry or unparseable time fails
+            the call.
         user_id: Single-user default is "megan". Pass another value
             only if planning for a different family member.
 

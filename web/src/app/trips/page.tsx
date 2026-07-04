@@ -22,6 +22,8 @@ import {
   type TripDay,
 } from "@/lib/dynamodb";
 import { formatEtTime as formatLlTime } from "@/lib/format-et";
+import { buildDayTimeline } from "@/lib/plan-timeline";
+import { mapsUrl } from "@/lib/nav-link";
 import { findPark } from "@/lib/parks";
 import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
@@ -205,58 +207,83 @@ function DayCard({ day }: { day: TripDay }) {
           </div>
           <DayStatus active={day.active} outcomeRecorded={day.outcome_recorded} />
         </div>
-        {day.rides.length > 0 ? (
-          <ul className="mt-3 flex flex-wrap gap-x-2 gap-y-1 text-sm text-fg-2">
-            {day.rides.map((r, i) => (
-              <li
-                key={`${r.ride_id ?? r.ride_name}-${i}`}
-                className={r.done ? "text-fg-3" : undefined}
-              >
-                {r.done && <span aria-label="done">✓ </span>}
-                {r.target_time && !r.done && (
-                  <span className="text-fg-3 text-xs tabular-nums">
-                    {formatLlTime(r.target_time)}{" "}
-                  </span>
-                )}
-                {r.ride_name}
-                {r.held_ll && !r.done && (
-                  <span className="text-gold text-xs" title="Lightning Lane held">
-                    {" "}🎟 {formatLlTime(r.held_ll)}
-                  </span>
-                )}
-                {i < day.rides.length - 1 && (
+        {(() => {
+          const timeline = buildDayTimeline(
+            day.rides,
+            day.reservations,
+            day.shows,
+          );
+          if (timeline.length === 0) {
+            return <p className="mt-3 text-sm text-fg-3">No rides lined up yet.</p>;
+          }
+          return (
+            <ul className="mt-3 flex flex-wrap gap-x-2 gap-y-1 text-sm text-fg-2">
+              {timeline.map((entry, i) => {
+                const sep = i < timeline.length - 1 && (
                   <span className="text-fg-3" aria-hidden>
                     {" "}·
                   </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="mt-3 text-sm text-fg-3">No rides lined up yet.</p>
-        )}
-        {(day.reservations.length > 0 || day.shows.length > 0) && (
-          <ul className="mt-2 space-y-0.5 text-sm text-fg-2">
-            {day.reservations.map((res, i) => (
-              <li key={`res-${i}`}>
-                <span aria-hidden>🍽</span>{" "}
-                <span className="text-fg-3 text-xs tabular-nums">
-                  {formatLlTime(res.time)}
-                </span>{" "}
-                {res.name}
-              </li>
-            ))}
-            {day.shows.map((s, i) => (
-              <li key={`show-${i}`}>
-                <span aria-hidden>🎭</span>{" "}
-                <span className="text-fg-3 text-xs tabular-nums">
-                  {formatLlTime(s.start)}
-                </span>{" "}
-                {s.name}
-              </li>
-            ))}
-          </ul>
-        )}
+                );
+                const parkName = findPark(day.park_key)?.name;
+                if (entry.kind !== "ride") {
+                  const icon =
+                    entry.kind === "show" ? "🎭" : entry.booked ? "🍽" : "🥪";
+                  return (
+                    <li key={`x-${i}`}>
+                      <span aria-hidden>{icon}</span>{" "}
+                      <span className="text-fg-3 text-xs tabular-nums">
+                        {formatLlTime(entry.time)}
+                      </span>{" "}
+                      <a
+                        href={mapsUrl({ name: entry.name, parkName })}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="hover:underline"
+                        title="Navigate there"
+                      >
+                        {entry.name}
+                      </a>
+                      {sep}
+                    </li>
+                  );
+                }
+                const r = entry.ride;
+                return (
+                  <li
+                    key={`${r.ride_id ?? r.ride_name}-${i}`}
+                    className={r.done ? "text-fg-3" : undefined}
+                  >
+                    {r.done && <span aria-label="done">✓ </span>}
+                    {r.target_time && !r.done && (
+                      <span className="text-fg-3 text-xs tabular-nums">
+                        {formatLlTime(r.target_time)}{" "}
+                      </span>
+                    )}
+                    <a
+                      href={mapsUrl({
+                        ride_id: r.ride_id,
+                        name: r.ride_name,
+                        parkName,
+                      })}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="hover:underline"
+                      title="Navigate there"
+                    >
+                      {r.ride_name}
+                    </a>
+                    {r.held_ll && !r.done && (
+                      <span className="text-gold text-xs" title="Lightning Lane held">
+                        {" "}🎟 {formatLlTime(r.held_ll)}
+                      </span>
+                    )}
+                    {sep}
+                  </li>
+                );
+              })}
+            </ul>
+          );
+        })()}
         {/* Adjust entry point — active, in-play days only. Reaches the
             same /replan surface an alert links to, so the plan is
             adjustable from the dashboard, not just from a live push. */}

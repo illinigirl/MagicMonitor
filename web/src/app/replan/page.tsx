@@ -15,6 +15,8 @@ import { auth } from "@/auth";
 import { getParkRides, getReplanContext } from "@/lib/dynamodb";
 import { getOrCreatePlanDoneToken } from "@/lib/dynamodb-writes";
 import { formatEtTime } from "@/lib/format-et";
+import { buildDayTimeline } from "@/lib/plan-timeline";
+import { mapsUrl } from "@/lib/nav-link";
 import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
 
@@ -73,6 +75,11 @@ export default async function ReplanPage({
   const affected = ctx.rides.find((r) => r.ride_id === rideId);
   const droppedSet = new Set(ctx.dropped_ride_ids);
   const doneSet = new Set(ctx.completed_ride_ids);
+  // One time-ordered day view: rides (order authoritative) with meals +
+  // shows slotted in by time. Ride numbering stays sequence-based so
+  // "3." still means the third RIDE, regardless of interleaved stops.
+  const timeline = buildDayTimeline(ctx.rides, ctx.reservations, ctx.shows);
+  const rideNumber = new Map(ctx.rides.map((r, i) => [r.ride_id, i]));
   // "down" alerts lead with Drop; everything else (short wait, earlier
   // LL, back-up) leads with Do next. The affected ride follows the alert
   // kind; other rides default to Drop-lead.
@@ -107,31 +114,40 @@ export default async function ReplanPage({
         />
       </div>
 
-      {(ctx.reservations.length > 0 || ctx.shows.length > 0) && (
-        <ul className="mb-4 space-y-0.5 text-sm text-fg-2">
-          {ctx.reservations.map((res, i) => (
-            <li key={`res-${i}`}>
-              <span aria-hidden>🍽</span>{" "}
-              <span className="text-fg-3 text-xs tabular-nums">
-                {formatEtTime(res.time)}
-              </span>{" "}
-              {res.name}
-            </li>
-          ))}
-          {ctx.shows.map((s, i) => (
-            <li key={`show-${i}`}>
-              <span aria-hidden>🎭</span>{" "}
-              <span className="text-fg-3 text-xs tabular-nums">
-                {formatEtTime(s.start)}
-              </span>{" "}
-              {s.name}
-            </li>
-          ))}
-        </ul>
-      )}
-
       <div className="rounded-lg border border-line bg-bg-1 divide-y divide-line-soft shadow-[var(--shadow-card)]">
-        {ctx.rides.map((r, i) => {
+        {timeline.map((entry, ti) => {
+          if (entry.kind !== "ride") {
+            // Meal / show slotted into the day at its time. Passive row —
+            // no controls; booked = commitment (🍽/🎭), unbooked = a
+            // suggested quick-service stop (🥪).
+            const icon = entry.kind === "show" ? "🎭" : entry.booked ? "🍽" : "🥪";
+            return (
+              <div key={`x-${ti}`} className="px-4 py-2 flex items-center gap-3">
+                <span className="text-fg-3 text-xs w-5" aria-hidden>
+                  {icon}
+                </span>
+                <span className="text-fg-2 text-sm flex-1">
+                  <span className="text-fg-3 text-xs tabular-nums">
+                    {formatEtTime(entry.time)}{" "}
+                  </span>
+                  <a
+                    href={mapsUrl({ name: entry.name, parkName: ctx.park_name })}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hover:underline"
+                    title="Navigate there"
+                  >
+                    {entry.name}
+                  </a>
+                  {!entry.booked && entry.kind === "meal" && (
+                    <span className="text-fg-3 text-xs"> · suggested</span>
+                  )}
+                </span>
+              </div>
+            );
+          }
+          const r = entry.ride;
+          const i = rideNumber.get(r.ride_id)!;
           const isAffected = r.ride_id === rideId;
           const isNext = ctx.next_up === r.ride_id;
           return (
@@ -149,7 +165,19 @@ export default async function ReplanPage({
                       {formatEtTime(r.target_time)}{" "}
                     </span>
                   )}
-                  {r.ride_name}
+                  <a
+                    href={mapsUrl({
+                      ride_id: r.ride_id,
+                      name: r.ride_name,
+                      parkName: ctx.park_name,
+                    })}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hover:underline"
+                    title="Navigate there"
+                  >
+                    {r.ride_name}
+                  </a>
                 </span>
                 <CurrentWait live={waitById.get(r.ride_id)} />
                 {isAffected && (

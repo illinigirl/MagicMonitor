@@ -1531,11 +1531,14 @@ def record_plan(
             "grab it later" LLs stay out so earlier-slot alerts still
             fire while hunting them. Bad entries (unknown ride,
             unparseable time) fail the whole call loudly.
-        reservations: Dining and other booked reservations for the day:
+        reservations: The day's meals and other timed stops:
             [{"name": str, "time": "12:30 PM" | ISO, "type"?: str,
-            "notes"?: str}]. **Booked meals / reservations MUST go
-            here, not into notes** — the trip page renders this field.
-            Same fail-loud rule for bad entries.
+            "notes"?: str}]. **Every meal goes here, not into notes** —
+            the trip page renders this field on the day's timeline.
+            `type` distinguishes BOOKED reservations ("dining" or
+            omitted) from SUGGESTED quick-service stops the plan
+            recommends ("quick-service" — displayed as suggestions,
+            not commitments). Same fail-loud rule for bad entries.
 
     Returns:
         Dict with plan_id, planned_for_date, trip_id, active,

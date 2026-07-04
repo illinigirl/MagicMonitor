@@ -182,9 +182,11 @@ TOOLS: list[dict[str, Any]] = [
                 "reservations": {
                     "type": "array",
                     "description": (
-                        "Booked dining/other reservations for the day. "
-                        "Booked meals MUST go here, not into notes — the "
-                        "trip page renders this field."
+                        "The day's meals and timed stops. EVERY meal goes "
+                        "here, not into notes — the trip page renders this "
+                        "field. type='dining' (or omitted) = booked "
+                        "reservation; type='quick-service' = a suggested "
+                        "QS stop the plan recommends."
                     ),
                     "items": {
                         "type": "object",
