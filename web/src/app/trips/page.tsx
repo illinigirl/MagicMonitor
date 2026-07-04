@@ -21,6 +21,7 @@ import {
   type Trip,
   type TripDay,
 } from "@/lib/dynamodb";
+import { formatEtTime as formatLlTime } from "@/lib/format-et";
 import { findPark } from "@/lib/parks";
 import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
@@ -38,17 +39,6 @@ function formatDay(iso: string): string {
     month: "short",
     day: "numeric",
   });
-}
-
-/** Held-LL return ISO ("2026-07-04T14:30:00-04:00") → "2:30 PM". The
- *  stored offset IS park time, so render the wall-clock digits as-is
- *  rather than converting through the server's tz. */
-function formatLlTime(iso: string): string {
-  const m = /T(\d{2}):(\d{2})/.exec(iso);
-  if (!m) return "";
-  const h24 = Number(m[1]);
-  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-  return `${h12}:${m[2]} ${h24 < 12 ? "AM" : "PM"}`;
 }
 
 export default async function TripsPage() {

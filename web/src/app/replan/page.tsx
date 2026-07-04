@@ -14,6 +14,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { getParkRides, getReplanContext } from "@/lib/dynamodb";
 import { getOrCreatePlanDoneToken } from "@/lib/dynamodb-writes";
+import { formatEtTime } from "@/lib/format-et";
 import { isTripsAllowed } from "@/lib/trips-access";
 import { FamilyOnly } from "@/components/auth/FamilyOnly";
 
@@ -106,6 +107,29 @@ export default async function ReplanPage({
         />
       </div>
 
+      {(ctx.reservations.length > 0 || ctx.shows.length > 0) && (
+        <ul className="mb-4 space-y-0.5 text-sm text-fg-2">
+          {ctx.reservations.map((res, i) => (
+            <li key={`res-${i}`}>
+              <span aria-hidden>🍽</span>{" "}
+              <span className="text-fg-3 text-xs tabular-nums">
+                {formatEtTime(res.time)}
+              </span>{" "}
+              {res.name}
+            </li>
+          ))}
+          {ctx.shows.map((s, i) => (
+            <li key={`show-${i}`}>
+              <span aria-hidden>🎭</span>{" "}
+              <span className="text-fg-3 text-xs tabular-nums">
+                {formatEtTime(s.start)}
+              </span>{" "}
+              {s.name}
+            </li>
+          ))}
+        </ul>
+      )}
+
       <div className="rounded-lg border border-line bg-bg-1 divide-y divide-line-soft shadow-[var(--shadow-card)]">
         {ctx.rides.map((r, i) => {
           const isAffected = r.ride_id === rideId;
@@ -119,7 +143,14 @@ export default async function ReplanPage({
             >
               <div className="flex items-center gap-3">
                 <span className="text-fg-3 text-xs w-5">{i + 1}.</span>
-                <span className="text-fg-0 text-sm flex-1">{r.ride_name}</span>
+                <span className="text-fg-0 text-sm flex-1">
+                  {r.target_time && (
+                    <span className="text-fg-3 text-xs tabular-nums">
+                      {formatEtTime(r.target_time)}{" "}
+                    </span>
+                  )}
+                  {r.ride_name}
+                </span>
                 <CurrentWait live={waitById.get(r.ride_id)} />
                 {isAffected && (
                   <span className="rounded-full bg-warn/15 px-2 py-0.5 text-xs text-warn">

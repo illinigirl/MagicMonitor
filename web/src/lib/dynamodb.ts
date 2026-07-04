@@ -447,7 +447,17 @@ export interface ReplanContext {
   active: boolean;
   outcome_recorded: boolean;
   /** Rides still in the sequence (not dropped, not completed). */
-  rides: { ride_name: string; ride_id: string; predicted_wait_min: number | null }[];
+  rides: {
+    ride_name: string;
+    ride_id: string;
+    predicted_wait_min: number | null;
+    /** Planner-suggested time (ET ISO), when the plan set one. */
+    target_time: string | null;
+  }[];
+  /** Booked dining/other reservations, time-sorted. */
+  reservations: { name: string; time: string; type?: string }[];
+  /** Shows fitted into the plan. */
+  shows: { name: string; start: string }[];
   /** ride_ids already dropped via the /replan approve flow. */
   dropped_ride_ids: string[];
   /** ride_id the family marked "do next" (or null). */
@@ -487,6 +497,7 @@ export async function getReplanContext(
           ride_name?: string;
           ride_id?: string;
           predicted_wait_min?: number;
+          target_time?: string;
         }[];
       })
     | undefined;
@@ -498,6 +509,7 @@ export async function getReplanContext(
       ride_id: rd.ride_id!,
       predicted_wait_min:
         typeof rd.predicted_wait_min === "number" ? rd.predicted_wait_min : null,
+      target_time: rd.target_time ?? null,
     }));
   // Honor a Claude-applied order (plan_order): rides listed there first,
   // in that order; anything not listed keeps its original position after.
@@ -523,5 +535,6 @@ export async function getReplanContext(
     held_lls: r.ll_holds ?? {},
     completed_ride_ids: [...(r.completed_ride_ids ?? [])],
     actual_waits: r.actual_waits ?? {},
+    ...dayExtras(r),
   };
 }
