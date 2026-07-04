@@ -31,8 +31,10 @@ prompt: >
   We're at Magic Kingdom today! I already have two Lightning Lanes
   booked: Space Mountain with a 10:00 AM return, and TRON at 2:30 PM.
   I'm also hoping to grab a Seven Dwarfs Lightning Lane later if a good
-  slot shows up, but I don't have one yet. Plan our day around those
-  and lock it in — no need to check back with me first.
+  slot shows up, but I don't have one yet. We also have a lunch
+  reservation booked at Crystal Palace for 12:30 PM. Plan our day
+  around all of that and lock it in — no need to check back with me
+  first.
 
 tool_responses:
   get_user_plan_history:
@@ -125,6 +127,8 @@ assertions:
       args_min_length:
         ride_sequence: 4
         ll_holds: 2
+        reservations: 1
       args_max_length:
         ll_holds: 2
+        reservations: 1
   - stop_reason: end_turn

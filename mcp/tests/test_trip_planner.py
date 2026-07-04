@@ -882,3 +882,67 @@ class TestRecordPlanLlHolds:
         )
         stored = stub.items[("USER#megan", f"PLAN#{plan_id}")]
         assert set(stored["ll_holds"]) == {"gotg"}
+
+
+# ─── record_plan target_time / ll_planned / reservations (2026-07-04) ─
+# Same structured-vs-notes bug class as ll_holds: ride times, planned-LL
+# intent, and dining reservations all previously lived only in free text.
+
+
+class TestRecordPlanStructuredFields:
+    RIDES = [
+        {"ride_name": "Remy's Ratatouille Adventure", "ride_id": "remy",
+         "target_time": "10:00 AM"},
+        {"ride_name": "Test Track", "ride_id": "tt",
+         "predicted_wait_min": 15, "ll_planned": True},
+    ]
+
+    def test_target_time_normalized_to_et_iso(self, stub):
+        out = server.record_plan("EPCOT", [dict(r) for r in self.RIDES])
+        stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]
+        remy = stored["ride_sequence"][0]
+        assert remy["target_time"].startswith(f"{_today()}T10:00:00")
+        assert "-04:00" in remy["target_time"] or "-05:00" in remy["target_time"]
+
+    def test_ll_planned_flag_survives(self, stub):
+        out = server.record_plan("EPCOT", [dict(r) for r in self.RIDES])
+        stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]
+        assert stored["ride_sequence"][1]["ll_planned"] is True
+
+    def test_bad_target_time_fails_loud(self, stub):
+        rides = [{"ride_name": "Remy", "ride_id": "remy", "target_time": "brunchish"}]
+        out = server.record_plan("EPCOT", rides)
+        assert out["error"] == "Invalid ride target_time"
+        assert stub.items == {}
+
+    def test_reservations_normalized_and_sorted(self, stub):
+        out = server.record_plan(
+            "EPCOT", [dict(r) for r in self.RIDES],
+            reservations=[
+                {"name": "Space 220", "time": "6:15 PM", "type": "dining"},
+                {"name": "Crystal Palace", "time": "12:30 PM"},
+            ],
+        )
+        stored = stub.items[("USER#megan", f"PLAN#{out['plan_id']}")]
+        res = stored["reservations"]
+        assert [r["name"] for r in res] == ["Crystal Palace", "Space 220"]  # time-sorted
+        assert res[0]["time"].startswith(f"{_today()}T12:30:00")
+        assert res[1]["type"] == "dining"
+
+    def test_bad_reservation_time_fails_loud(self, stub):
+        out = server.record_plan(
+            "EPCOT", [dict(r) for r in self.RIDES],
+            reservations=[{"name": "Space 220", "time": "dinnertime"}],
+        )
+        assert out["error"] == "Invalid reservation time"
+        assert stub.items == {}
+
+    def test_upsert_preserves_reservations_when_not_respecified(self, stub):
+        out = server.record_plan(
+            "EPCOT", [dict(r) for r in self.RIDES],
+            reservations=[{"name": "Crystal Palace", "time": "12:30 PM"}],
+        )
+        plan_id = out["plan_id"]
+        server.record_plan("EPCOT", [dict(r) for r in self.RIDES])
+        stored = stub.items[("USER#megan", f"PLAN#{plan_id}")]
+        assert [r["name"] for r in stored["reservations"]] == ["Crystal Palace"]

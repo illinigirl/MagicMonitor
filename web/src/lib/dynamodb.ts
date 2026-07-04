@@ -155,7 +155,13 @@ export interface TripDay {
     done?: boolean;
     /** Held Lightning Lane return ISO, when the party holds one. */
     held_ll?: string | null;
+    /** Planner-suggested time for the ride (ET ISO), when set. */
+    target_time?: string | null;
   }[];
+  /** Booked dining/other reservations, time-sorted: [{name, time}]. */
+  reservations: { name: string; time: string; type?: string }[];
+  /** Shows fitted into the plan: [{name, start}]. */
+  shows: { name: string; start: string }[];
   /** ADDITIONAL alert recipients opted in on this day (Cognito subs).
    *  The plan owner is implicit and never stored. Powers the /trips
    *  "get alerts" toggle state. */
@@ -177,10 +183,23 @@ interface PlanRow {
   park_key?: ParkKey;
   active?: boolean;
   outcome_recorded?: boolean;
-  ride_sequence?: { ride_name?: string; ride_id?: string }[];
+  ride_sequence?: {
+    ride_name?: string;
+    ride_id?: string;
+    /** Suggested time for the ride (ET ISO), when the planner set one. */
+    target_time?: string;
+  }[];
   plan_order?: string[];
   /** ride_id → held Lightning Lane return ISO (set_held_ll / /replan). */
   ll_holds?: Record<string, string>;
+  /** Booked dining/other reservations: [{name, time(ET ISO), type?}]. */
+  reservations?: { name?: string; time?: string; type?: string }[];
+  /** Shows fitted into the plan (MCP writes show_name or name). */
+  show_selections?: {
+    show_name?: string;
+    name?: string;
+    performance_start?: string;
+  }[];
   // DDB String Sets — the DocumentClient unmarshalls SS to a JS Set.
   alert_subscribers?: Set<string> | string[];
   dropped_ride_ids?: Set<string> | string[];
@@ -209,6 +228,7 @@ export function orderedDayRides(
   ride_id?: string;
   done: boolean;
   held_ll: string | null;
+  target_time: string | null;
 }[] {
   const droppedSet = new Set([...(r.dropped_ride_ids ?? [])]);
   const doneSet = new Set([...(r.completed_ride_ids ?? [])]);
@@ -220,6 +240,7 @@ export function orderedDayRides(
       ride_id: rd.ride_id,
       done: Boolean(rd.ride_id && doneSet.has(rd.ride_id)),
       held_ll: (rd.ride_id && holds[rd.ride_id]) || null,
+      target_time: rd.target_time ?? null,
     }));
   const order = r.plan_order ?? [];
   if (order.length > 0) {
@@ -231,6 +252,35 @@ export function orderedDayRides(
     );
   }
   return rides;
+}
+
+/**
+ * A day's non-ride schedule for the trip cards: booked reservations
+ * (record_plan's structured `reservations` field, 2026-07-04) and shows
+ * (show_selections — the MCP has written both `show_name` and `name`
+ * over time, so accept either). Malformed entries are skipped rather
+ * than crashing the page. Exported for tests.
+ */
+export function dayExtras(
+  r: Pick<PlanRow, "reservations" | "show_selections">,
+): {
+  reservations: { name: string; time: string; type?: string }[];
+  shows: { name: string; start: string }[];
+} {
+  const reservations = (r.reservations ?? [])
+    .filter((x) => x?.name && x?.time)
+    .map((x) => ({
+      name: x.name!,
+      time: x.time!,
+      ...(x.type ? { type: x.type } : {}),
+    }));
+  const shows = (r.show_selections ?? [])
+    .map((s) => ({
+      name: s.show_name ?? s.name ?? "",
+      start: s.performance_start ?? "",
+    }))
+    .filter((s) => s.name && s.start);
+  return { reservations, shows };
 }
 
 interface TripRow {
@@ -328,6 +378,7 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
           ride_count: rides.length,
           outcome_recorded: Boolean(r.outcome_recorded),
           rides,
+          ...dayExtras(r),
           // Set (from DDB SS) or array — normalize to a serializable array
           // (a JS Set can't cross the Server Component boundary as a prop).
           alert_subscribers: [...(r.alert_subscribers ?? [])].sort(),
@@ -375,6 +426,7 @@ export async function getUpcomingTrips(): Promise<Trip[]> {
           ride_count: rides.length,
           outcome_recorded: Boolean(r.outcome_recorded),
           rides,
+          ...dayExtras(r),
           alert_subscribers: [...(r.alert_subscribers ?? [])].sort(),
         },
       ],

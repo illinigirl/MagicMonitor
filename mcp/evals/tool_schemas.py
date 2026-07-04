@@ -155,8 +155,46 @@ TOOLS: list[dict[str, Any]] = [
                             "ride_id": {"type": "string"},
                             "predicted_wait_min": {"type": ["integer", "null"]},
                             "position": {"type": "integer"},
+                            "target_time": {
+                                "type": "string",
+                                "description": (
+                                    "Suggested time to do this ride "
+                                    "('10:00 AM', '14:30'). Shown on the "
+                                    "trip page — put times HERE, not in "
+                                    "notes."
+                                ),
+                            },
+                            "ll_planned": {
+                                "type": "boolean",
+                                "description": (
+                                    "True when the plan intends to ride "
+                                    "via a Lightning Lane NOT yet booked "
+                                    "(prediction is LL-priced). Excluded "
+                                    "from busier-than-planned drift "
+                                    "alerts. Once booked, use ll_holds / "
+                                    "set_held_ll instead."
+                                ),
+                            },
                         },
                         "required": ["ride_name", "position"],
+                    },
+                },
+                "reservations": {
+                    "type": "array",
+                    "description": (
+                        "Booked dining/other reservations for the day. "
+                        "Booked meals MUST go here, not into notes — the "
+                        "trip page renders this field."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "time": {"type": "string"},
+                            "type": {"type": "string"},
+                            "notes": {"type": "string"},
+                        },
+                        "required": ["name", "time"],
                     },
                 },
                 "show_selections": {

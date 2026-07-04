@@ -636,6 +636,10 @@ def build_active_plan_ride_index(
                     "ride_id": r.get("ride_id"),
                     "ride_name": r.get("ride_name"),
                     "predicted_wait_min": r.get("predicted_wait_min"),
+                    # Plan intends an LL (not yet booked) for this ride —
+                    # its prediction is LL-priced, so the drift math must
+                    # not compare it to standby (M10.1, 2026-07-04).
+                    "ll_planned": bool(r.get("ll_planned")),
                 }
                 for r in (item.get("ride_sequence") or [])
                 if r.get("ride_id") and r.get("ride_id") not in dropped

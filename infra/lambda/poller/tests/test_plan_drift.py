@@ -56,3 +56,18 @@ class TestComputePlanDrift:
         waits = {"r0": 20, "r1": 15}
         assert index._compute_plan_drift(rides, waits) == \
             index._compute_plan_drift(rides, waits, {})
+
+    def test_skips_ll_planned_rides(self):
+        # The 2026-07-04 EPCOT false positive: Test Track / Frozen carried
+        # LL-priced predictions (15m) for LLs the party INTENDED to grab
+        # but didn't hold — compared to 40m+ standby they swamped the
+        # honest rides into a false "heavier than planned".
+        rides = [
+            {"ride_id": "tt", "predicted_wait_min": 15, "ll_planned": True},
+            {"ride_id": "fz", "predicted_wait_min": 15, "ll_planned": True},
+            {"ride_id": "lw", "predicted_wait_min": 20},
+            {"ride_id": "gf", "predicted_wait_min": 10},
+        ]
+        waits = {"tt": 45, "fz": 40, "lw": 15, "gf": 5}
+        net, n = index._compute_plan_drift(rides, waits, {})
+        assert (net, n) == ((20 - 15) + (10 - 5), 2)  # only the standby pair

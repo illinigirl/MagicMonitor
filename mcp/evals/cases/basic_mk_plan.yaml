@@ -124,5 +124,10 @@ assertions:
       tool: record_plan
       args_min_length:
         ride_sequence: 5
-  - response_mentions: "Magic Kingdom"
+  # Park-name convention: accept "MK" too (same loosening as
+  # hot_day_indoor_preference — calibration-style responses use the
+  # abbreviation; the tool-call assertions carry the real weight).
+  - response_mentions_any:
+      - "Magic Kingdom"
+      - "MK"
   - stop_reason: end_turn

@@ -489,3 +489,49 @@ describe("orderedDayRides held-LL passthrough", () => {
     expect(rides.find((r) => r.ride_id === "phil")?.held_ll).toBeNull();
   });
 });
+
+describe("dayExtras (reservations + shows on trip cards, 2026-07-04)", () => {
+  it("passes reservations through and accepts both show name keys", async () => {
+    const { dayExtras } = await import("./dynamodb");
+    const out = dayExtras({
+      reservations: [
+        { name: "Crystal Palace", time: "2026-07-04T12:30:00-04:00" },
+        { name: "", time: "2026-07-04T13:00:00-04:00" }, // malformed → skipped
+      ],
+      show_selections: [
+        { name: "Luminous The Symphony of Us",
+          performance_start: "2026-07-04T21:00:00-04:00" },
+        { show_name: "Festival of Fantasy",
+          performance_start: "2026-07-04T15:00:00-04:00" },
+        { show_name: "No Start Given" }, // malformed → skipped
+      ],
+    });
+    expect(out.reservations).toEqual([
+      { name: "Crystal Palace", time: "2026-07-04T12:30:00-04:00" },
+    ]);
+    expect(out.shows.map((s) => s.name)).toEqual([
+      "Luminous The Symphony of Us",
+      "Festival of Fantasy",
+    ]);
+  });
+
+  it("empty row → empty lists, never undefined", async () => {
+    const { dayExtras } = await import("./dynamodb");
+    expect(dayExtras({})).toEqual({ reservations: [], shows: [] });
+  });
+});
+
+describe("orderedDayRides target_time passthrough", () => {
+  it("carries the planner-suggested time, null when unset", async () => {
+    const { orderedDayRides } = await import("./dynamodb");
+    const rides = orderedDayRides({
+      ride_sequence: [
+        { ride_name: "Remy", ride_id: "remy",
+          target_time: "2026-07-04T10:00:00-04:00" },
+        { ride_name: "Test Track", ride_id: "tt" },
+      ],
+    });
+    expect(rides[0].target_time).toBe("2026-07-04T10:00:00-04:00");
+    expect(rides[1].target_time).toBeNull();
+  });
+});

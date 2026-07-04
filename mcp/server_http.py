@@ -1479,6 +1479,7 @@ def record_plan(
     plan_window: dict[str, Any] | None = None,
     active: bool | None = None,
     ll_holds: dict[str, str] | None = None,
+    reservations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Persist a plan the user accepted (same-day live-assist, or a
     future day of a trip).
@@ -1499,6 +1500,16 @@ def record_plan(
         ride_sequence: Ordered rides; each {"ride_name","ride_id",
             "predicted_wait_min"?, "position"?}. Include ride_id so the
             poller can match plans against live DOWN/UP events.
+            Two more per-ride fields the alert engine + trip page READ
+            (put them here, NOT in notes — free text is invisible to
+            both): `target_time` — when you suggest doing the ride
+            ("10:00 AM", "14:30", or ISO; shown on the trip page);
+            `ll_planned` (bool) — you INTEND to ride via a Lightning
+            Lane not yet booked (predicted_wait_min is LL-priced).
+            ll_planned rides are excluded from the "busier than
+            planned" drift math — without the flag their tiny LL
+            prediction is compared to standby and fires false "running
+            behind" alerts. Once booked, use ll_holds / set_held_ll.
         show_selections: Optional shows being fitted in.
         context: Optional planner-side snapshot (park_load_ratio, weather,
             planned_at, ...).
@@ -1520,6 +1531,11 @@ def record_plan(
             "grab it later" LLs stay out so earlier-slot alerts still
             fire while hunting them. Bad entries (unknown ride,
             unparseable time) fail the whole call loudly.
+        reservations: Dining and other booked reservations for the day:
+            [{"name": str, "time": "12:30 PM" | ISO, "type"?: str,
+            "notes"?: str}]. **Booked meals / reservations MUST go
+            here, not into notes** — the trip page renders this field.
+            Same fail-loud rule for bad entries.
 
     Returns:
         Dict with plan_id, planned_for_date, trip_id, active,
@@ -1573,6 +1589,14 @@ def record_plan(
     )
     if holds_err is not None:
         return holds_err
+    # Normalize per-ride target_time (+ ll_planned) and reservations the
+    # same fail-loud way.
+    targets_err = _tool_impls.normalize_ride_targets(ride_sequence, pfd)
+    if targets_err is not None:
+        return targets_err
+    resolved_res, res_err = _tool_impls.resolve_reservations(reservations, pfd)
+    if res_err is not None:
+        return res_err
 
     try:
         table = _ddb_table()
@@ -1634,6 +1658,8 @@ def record_plan(
     )
     if resolved_holds:
         item["ll_holds"] = resolved_holds
+    if resolved_res:
+        item["reservations"] = resolved_res
 
     if prior is not None:
         # Upsert means "set this day's plan", but put_item replaces the whole
@@ -1648,6 +1674,9 @@ def record_plan(
         # unless this call explicitly provides its own ll_holds map.
         if ll_holds is None and prior.get("ll_holds"):
             item["ll_holds"] = prior.get("ll_holds")
+        # Reservations follow the same keep-unless-respecified rule.
+        if reservations is None and prior.get("reservations"):
+            item["reservations"] = prior.get("reservations")
         if plan_window is None and prior.get("plan_window") is not None:
             item["plan_window"] = prior.get("plan_window")
         if active and prior.get("active") and prior.get("activated_at"):

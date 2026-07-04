@@ -1406,6 +1406,7 @@ def record_plan(
     active: bool | None = None,
     created_by: str | None = None,
     ll_holds: dict[str, str] | None = None,
+    reservations: list[dict[str, Any]] | None = None,
     user_id: str = _DEFAULT_USER_ID,
 ) -> dict[str, Any]:
     """Persist a plan you just proposed and the user accepted.
@@ -1444,6 +1445,18 @@ def record_plan(
             Capture the planner's prediction for each ride so we can
             compare against actual later. Keep it compact — a few
             fields per ride.
+            Two more per-ride fields the alert engine + trip page READ
+            (put them here, NOT in notes — free text is invisible to
+            both): `target_time` — when you suggest doing the ride
+            ("10:00 AM", "14:30", or ISO; shown on the trip page,
+            future nudge anchor); `ll_planned` (bool) — the plan is to
+            ride this via a Lightning Lane you INTEND to grab but don't
+            hold yet (predicted_wait_min is LL-priced). ll_planned
+            rides are excluded from the "busier than planned" drift
+            math — without the flag their tiny LL prediction gets
+            compared to standby and fires false "running behind"
+            alerts. Once the LL is actually booked, record it in
+            ll_holds / set_held_ll (holds also suppress drift).
         show_selections: Optional list of shows being fitted into the
             plan. Each entry: {"show_name": str, "performance_start":
             iso_ts, "predicted_arrival_min": int}. Empty list / None
@@ -1484,6 +1497,13 @@ def record_plan(
             fire while hunting them. Entries that don't match a
             ride_sequence ride, or with unparseable times, fail the
             whole call loudly (nothing is saved).
+        reservations: Dining and other booked reservations for the day,
+            as a list of {"name": str, "time": "12:30 PM" | ISO,
+            "type"?: "dining" | other, "notes"?: str}. **Booked meals /
+            reservations MUST go here, not into notes** — the trip page
+            renders this field, and future scheduling logic reads it.
+            Same fail-loud rule: a nameless entry or unparseable time
+            fails the call.
         user_id: Single-user default is "megan". Pass another value
             only if planning for a different family member.
 
@@ -1549,6 +1569,14 @@ def record_plan(
     )
     if holds_err is not None:
         return holds_err
+    # Normalize per-ride target_time (+ ll_planned) and reservations the
+    # same fail-loud way.
+    targets_err = _tool_impls.normalize_ride_targets(ride_sequence, pfd)
+    if targets_err is not None:
+        return targets_err
+    resolved_res, res_err = _tool_impls.resolve_reservations(reservations, pfd)
+    if res_err is not None:
+        return res_err
 
     try:
         table = _ddb_table()
@@ -1616,6 +1644,8 @@ def record_plan(
     )
     if resolved_holds:
         item["ll_holds"] = resolved_holds
+    if resolved_res:
+        item["reservations"] = resolved_res
 
     if prior is not None:
         # Upsert means "set this day's plan" — but put_item replaces the
@@ -1632,6 +1662,9 @@ def record_plan(
         # unless this call explicitly provides its own ll_holds map.
         if ll_holds is None and prior.get("ll_holds"):
             item["ll_holds"] = prior.get("ll_holds")
+        # Reservations follow the same keep-unless-respecified rule.
+        if reservations is None and prior.get("reservations"):
+            item["reservations"] = prior.get("reservations")
         if plan_window is None and prior.get("plan_window") is not None:
             item["plan_window"] = prior.get("plan_window")
         if active and prior.get("active") and prior.get("activated_at"):

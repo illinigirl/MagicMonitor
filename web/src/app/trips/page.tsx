@@ -223,6 +223,11 @@ function DayCard({ day }: { day: TripDay }) {
                 className={r.done ? "text-fg-3" : undefined}
               >
                 {r.done && <span aria-label="done">✓ </span>}
+                {r.target_time && !r.done && (
+                  <span className="text-fg-3 text-xs tabular-nums">
+                    {formatLlTime(r.target_time)}{" "}
+                  </span>
+                )}
                 {r.ride_name}
                 {r.held_ll && !r.done && (
                   <span className="text-gold text-xs" title="Lightning Lane held">
@@ -239,6 +244,28 @@ function DayCard({ day }: { day: TripDay }) {
           </ul>
         ) : (
           <p className="mt-3 text-sm text-fg-3">No rides lined up yet.</p>
+        )}
+        {(day.reservations.length > 0 || day.shows.length > 0) && (
+          <ul className="mt-2 space-y-0.5 text-sm text-fg-2">
+            {day.reservations.map((res, i) => (
+              <li key={`res-${i}`}>
+                <span aria-hidden>🍽</span>{" "}
+                <span className="text-fg-3 text-xs tabular-nums">
+                  {formatLlTime(res.time)}
+                </span>{" "}
+                {res.name}
+              </li>
+            ))}
+            {day.shows.map((s, i) => (
+              <li key={`show-${i}`}>
+                <span aria-hidden>🎭</span>{" "}
+                <span className="text-fg-3 text-xs tabular-nums">
+                  {formatLlTime(s.start)}
+                </span>{" "}
+                {s.name}
+              </li>
+            ))}
+          </ul>
         )}
         {/* Adjust entry point — active, in-play days only. Reaches the
             same /replan surface an alert links to, so the plan is

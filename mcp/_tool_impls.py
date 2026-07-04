@@ -2711,6 +2711,73 @@ def resolve_ll_holds(
     return resolved, None
 
 
+def normalize_ride_targets(
+    ride_sequence: list[dict[str, Any]],
+    date_iso: str,
+) -> dict[str, Any] | None:
+    """Normalize optional per-ride `target_time` fields IN PLACE to full
+    ET ISO timestamps (any parse_ll_time form accepted). Also validates
+    the optional `ll_planned` flag is boolean-ish. Returns an error
+    payload on the first bad value, else None. FAIL LOUD — a target time
+    that silently vanishes is the same bug class as dropped ll_holds.
+    """
+    for r in ride_sequence:
+        raw = r.get("target_time")
+        if raw:
+            iso = parse_ll_time(str(raw), date_iso)
+            if iso is None:
+                return {
+                    "error": "Invalid ride target_time",
+                    "error_message": (
+                        f"Could not parse target_time {raw!r} on "
+                        f"'{r.get('ride_name') or r.get('ride_id')}'. Use "
+                        "'10:00 AM', '14:30', or full ISO — nothing was saved."
+                    ),
+                }
+            r["target_time"] = iso
+        if "ll_planned" in r and not isinstance(r["ll_planned"], bool):
+            r["ll_planned"] = bool(r["ll_planned"])
+    return None
+
+
+def resolve_reservations(
+    reservations: list[dict[str, Any]] | None,
+    date_iso: str,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """Normalize a record_plan `reservations` list ({name, time, ...})
+    into stored shape with full ET ISO times. Returns (resolved, None)
+    or (None, error) on the first bad entry — FAIL LOUD, same rationale
+    as resolve_ll_holds.
+    """
+    if not reservations:
+        return None, None
+    out: list[dict[str, Any]] = []
+    for res in reservations:
+        name = (res.get("name") or "").strip()
+        if not name:
+            return None, {
+                "error": "Invalid reservation",
+                "error_message": "Each reservation needs a name — nothing was saved.",
+            }
+        iso = parse_ll_time(str(res.get("time") or ""), date_iso)
+        if iso is None:
+            return None, {
+                "error": "Invalid reservation time",
+                "error_message": (
+                    f"Could not parse time {res.get('time')!r} for "
+                    f"'{name}'. Use '12:30 PM', '18:00', or full ISO — "
+                    "nothing was saved."
+                ),
+            }
+        entry = {"name": name, "time": iso}
+        for extra in ("type", "notes", "confirmation", "party_size"):
+            if res.get(extra) is not None:
+                entry[extra] = res[extra]
+        out.append(entry)
+    out.sort(key=lambda e: e["time"])
+    return out, None
+
+
 def apply_held_ll(table, user_id, ride_id, return_iso, plan_rows):
     """Set (return_iso) or clear (None) a held Lightning Lane for `ride_id`
     on each matching plan row's ll_holds map. Atomic per-key map update —

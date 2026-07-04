@@ -155,9 +155,12 @@ def _compute_plan_drift(
     than planned (waits under prediction — time freed up); net < 0 =
     HEAVIER. n_compared guards against firing on a single ride.
 
-    Rides with a held Lightning Lane (keys of `ll_holds`) are excluded:
-    the party rides those via the LL return window, so the standby wait
-    is noise — counting it produced false "busier than planned" alerts.
+    Rides ridden via Lightning Lane are excluded two ways: a HELD LL
+    (keys of `ll_holds`) and a PLANNED one (`ll_planned` on the ride —
+    the party intends to grab it, so predicted_wait_min is LL-priced).
+    Either way the standby wait is noise — counting it produced false
+    "busier than planned" alerts (held: 2026-07-03; planned: the
+    2026-07-04 EPCOT day, Test Track/Frozen pred 15 vs standby 40+).
     """
     net = 0
     n = 0
@@ -168,7 +171,7 @@ def _compute_plan_drift(
         cur = current_waits.get(rid)
         if rid is None or pred is None or cur is None:
             continue
-        if rid in held:
+        if rid in held or r.get("ll_planned"):
             continue
         try:
             net += int(pred) - int(cur)
@@ -936,6 +939,12 @@ def handler(event, context):
         )
         if n < 2 or abs(net) < PLAN_DRIFT_THRESHOLD_MIN:
             continue
+        # Log the decision — the 2026-07-04 false-positive hunt had to
+        # reconstruct this by hand because the sweep fired silently.
+        print(
+            f"[poller] plan {plan_id} drift: net={net:+}m across {n} "
+            f"comparable standby rides → alerting"
+        )
         park_key = plan.get("park_key") or "magic_kingdom"
         park_name = PARK_NAMES.get(park_key, park_key.replace("_", " ").title())
         # Fan out to the plan's recipients (owner + subscribers), each
