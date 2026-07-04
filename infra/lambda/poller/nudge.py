@@ -28,6 +28,12 @@ DEFAULT_WAIT_MINS = int(os.environ.get("NUDGE_DEFAULT_WAIT_MINS", "30"))
 # family moved on; a late "did you finish?" is noise, not help.
 MAX_AGE_MINS = int(os.environ.get("NUDGE_MAX_AGE_MINS", "180"))
 
+# Never SUGGEST an LL for a ride whose standby is at/under this — a
+# near-walk-on's slot is always available and always early, so it wins
+# "earliest return" forever (Spaceship Earth got suggested and BOOKED
+# on 2026-07-04). Same env knob as the alert-side suppression.
+LL_MIN_STANDBY_MINS = int(os.environ.get("LL_MIN_STANDBY_MINS", "25"))
+
 
 def _parse_iso(iso: str | None) -> datetime | None:
     """Aware datetime from ISO, else None. Naive timestamps are treated
@@ -88,20 +94,27 @@ def pick_ll_candidate(
     current_lls: dict[str, dict],
     next_up_ride_id: str | None,
     now: datetime,
+    current_waits: dict[str, int] | None = None,
 ) -> dict | None:
     """The next Lightning Lane worth grabbing: among the plan's REMAINING
     rides (caller passes the already-filtered list), skip rides already
-    held and the one you're on (next_up), then pick the earliest usable
+    held, the one you're on (next_up), and anything whose standby is
+    walk-on short (<= LL_MIN_STANDBY_MINS — a near-walk-on's early slot
+    would win "earliest return" forever), then pick the earliest usable
     return window still in the future. Deterministic v1 — rides Ask
     Claude might ADD to the plan are out of scope until you tap through.
 
     Returns {ride_id, ride_name, return_start, price} or None.
     """
+    waits = current_waits or {}
     best: dict | None = None
     best_dt: datetime | None = None
     for r in plan_rides:
         rid = r.get("ride_id")
         if not rid or rid == next_up_ride_id or rid in ll_holds:
+            continue
+        wait = waits.get(rid)
+        if wait is not None and int(wait) <= LL_MIN_STANDBY_MINS:
             continue
         offer = current_lls.get(rid) or {}
         ret = _parse_iso(offer.get("return_start"))

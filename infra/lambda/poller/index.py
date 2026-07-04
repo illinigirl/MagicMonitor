@@ -565,11 +565,23 @@ def handler(event, context):
                         _ll_event == "reappeared"
                         and db.is_ll_reappear_on_cooldown(ride_id)
                     )
+                    and not (
+                        _ll_event == "earlier"
+                        and db.is_ll_earlier_on_cooldown(ride_id)
+                    )
                 ):
                     if _ll_event == "reappeared":
                         db.mark_ll_reappear_alert_sent(ride_id)
+                    else:
+                        db.mark_ll_earlier_alert_sent(ride_id)
                     new_ll = attr["ll"]
                     prior_ll = (existing or {}).get("ll") or {}
+                    print(
+                        f"[poller] {attr['name']} LL {_ll_event}: "
+                        f"return {new_ll.get('return_start')} "
+                        f"(was {prior_ll.get('return_start')}), "
+                        f"standby {new_wait}m — alerting"
+                    )
                     # Plan party for this ride (by ride_id or lowercased name,
                     # mirroring the DOWN/UP plan lookup). Keep each user's
                     # plan_id so an in-plan recipient's /replan link targets it.
@@ -1052,7 +1064,9 @@ def handler(event, context):
         # Cooldown BEFORE fanout, same rationale as DOWN: even a
         # zero-recipient window must not re-ask next poll.
         db.mark_nudge_sent(plan_id, next_up)
-        cand = nudge.pick_ll_candidate(rides, holds, current_lls, next_up, now_utc)
+        cand = nudge.pick_ll_candidate(
+            rides, holds, current_lls, next_up, now_utc, current_waits
+        )
         park_name = PARK_NAMES.get(park_key, park_key.replace("_", " ").title())
         print(
             f"[poller] Next-up nudge for plan {plan_id}: {ride.get('ride_name')}"

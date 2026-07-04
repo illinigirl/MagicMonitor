@@ -20,6 +20,12 @@ export interface NextLlSuggestion {
   standby_mins: number | null;
 }
 
+/** Don't suggest an LL for a ride whose standby is at/under this — a
+ *  near-walk-on's slot is always available and always early, so it
+ *  would win "earliest return" forever (Spaceship Earth got suggested
+ *  and BOOKED on 2026-07-04). Mirrors the poller's LL_MIN_STANDBY_MINS. */
+export const LL_SUGGEST_MIN_STANDBY_MINS = 25;
+
 export function pickNextLl(opts: {
   /** Remaining plan rides (not done, not dropped, not the just-done one). */
   rides: { ride_id: string; ride_name: string }[];
@@ -41,6 +47,12 @@ export function pickNextLl(opts: {
     const state = liveById.get(r.ride_id);
     const ret = state?.ll?.return_start;
     if (!ret) continue;
+    // Walk-on-short standby → the LL isn't worth a booking slot.
+    if (
+      state.wait_mins != null &&
+      state.wait_mins <= LL_SUGGEST_MIN_STANDBY_MINS
+    )
+      continue;
     const at = Date.parse(ret);
     if (!Number.isFinite(at) || at < opts.now.getTime()) continue;
     if (at < bestAt) {

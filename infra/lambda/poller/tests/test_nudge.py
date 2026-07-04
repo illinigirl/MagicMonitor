@@ -115,3 +115,19 @@ class TestPickLlCandidate:
         lls = {"tron": {"return_start": iso(T0 + timedelta(minutes=30)), "price": "$12"}}
         cand = nudge.pick_ll_candidate(self.RIDES, {}, lls, "space", T0)
         assert cand["price"] == "$12"
+
+    def test_walk_on_short_standby_never_suggested(self):
+        # Spaceship Earth class (2026-07-04): near-walk-on rides have the
+        # earliest slots forever — an LL there isn't worth a booking.
+        lls = {
+            "tron": {"return_start": iso(T0 + timedelta(minutes=30))},
+            "buzz": {"return_start": iso(T0 + timedelta(hours=2))},
+        }
+        waits = {"tron": 15, "buzz": 45}
+        cand = nudge.pick_ll_candidate(self.RIDES, {}, lls, "space", T0, waits)
+        assert cand["ride_id"] == "buzz"  # tron's 15m standby disqualifies it
+
+    def test_unknown_wait_still_suggestable(self):
+        lls = {"tron": {"return_start": iso(T0 + timedelta(minutes=30))}}
+        cand = nudge.pick_ll_candidate(self.RIDES, {}, lls, "space", T0, {})
+        assert cand["ride_id"] == "tron"

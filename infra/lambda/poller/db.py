@@ -350,6 +350,35 @@ def mark_still_down_alert_sent(ride_id: str, cooldown_secs: int) -> None:
     )
 
 
+# ─── LL-earlier cooldown (2026-07-04) ────────────────────────────────
+# Earlier-LL originally had NO cooldown ("each improvement is
+# individually actionable") — right for a headliner whose window slides
+# once, wrong for offer jitter: a walk-on's return time bounces near
+# "now" every poll and each ≥20-min bounce that beat a held time fired
+# (Spaceship Earth burst, 2026-07-04). One earlier-LL push per ride per
+# window keeps the first, kills the burst.
+
+LL_EARLIER_COOLDOWN_SECS = int(os.environ.get("LL_EARLIER_COOLDOWN_SECS", "900"))
+
+
+def is_ll_earlier_on_cooldown(ride_id: str) -> bool:
+    resp = _table.get_item(
+        Key={"PK": f"RIDE#{ride_id}", "SK": "COOLDOWN#LL_EARLIER"}
+    )
+    return _cooldown_active(resp)
+
+
+def mark_ll_earlier_alert_sent(ride_id: str) -> None:
+    _table.put_item(
+        Item={
+            "PK":      f"RIDE#{ride_id}",
+            "SK":      "COOLDOWN#LL_EARLIER",
+            "sent_at": datetime.now(timezone.utc).isoformat(),
+            "ttl":     int(time.time()) + LL_EARLIER_COOLDOWN_SECS,
+        }
+    )
+
+
 # ─── LL-reappeared cooldown (2026-07-04) ─────────────────────────────
 # An LL offer coming back in stock can flap (Disney releases inventory
 # in waves) — one "LL available" push per ride per window, not one per

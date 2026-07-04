@@ -66,3 +66,31 @@ describe("pickNextLl (web twin of poller nudge.pick_ll_candidate)", () => {
     expect(pick?.price).toBe("$15");
   });
 });
+
+describe("walk-on suppression (Spaceship Earth class, 2026-07-04)", () => {
+  it("short-standby rides never win, even with the earliest slot", () => {
+    const pick = pickNextLl({
+      rides,
+      holds: {},
+      live: live(
+        {
+          tt: { return_start: T("14:30") }, // earliest — but 15m standby
+          fz: { return_start: T("16:00"), price: "$15" },
+        },
+        { tt: 15, fz: 45 },
+      ),
+      now: NOW,
+    });
+    expect(pick?.ride_id).toBe("fz");
+  });
+
+  it("null when every candidate is walk-on short", () => {
+    const pick = pickNextLl({
+      rides,
+      holds: {},
+      live: live({ tt: { return_start: T("14:30") } }, { tt: 10 }),
+      now: NOW,
+    });
+    expect(pick).toBeNull();
+  });
+});
