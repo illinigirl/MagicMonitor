@@ -42,14 +42,14 @@ export const PARKS: Park[] = [
     name: "Hollywood Studios",
     shortName: "HS",
     accentVar: "--park-hollywood-studios",
-    tagline: "Star Wars, Toy Story, the Tower drop.",
+    tagline: "Tower drops, Star Wars, a runaway railway.",
   },
   {
     key: "animal_kingdom",
     name: "Animal Kingdom",
     shortName: "AK",
     accentVar: "--park-animal-kingdom",
-    tagline: "Pandora, the Tree of Life, Everest.",
+    tagline: "Safaris, Pandora, and that very big tree.",
   },
 ];
 

@@ -61,17 +61,17 @@ export default async function MePage({
   });
 
   return (
-    <div className="mx-auto max-w-2xl px-6 py-12">
-      <header className="mb-8">
-        <p className="label-meta">Your settings</p>
-        <h2 className="display text-3xl font-medium mt-2">
+    <div className="mx-auto max-w-5xl px-6 md:px-10 pb-4">
+      <header className="pt-10 mb-8">
+        <p className="kicker">Your settings</p>
+        <h2 className="display mt-2.5 text-4xl md:text-[52px] leading-[1.05] uppercase text-fg-0">
           {profile?.name
             ? `Hi, ${profile.name}.`
             : sp.welcome === "1"
               ? "Welcome to Magic Monitor."
               : "Welcome."}
         </h2>
-        <p className="text-fg-2 mt-2 leading-relaxed">
+        <p className="mt-3 max-w-[640px] text-[15.5px] leading-relaxed text-fg-2">
           Set your Pushover key, pick which parks you want alerts for,
           and choose specific rides to watch.
         </p>
@@ -161,9 +161,19 @@ function SetupBanner({
   }
 
   return (
-    <div className="mb-6 rounded-lg border border-gold/30 bg-gold/5 px-4 py-3">
-      <p className="text-fg-0 font-medium text-sm">{title}</p>
-      <p className="text-fg-2 text-sm mt-1 leading-relaxed">{body}</p>
+    <div className="mb-8 flex items-start gap-4 rounded-md border-2 border-warn bg-warn-bg px-[22px] py-[18px]">
+      <span
+        className="display flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-warn text-[15px] text-bg-0"
+        aria-hidden
+      >
+        !
+      </span>
+      <div>
+        <p className="font-head font-semibold text-[15px] uppercase tracking-[0.08em] text-fg-0">
+          {title}
+        </p>
+        <p className="mt-1 text-[13.5px] leading-relaxed text-fg-2">{body}</p>
+      </div>
     </div>
   );
 }

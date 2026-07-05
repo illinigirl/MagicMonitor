@@ -1,31 +1,27 @@
 import Link from "next/link";
 
 import { HeaderAuth } from "@/components/auth/HeaderAuth";
+import { BannerStrip } from "@/components/banner-strip";
 
 /**
- * Top-of-page header — appears on every route. Title links home,
- * subtitle is a one-liner identity statement, and the right side
- * is the auth control (Sign in when signed out, email + Sign out
- * when signed in). Pages stay public for M2-B; M3 will gate the
- * per-user pages by reading auth() in those routes.
+ * Poster masthead — appears on every route inside the teal frame.
+ * Logo left (Alfa Slab One, "Monitor" in red-orange), nav right
+ * (Oswald caps via HeaderAuth: TRIPS / SETTINGS / SIGN OUT), a 2px
+ * teal rule underneath, then the full-width teal banner strip whose
+ * copy varies per page.
  */
 export function SiteHeader() {
   return (
-    <header className="border-b border-line-soft">
-      <div className="mx-auto max-w-6xl px-6 py-5 flex items-baseline justify-between gap-6">
-        <Link href="/" className="group">
-          <h1 className="display text-3xl font-semibold tracking-tight">
-            <span className="text-fg-0">Magic</span>{" "}
-            <span className="text-gold">Monitor</span>
+    <header>
+      <div className="flex items-center justify-between gap-6 px-8 pt-5 pb-3.5 border-b-2 border-line">
+        <Link href="/">
+          <h1 className="display text-[26px] leading-none text-fg-0">
+            Magic <span className="text-accent">Monitor</span>
           </h1>
         </Link>
-        <div className="flex items-center gap-6">
-          <p className="hidden lg:block text-fg-2 text-sm">
-            Live ride status across the four Walt Disney World parks
-          </p>
-          <HeaderAuth />
-        </div>
+        <HeaderAuth />
       </div>
+      <BannerStrip />
     </header>
   );
 }

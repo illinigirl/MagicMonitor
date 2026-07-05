@@ -3,6 +3,9 @@ import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
 import { ParkCard } from "@/components/park-card";
+import { RetroHeatmap } from "@/components/retro-heatmap";
+import { DiamondRule } from "@/components/retro";
+import { getParkHeatmap } from "@/lib/analytics";
 import { getUserProfile } from "@/lib/dynamodb-writes";
 import { PARKS } from "@/lib/parks";
 import { getParkSchedule } from "@/lib/schedule";
@@ -37,33 +40,44 @@ export default async function HomePage({
   // without four sequential round trips.
   const schedules = await Promise.all(PARKS.map((p) => getParkSchedule(p.key)));
 
+  // MK heatmap for the "when the lines are long" teaser; the full
+  // per-park version lives on /parks/<park>/analytics.
+  const mkHeatmap = getParkHeatmap("magic_kingdom");
+
   return (
-    <div className="mx-auto max-w-6xl px-6 py-12">
-      <section className="max-w-2xl">
-        <p className="label-meta">Live status</p>
-        <h2 className="display text-4xl font-medium mt-2">
-          Pick a park.
+    <div className="mx-auto max-w-6xl px-6 md:px-10 pb-4">
+      <section className="pt-11 text-center">
+        <h2 className="display text-[40px] md:text-[68px] leading-[1.05] text-fg-0">
+          PICK A PARK
         </h2>
-        <p className="text-fg-2 mt-3 leading-relaxed">
+        <DiamondRule />
+        <p className="mx-auto mt-4 max-w-[640px] text-base leading-relaxed text-fg-2">
           Wait times and ride status update every two minutes. Down rides
-          surface to the top so you don&apos;t have to scan past the
-          carousel of merchandise to find them.
-        </p>
-        <p className="mt-4 text-sm">
-          <Link
-            href="/analytics"
-            className="transition-opacity hover:opacity-80"
-            style={{ color: "var(--gold)" }}
-          >
-            See historical wait-time analytics →
-          </Link>
+          surface to the top so you don&apos;t have to scan for them.
         </p>
       </section>
 
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-10">
+      <section className="mt-8 grid grid-cols-1 gap-5 md:grid-cols-2">
         {PARKS.map((park, i) => (
           <ParkCard key={park.key} park={park} schedule={schedules[i]} />
         ))}
+      </section>
+
+      <section className="mt-9 border-t-2 border-line pt-6">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="head text-xl">When the lines are long</h3>
+          <Link
+            href="/analytics"
+            className="poster-link text-accent hover:underline"
+          >
+            Full analytics →
+          </Link>
+        </div>
+        <p className="mb-4 mt-1.5 text-[13px] text-fg-2">
+          Magic Kingdom · average wait by hour and day. Darker red = longer
+          waits.
+        </p>
+        <RetroHeatmap cells={mkHeatmap} />
       </section>
     </div>
   );

@@ -10,9 +10,15 @@ import {
 } from "@/lib/schedule";
 
 /**
- * Landing-page tile for a single park. The accent strip on the left
- * uses the park's CSS variable so each card visually claims its
- * park's hue without hardcoding hex values.
+ * Landing-page ticket-stub card (poster design): a 64px colored stub
+ * on the left carries the park code vertically, separated from the
+ * card body by a dashed-cream "perforation." Body holds name, blurb,
+ * status pill + hours, and the two links.
+ *
+ * The card can't be one big <a> — it has two destinations (live ride
+ * status + today's showtimes) and HTML doesn't nest anchors. The body
+ * Link is the primary click target; "Today's shows" is a sibling.
+ * Hover shifts the border to red-orange (group on the wrapper).
  *
  * Schedule is optional — if it's missing (API hiccup) the card just
  * omits the status line rather than showing wrong info.
@@ -24,42 +30,57 @@ export function ParkCard({
   park: Park;
   schedule: ParkSchedule | null;
 }) {
-  // Whole card no longer wraps in a single Link — we now have two
-  // destinations per card (live ride status + today's showtimes) and
-  // HTML doesn't allow nested <a>. Card body is still the primary
-  // click target via the inner Link; the gold "Today's shows" link
-  // is a sibling so it gets its own click. The card-wide hover
-  // effect still works via `group hover:bg-bg-2` on the wrapper.
   return (
     <div
-      className="group relative flex items-stretch overflow-hidden rounded-lg border border-line bg-bg-1 hover:bg-bg-2 transition-colors shadow-[var(--shadow-card)]"
+      className="group flex overflow-hidden rounded-md border-2 border-line bg-bg-1 transition-colors duration-100 hover:border-accent"
       style={
         { "--park-accent": `var(${park.accentVar})` } as React.CSSProperties
       }
     >
+      {/* Ticket stub: park accent fill, vertical code, dashed perforation */}
       <div
-        className="w-2 shrink-0"
+        className="flex w-16 shrink-0 items-center justify-center border-r-2 border-dashed border-bg-0"
         style={{ background: "var(--park-accent)" }}
-      />
-      <div className="flex-1 px-6 py-5">
-        <Link href={`/parks/${park.key}`} className="block">
-          <div className="flex items-baseline gap-3">
-            <h2 className="display text-2xl font-medium text-fg-0">{park.name}</h2>
-            <span className="label-meta">{park.shortName}</span>
-          </div>
-          <p className="mt-2 text-fg-2 text-sm">{park.tagline}</p>
-          {schedule && <CardStatusLine schedule={schedule} />}
-          <p className="mt-4 text-xs text-fg-3 group-hover:text-fg-2 transition-colors">
-            Live ride status →
-          </p>
-        </Link>
-        <Link
-          href={`/parks/${park.key}/today`}
-          className="mt-1 inline-block text-xs transition-opacity hover:opacity-80"
-          style={{ color: "var(--gold)" }}
+      >
+        <span
+          className="display text-xl text-bg-0"
+          style={{
+            writingMode: "vertical-rl",
+            transform: "rotate(180deg)",
+            letterSpacing: "0.2em",
+          }}
         >
-          Today&apos;s shows →
+          {park.shortName}
+        </span>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-2 px-[22px] py-5">
+        <Link href={`/parks/${park.key}`} className="block">
+          <h2
+            className="font-head font-semibold text-[22px] uppercase text-fg-0"
+            style={{ letterSpacing: "0.06em" }}
+          >
+            {park.name}
+          </h2>
+          <p className="mt-1.5 text-[13.5px] leading-normal text-fg-2">
+            {park.tagline}
+          </p>
+          {schedule && <CardStatusLine schedule={schedule} />}
         </Link>
+        <div className="mt-1.5 flex flex-wrap gap-x-[18px] gap-y-1">
+          <Link
+            href={`/parks/${park.key}`}
+            className="poster-link border-b-2 border-accent pb-0.5 text-accent"
+          >
+            Live ride status →
+          </Link>
+          <Link
+            href={`/parks/${park.key}/today`}
+            className="poster-link text-fg-0 hover:text-accent"
+          >
+            Today&apos;s shows →
+          </Link>
+        </div>
       </div>
     </div>
   );
@@ -74,32 +95,33 @@ function CardStatusLine({ schedule }: { schedule: ParkSchedule }) {
   let trail = "";
 
   if (open && schedule.todayOperating) {
-    badge = { label: "Open", classes: "bg-ok/15 text-ok" };
+    badge = { label: "Open", classes: "border-ok text-ok" };
     trail = `until ${formatTimeShort(schedule.todayOperating.close)}`;
   } else if (extraHours && schedule.todayExtraHours) {
-    badge = { label: "Extended Evening", classes: "bg-info/15 text-info" };
+    badge = { label: "Extended Evening", classes: "border-info text-info" };
     trail = `until ${formatTimeShort(schedule.todayExtraHours.close)} · deluxe / DVC`;
   } else if (earlyEntry && schedule.todayOperating) {
-    badge = { label: "Early Entry", classes: "bg-info/15 text-info" };
+    badge = { label: "Early Entry", classes: "border-info text-info" };
     trail = `general at ${formatTimeShort(schedule.todayOperating.open)}`;
   } else if (schedule.tomorrowOperating) {
-    badge = { label: "Closed", classes: "bg-bg-3 text-fg-2" };
+    badge = { label: "Closed", classes: "border-fg-3 text-fg-3" };
     trail = `opens tomorrow ${formatTimeShort(schedule.tomorrowOperating.open)}`;
   } else {
-    badge = { label: "Closed", classes: "bg-bg-3 text-fg-2" };
+    badge = { label: "Closed", classes: "border-fg-3 text-fg-3" };
   }
 
   return (
-    <p className="mt-3 flex items-center gap-2 text-sm">
+    <p className="mt-2.5 flex items-center gap-2.5">
       <span
         className={clsx(
-          "rounded-sm px-2 py-0.5 text-[10px] font-semibold tracking-wider uppercase",
+          "rounded-full border-[1.5px] px-2.5 py-[3px] font-head font-semibold text-[11px] uppercase",
           badge.classes,
         )}
+        style={{ letterSpacing: "0.14em" }}
       >
         {badge.label}
       </span>
-      {trail && <span className="text-fg-2">{trail}</span>}
+      {trail && <span className="text-[13px] text-fg-2">{trail}</span>}
     </p>
   );
 }
