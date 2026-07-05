@@ -5,6 +5,7 @@ import { auth } from "@/auth";
 import { ParkCard } from "@/components/park-card";
 import { RetroHeatmap } from "@/components/retro-heatmap";
 import { DiamondRule } from "@/components/retro";
+import { WeatherChip } from "@/components/weather-chip";
 import { getParkHeatmap } from "@/lib/analytics";
 import { getUserProfile } from "@/lib/dynamodb-writes";
 import { PARKS } from "@/lib/parks";
@@ -55,6 +56,9 @@ export default async function HomePage({
           Wait times and ride status update every two minutes. Down rides
           surface to the top so you don&apos;t have to scan for them.
         </p>
+        <div className="mt-5">
+          <WeatherChip />
+        </div>
       </section>
 
       <section className="mt-8 grid grid-cols-1 gap-5 md:grid-cols-2">

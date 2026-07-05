@@ -13,6 +13,7 @@ import {
 import { RideRow } from "@/components/ride-row";
 import { ParkSchedule } from "@/components/park-schedule";
 import { UpdatedIndicator } from "@/components/updated-indicator";
+import { WeatherChip } from "@/components/weather-chip";
 
 // Sort modes the user can pick from. wait_asc is the default because
 // "what's the shortest line right now" is the most actionable framing
@@ -188,6 +189,11 @@ export default async function ParkPage({
         </div>
         <p className="text-fg-2 mt-2">{park.tagline}</p>
         <ParkSchedule schedule={schedule} />
+        {/* Property-wide conditions — rain/storm flips it red-orange,
+            which is exactly the "why is everything DOWN" context. */}
+        <div className="mt-3">
+          <WeatherChip />
+        </div>
         {/* Showtimes live behind a click — most visits are ride-driven
             and a flat list of 60-90 daily entertainment slots would
             crowd the page. Subtle text link keeps it discoverable
