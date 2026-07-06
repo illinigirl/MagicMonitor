@@ -215,7 +215,10 @@ function RideRow({
 
   return (
     <div className="flex items-center gap-3.5">
-      <div className="w-full sm:w-[250px] shrink-0">
+      {/* Phones: no bar, so the name column must FLEX next to the fixed
+          minutes column — w-full+shrink-0 here made the row 100%+70px
+          wide and pushed the numbers outside the poster frame. */}
+      <div className="min-w-0 flex-1 sm:flex-none sm:w-[250px]">
         <div
           className="truncate font-head font-semibold text-sm uppercase text-fg-0"
           style={{ letterSpacing: "0.04em" }}
