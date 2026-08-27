@@ -173,18 +173,37 @@ def _normalize_status(raw: str) -> str:
     return mapping.get(raw.upper(), raw.upper())
 
 
+# Schedule entry types that mean "guests are inside and rides are
+# running" — i.e. hours a ride can go down during and someone would
+# want to know. TICKETED_EVENT (added 2026-08-27) covers the hard-ticket
+# after-hours parties: MNSSHP, MVMCP, Disney After Hours. On a party
+# night themeparks.wiki emits the daytime OPERATING block (e.g. 9am-6pm)
+# and a separate TICKETED_EVENT block for the party (7pm-midnight).
+# Excluding the latter meant the poller believed Magic Kingdom shut at
+# 6pm and switched every alert off at 5:30pm — for the exact five hours
+# when a party guest is in the park riding things. Upstream reports full
+# live status during the party (verified against 8/21 and 8/25 2026),
+# so there was real data to alert on the whole time.
+ALERTABLE_SCHEDULE_TYPES = ("OPERATING", "EXTRA_HOURS", "TICKETED_EVENT")
+
+
 def fetch_park_hours(park_key: str) -> Optional[Tuple[datetime, datetime]]:
     """
     Fetch today's open/close window for a park.
 
     Returns (open_dt, close_dt) as timezone-aware datetimes, or None if
-    the park is closed today (no OPERATING entry).
+    the park is closed today (no alertable entry).
 
     The /schedule endpoint returns a multi-day array; we filter to
-    today's entries (in the park's local time), then merge OPERATING
-    + EXTRA_HOURS (early entry / extended evening hours) into a single
-    window that spans the earliest open to the latest close. This is
-    what users actually care about for "is the park open right now".
+    today's entries (in the park's local time), then merge every
+    ALERTABLE_SCHEDULE_TYPES block into a single window spanning the
+    earliest open to the latest close. This is what users actually
+    care about for "is the park open right now".
+
+    On a party night that merge spans the 6-7pm changeover hour when
+    the park really is empty. Accepted deliberately: rides read CLOSED
+    through it so there is almost nothing to alert about, and modelling
+    disjoint windows would cost more than the hour of noise it saves.
     """
     park_id = PARK_IDS.get(park_key)
     if not park_id:
@@ -208,16 +227,18 @@ def fetch_park_hours(park_key: str) -> Optional[Tuple[datetime, datetime]]:
     yesterday_local = (now_local.date() - timedelta(days=1)).isoformat()
 
     def _aggregate(date_iso: str) -> Optional[Tuple[datetime, datetime]]:
-        """Earliest open / latest close across one operating date's entries
-        (OPERATING + EXTRA_HOURS combine into one span — Early Entry and
-        Extended Evening are hours rides go down during and users care
-        about)."""
+        """Earliest open / latest close across one operating date's entries.
+
+        Every ALERTABLE_SCHEDULE_TYPES block combines into one span —
+        Early Entry, Extended Evening and the hard-ticket parties are
+        all hours rides go down during and users care about.
+        """
         o_min: Optional[datetime] = None
         c_max: Optional[datetime] = None
         for entry in data.get("schedule", []):
             if entry.get("date") != date_iso:
                 continue
-            if entry.get("type") not in ("OPERATING", "EXTRA_HOURS"):
+            if entry.get("type") not in ALERTABLE_SCHEDULE_TYPES:
                 continue
             try:
                 o = datetime.fromisoformat(entry["openingTime"])

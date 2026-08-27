@@ -91,3 +91,78 @@ def test_no_entry_today_returns_none(monkeypatch):
     now = datetime(2026, 6, 12, 14, 0, tzinfo=_ET)
     _patch(monkeypatch, _LATE_CLOSE_SCHEDULE, now)
     assert wait_times.fetch_park_hours("magic_kingdom") is None
+
+
+# ── Hard-ticket party nights ─────────────────────────────────────────
+# On a party night themeparks.wiki splits the day into a daytime
+# OPERATING block and a separate TICKETED_EVENT block for the party.
+# Before 2026-08-27 only OPERATING/EXTRA_HOURS counted, so the poller
+# saw Magic Kingdom closing at 6pm and switched every alert off at
+# 5:30pm — through the whole party, while upstream was still reporting
+# live status (Space Mountain went down at 9:28pm ET during the
+# 2026-08-21 party and recovered, both recorded).
+
+_PARTY_SCHEDULE = [
+    {"date": "2026-08-25", "type": "OPERATING",
+     "openingTime": "2026-08-25T09:00:00-04:00",
+     "closingTime": "2026-08-25T18:00:00-04:00"},
+    {"date": "2026-08-25", "type": "TICKETED_EVENT",
+     "openingTime": "2026-08-25T19:00:00-04:00",
+     "closingTime": "2026-08-26T00:00:00-04:00"},
+]
+
+
+def test_party_night_window_extends_to_party_close(monkeypatch):
+    now = datetime(2026, 8, 25, 21, 0, tzinfo=_ET)
+    _patch(monkeypatch, _PARTY_SCHEDULE, now)
+    open_dt, close_dt = wait_times.fetch_park_hours("magic_kingdom")
+    assert open_dt.hour == 9
+    # Midnight on the 26th — the party close, not the 6pm daytime close.
+    assert close_dt.day == 26 and close_dt.hour == 0
+
+
+def test_party_hours_are_inside_the_window(monkeypatch):
+    """9pm on a party night: the hour her alerts were dead."""
+    now = datetime(2026, 8, 25, 21, 0, tzinfo=_ET)
+    _patch(monkeypatch, _PARTY_SCHEDULE, now)
+    open_dt, close_dt = wait_times.fetch_park_hours("magic_kingdom")
+    assert open_dt <= now <= close_dt
+
+
+def test_after_party_close_is_outside_the_window(monkeypatch):
+    """The party ends at midnight; 12:30am is not still 'open'."""
+    now = datetime(2026, 8, 26, 0, 30, tzinfo=_ET)
+    _patch(monkeypatch, _PARTY_SCHEDULE, now)
+    hours = wait_times.fetch_park_hours("magic_kingdom")
+    # Either no window resolves for the 25th's party-day, or `now` sits
+    # past its close — both mean "don't alert", which is the contract.
+    assert hours is None or not (hours[0] <= now <= hours[1])
+
+
+def test_non_party_day_is_unaffected(monkeypatch):
+    """A normal day has no TICKETED_EVENT block — close must not move."""
+    schedule = [
+        {"date": "2026-08-26", "type": "OPERATING",
+         "openingTime": "2026-08-26T09:00:00-04:00",
+         "closingTime": "2026-08-26T21:00:00-04:00"},
+    ]
+    now = datetime(2026, 8, 26, 14, 0, tzinfo=_ET)
+    _patch(monkeypatch, schedule, now)
+    open_dt, close_dt = wait_times.fetch_park_hours("magic_kingdom")
+    assert close_dt.hour == 21
+
+
+def test_unalertable_entry_types_still_ignored(monkeypatch):
+    """Informational/refurb blocks must not stretch the window."""
+    schedule = [
+        {"date": "2026-08-26", "type": "OPERATING",
+         "openingTime": "2026-08-26T09:00:00-04:00",
+         "closingTime": "2026-08-26T21:00:00-04:00"},
+        {"date": "2026-08-26", "type": "INFO",
+         "openingTime": "2026-08-26T00:00:00-04:00",
+         "closingTime": "2026-08-27T03:00:00-04:00"},
+    ]
+    now = datetime(2026, 8, 26, 14, 0, tzinfo=_ET)
+    _patch(monkeypatch, schedule, now)
+    open_dt, close_dt = wait_times.fetch_park_hours("magic_kingdom")
+    assert open_dt.hour == 9 and close_dt.hour == 21
