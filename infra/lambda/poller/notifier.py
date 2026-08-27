@@ -56,8 +56,18 @@ def _send(
     """POST a single Pushover message. Returns True on success.
 
     Priority: 0 = normal, -1 = quiet (no sound), 1 = high (bypass quiet
-    hours). DOWN alerts use priority 1 so they punch through; LOW WAIT
-    and back-up alerts use priority 0.
+    hours). DOWN *and* BACK UP alerts use priority 1 so they punch
+    through a recipient's Pushover quiet hours / phone Focus mode;
+    LOW WAIT, STILL DOWN and the nudges stay at 0.
+
+    BACK UP moved 0 → 1 on 2026-08-27, deliberately. A recovery is the
+    time-critical half of the down/up pair: missing "it's down" costs
+    an annoyance, missing "it's back" costs the ride outright, because
+    the window before the queue rebuilds is short. At priority 0 every
+    recovery push was silently held for any recipient with quiet hours
+    configured, while the priority-1 DOWN alerts punched through — so
+    the alert that mattered least always arrived and the one that
+    mattered most never did.
 
     `url`/`url_title`: Pushover's supplementary URL — a tappable deep
     link (e.g. the /replan approve page) so an alert is actionable
@@ -123,7 +133,9 @@ def alert_ride_up(
         body += f"\nDown for {actual_downtime_mins} min."
     if wait_mins is not None:
         body += f"\nCurrent wait: {wait_mins} min."
-    return _send(user_key, title, body, priority=0)
+    # Priority 1: see _send's docstring — recoveries are the actionable
+    # half of the pair and must bypass quiet hours.
+    return _send(user_key, title, body, priority=1)
 
 
 def alert_still_down(
@@ -332,8 +344,10 @@ def alert_plan_disruption(
       "went_down" — ride in plan just transitioned to DOWN.
       "back_up"   — ride in plan just came back operating.
 
-    Priority 1 for went_down (it's actionable — replan), 0 for
-    back_up (good news, less urgent).
+    Priority 1 for both (back_up raised from 0 on 2026-08-27):
+    went_down is actionable (replan), and back_up is the more
+    time-critical of the two — the ride is available *now* and the
+    queue rebuilds fast. See _send's docstring for the full rationale.
     """
     emoji = PARK_EMOJI.get(park_key, "🎢")
     # Every plan alert deep-links to /replan so it's actionable without
@@ -364,7 +378,7 @@ def alert_plan_disruption(
             f"{wait_blurb} {tail}"
         )
         url_title = "Do it next or adjust"
-        priority = 0
+        priority = 1
     else:
         # Defensive: unknown disruption_type. Don't crash the poller —
         # log + skip rather than throw on a typo.

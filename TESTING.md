@@ -19,6 +19,7 @@ Run from the repo root: `pytest infra/lambda/poller`
 | `weather.format_storm_window` | Human-readable phrase used in Pushover bodies — non-empty, includes clock time, handles malformed input. |
 | `db` cooldown helpers | DOWN / BACK_UP / LOW_WAIT / weather-shift cooldowns set and read symmetrically; cooldown keys don't collide across types or across (user, plan) tuples. Stubs `_table` with an in-memory dict; no real DDB required. |
 | `db.put_weather_snapshot` / `get_prior_weather_snapshot` | Snapshot round-trips intact for the storm-shift detector's prior-state input. |
+| BACK UP alert path (`tests/test_back_up_alerts.py`) | Recovery alerts survive every route back to OPERATING (via CLOSED / REFURBISHMENT / a lost DOWN_SINCE marker), fire inside the closing buffer while DOWN alerts still respect it, stay silent for a previous park-day's stale marker or an ordinary park open, and go out at Pushover priority 1. Drives `index.handler` with stubbed `db`/`wait_times`/`notifier`; park-day + alert-window math tested as pure functions with an injected clock. |
 
 ### MCP server — `mcp/tests/`
 
@@ -140,6 +141,54 @@ source, append candidates with the right priority — don't introduce
 coordination via `if user in other_set: continue` checks. The
 priority order lives in one place; adding a source is one line of
 candidate-construction and one priority constant.
+
+### Asymmetric paired alert paths
+
+When a feature ships as a *pair* of alerts — "it went down" / "it
+came back", "you're over budget" / "you're back under" — the two
+halves get written at different times, read as mirror images, and
+then drift apart in ways no single-branch review catches. Nothing
+compares them, so a gate that looks symmetric in the file can be
+badly asymmetric in effect.
+
+Surfaced 2026-08-27: users were getting every DOWN alert and no BACK
+UP alert. Detection was fine (HIST rows showed recoveries recorded
+normally) — the recovery push was being lost three separate ways
+downstream, each invisible from the branch it lived in:
+
+- **Guard shape.** DOWN fired on `new_status == "DOWN"` from any
+  prior status; BACK UP required exactly `old_status == "DOWN"`. Any
+  intermediate hop (`DOWN → CLOSED → OPERATING` on a weather hold)
+  dropped the recovery. Downs were structurally un-droppable this
+  way; only recoveries were exposed.
+- **A shared gate with an ordering bias.** Both paths used the same
+  `close - CLOSING_BUFFER_MINS` cutoff. Because a recovery *always*
+  trails its own outage, any outage straddling that cutoff delivered
+  the DOWN and swallowed the UP. Identical code, one-directional
+  effect.
+- **Delivery.** DOWN sent at Pushover priority 1 (bypasses quiet
+  hours), UP at priority 0 (held by them). The alert that mattered
+  least always arrived; the one that mattered most never did.
+
+**Defenses:**
+
+1. **Test the pair, not the branch.** For any paired alert, assert
+   the *relationship* explicitly — same recipients, same
+   deliverability, and each half reachable from every state the
+   other is. `tests/test_back_up_alerts.py` is the pattern.
+2. **Ask which half is time-critical, and check the code agrees.**
+   Recoveries are worth more than outages here (missing "it's down"
+   costs an annoyance; missing "it's back" costs the ride), so any
+   gate that treats them as equal-or-lesser is a bug. Priority,
+   cooldown, retry and park-hours all encode that judgement — they
+   must encode the same one.
+3. **Watch for gates whose inputs are time-ordered.** A cutoff
+   applied to two events where one reliably precedes the other is
+   not symmetric, however symmetric the code reads.
+4. **Count the pair in production.** `down_count` vs
+   `recovery_count` per park-day (`get_ride_downtime_today`) is the
+   cheap runtime check that the halves stay balanced; a persistent
+   gap is the signal.
 
 ### Cadence-dependent ratio metrics
 
