@@ -28,7 +28,7 @@ import json
 import os
 import time
 import traceback
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -165,6 +165,62 @@ def _parse_iso(iso: str | None):
         return None
 
 
+def _alert_cutoff(close_dt: datetime, *, ignore_closing_buffer: bool) -> datetime:
+    """The latest instant we will alert for a park today.
+
+    BACK UP alerts pass ignore_closing_buffer=True and run to the
+    park's actual close; every other alert type stops
+    CLOSING_BUFFER_MINS early to mute the closing-time DOWN wave.
+    """
+    if ignore_closing_buffer:
+        return close_dt
+    return close_dt - timedelta(minutes=CLOSING_BUFFER_MINS)
+
+
+def _within_alert_window(
+    open_dt: datetime,
+    close_dt: datetime,
+    now: datetime,
+    *,
+    ignore_closing_buffer: bool,
+) -> bool:
+    """Is `now` inside this park's alerting window? Clock is injected."""
+    cutoff = _alert_cutoff(close_dt, ignore_closing_buffer=ignore_closing_buffer)
+    return open_dt <= now <= cutoff
+
+
+def _park_day(when: datetime) -> date:
+    """The 4am-ET park-day `when` falls in.
+
+    Matches the analytics park-day convention exactly (4am ET → 4am ET
+    next calendar day), so a 12-3am poll attributes to the previous
+    park-day — the same rule get_ride_downtime_today uses on the MCP
+    side. Both args to _same_park_day are passed in rather than read
+    from the clock, per the inject-the-clock standing order.
+    """
+    et = when.astimezone(_EASTERN)
+    return (et - timedelta(hours=4)).date()
+
+
+def _same_park_day(earlier: datetime, later: datetime) -> bool:
+    """True when both instants land in the same 4am-ET park-day.
+
+    Gates the BACK UP alert against a stale DOWN_SINCE marker. A ride
+    that goes down at 8pm and is still down when the park closes leaves
+    its marker behind (it never recovered), and the ride reopening at
+    9am the next morning is not a recovery anyone wants pushed — it's
+    context-free noise about yesterday. Same-park-day keeps the genuine
+    case (down 10am, back 6pm, still in the park) while dropping the
+    overnight one.
+
+    This also contains the one-time deploy hazard from widening the
+    BACK UP guard: DOWN_SINCE rows orphaned by the old code (which only
+    ever cleared them on a DOWN→OPERATING recovery) are all from
+    previous park-days, so none of them can fire a phantom alert.
+    """
+    return _park_day(earlier) == _park_day(later)
+
+
 # Minutes of net drift (summed predicted − current across comparable
 # remaining rides) at/above which we nudge a re-plan. Env-tunable.
 PLAN_DRIFT_THRESHOLD_MIN = int(os.environ.get("PLAN_DRIFT_THRESHOLD_MIN", "30"))
@@ -247,31 +303,53 @@ def handler(event, context):
     # Returns True if alerts should fire for this park right now,
     # False during closed hours / closing buffer / when schedule
     # fetch fails (fail-open: see comment in _alerts_allowed).
-    alerts_allowed_cache: dict[str, bool] = {}
+    alerts_allowed_cache: dict[tuple[str, bool], bool] = {}
 
-    def alerts_allowed(park_key: str) -> bool:
-        if park_key in alerts_allowed_cache:
-            return alerts_allowed_cache[park_key]
+    def alerts_allowed(park_key: str, *, ignore_closing_buffer: bool = False) -> bool:
+        """Is this park inside the window where we're willing to alert?
+
+        `ignore_closing_buffer=True` extends the window to the park's
+        actual close time. BACK UP alerts pass it (2026-08-27); every
+        other alert type keeps the buffer.
+
+        The buffer exists to mute the closing-time wave of "X is DOWN"
+        pings nobody can act on. That reasoning is specific to bad
+        news: a ride coming back 20 minutes before close is genuinely
+        rideable — guests keep riding right up to close and past it as
+        the queue drains — and the buffer was silently eating exactly
+        those recoveries. Since a recovery always trails its own
+        outage, the shared cutoff was structurally biased: the DOWN
+        landed inside the window and its matching UP fell outside.
+        """
+        cache_key = (park_key, ignore_closing_buffer)
+        if cache_key in alerts_allowed_cache:
+            return alerts_allowed_cache[cache_key]
         hours = wait_times.fetch_park_hours(park_key)
         if hours is None:
             # Fail-open: if the schedule API is broken or returns
             # nothing, prefer to alert (data we miss is worse than
             # noise). This matches the Pi version's implicit behavior.
             print(f"[poller] No schedule for {park_key} — defaulting to alerts ON")
-            alerts_allowed_cache[park_key] = True
+            alerts_allowed_cache[cache_key] = True
             return True
         open_dt, close_dt = hours
         now_eastern = datetime.now(open_dt.tzinfo)
-        cutoff = close_dt - timedelta(minutes=CLOSING_BUFFER_MINS)
-        allowed = open_dt <= now_eastern <= cutoff
+        cutoff = _alert_cutoff(
+            close_dt, ignore_closing_buffer=ignore_closing_buffer
+        )
+        allowed = _within_alert_window(
+            open_dt, close_dt, now_eastern,
+            ignore_closing_buffer=ignore_closing_buffer,
+        )
         if not allowed:
             print(
                 f"[poller] {park_key}: alerts SUPPRESSED — "
                 f"now={now_eastern.strftime('%H:%M')}, "
                 f"open={open_dt.strftime('%H:%M')}, "
-                f"close-buffer={cutoff.strftime('%H:%M')}"
+                f"cutoff={cutoff.strftime('%H:%M')}"
+                f"{' (no closing buffer)' if ignore_closing_buffer else ''}"
             )
-        alerts_allowed_cache[park_key] = allowed
+        alerts_allowed_cache[cache_key] = allowed
         return allowed
 
     def get_subscribers(park_key: str) -> list[str]:
@@ -854,19 +932,56 @@ def handler(event, context):
                         if candidate.notifier_fn(user_key, **candidate.kwargs):
                             total_alerts += 1
 
-                # ── BACK UP: was DOWN, now OPERATING ───────────────────
-                elif new_status == "OPERATING" and old_status == "DOWN":
+                # ── BACK UP: the ride was down, and is operating again ─
+                # Guarded on "we hold a DOWN_SINCE marker for this ride",
+                # NOT on old_status == "DOWN" (widened 2026-08-27). The
+                # exact-match guard dropped the recovery alert on the
+                # floor whenever themeparks.wiki routed a recovery
+                # through an intermediate state — DOWN → CLOSED →
+                # OPERATING during an afternoon weather hold, DOWN →
+                # REFURBISHMENT → OPERATING — because by the time
+                # OPERATING landed, old_status was no longer DOWN.
+                # DOWN_SINCE is the durable "this ride owes us a
+                # recovery" marker and survives those hops.
+                #
+                # Note the asymmetry this closes: the DOWN branch above
+                # fires from ANY prior status, so a down was never lost
+                # this way. Only recoveries were.
+                elif new_status == "OPERATING":
                     went_down = db.get_down_since(ride_id)
+                    if went_down is None and old_status != "DOWN":
+                        # An ordinary open (CLOSED → OPERATING at park
+                        # open), not a recovery. Nothing owed.
+                        continue
                     actual_mins = None
-                    if went_down:
-                        actual_mins = round((now_dt - went_down).total_seconds() / 60)
-                    db.clear_down_since(ride_id)
+                    if went_down is not None:
+                        # Clear the marker before any gate below can
+                        # `continue` — a suppressed alert must not leave
+                        # the ride permanently owing a recovery.
+                        db.clear_down_since(ride_id)
+                        if not _same_park_day(went_down, now_dt):
+                            print(
+                                f"[poller] Skipping BACK UP alert for "
+                                f"{attr['name']} (down_since "
+                                f"{went_down.isoformat()} is a previous "
+                                f"park-day — the ride closed while still down)"
+                            )
+                            continue
+                        actual_mins = round(
+                            (now_dt - went_down).total_seconds() / 60
+                        )
+                    # else: old_status was DOWN but the marker is gone —
+                    # a lost/failed DOWN_SINCE write. It IS a recovery, so
+                    # alert without the downtime stat rather than drop it.
+                    # Preserves the pre-2026-08-27 fallback: losing a
+                    # recovery push costs the ride, losing "down for N
+                    # min" costs a line of trivia.
 
-                    # Park-hours gate also applies to "back up" alerts —
-                    # if we suppressed the DOWN alert at park-close, the
-                    # matching UP alert at park-open the next morning
-                    # would be confusing context-free noise.
-                    if not alerts_allowed(park_key):
+                    # Park-hours gate, but WITHOUT the closing buffer: a
+                    # ride coming back 20 min before close is genuinely
+                    # rideable. See alerts_allowed's docstring for why
+                    # the shared cutoff was biased against recoveries.
+                    if not alerts_allowed(park_key, ignore_closing_buffer=True):
                         continue
 
                     # Cooldown gate: flap protection. themeparks.wiki
@@ -949,8 +1064,20 @@ def handler(event, context):
                         if candidate.notifier_fn(user_key, **candidate.kwargs):
                             total_alerts += 1
 
-                # CLOSED transitions intentionally don't alert — too noisy
-                # at park closing time.
+                # ── Left DOWN for something that isn't OPERATING ────────
+                # DOWN → CLOSED at park close is the common one; a ride
+                # can also go DOWN → REFURBISHMENT. It didn't recover, so
+                # there is no alert to send — but clear the marker so it
+                # can't fire a phantom "back up" when the ride opens
+                # tomorrow. (Before 2026-08-27 only the recovery path
+                # cleared DOWN_SINCE, so every ride that closed while
+                # still down leaked its marker until its next outage
+                # overwrote it.)
+                elif old_status == "DOWN":
+                    db.clear_down_since(ride_id)
+
+                # Other CLOSED transitions intentionally don't alert —
+                # too noisy at park closing time.
             except Exception:
                 print(
                     f"[poller] ERROR processing ride "
