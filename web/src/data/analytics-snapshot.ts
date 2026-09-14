@@ -8,9 +8,9 @@
 // Regenerate by re-snapshotting the Pi and running:
 //   python3 tools/aggregate-analytics.py
 //
-// 93 rides × hourly + per-park hour×day heatmaps,
-// aggregated from 5,151,751 polls spanning
-// 2026-03-10 → 2026-09-13.
+// 94 rides × hourly + per-park hour×day heatmaps,
+// aggregated from 5,176,655 polls spanning
+// 2026-03-10 → 2026-09-14.
 
 import type { AnalyticsSnapshot } from "@/lib/analytics";
 import data from "./analytics-snapshot.json";
