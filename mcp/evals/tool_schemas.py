@@ -291,7 +291,38 @@ TOOLS: list[dict[str, Any]] = [
                         "properties": {
                             "date": {"type": "string"},
                             "park": {"type": "string"},
-                            "ride_sequence": {"type": "array", "items": {"type": "object"}},
+                            # ride_sequence was a shapeless {"type":
+                            # "object"} until 2026-10-10, mirroring the
+                            # same gap the real docstring had: with no
+                            # shape and no ride_id ask, the model wrote
+                            # name-only rides and held Lightning Lanes
+                            # (keyed by ride_id) could never be recorded
+                            # against them. Keep in sync with
+                            # create_trip's docstring in server.py.
+                            "ride_sequence": {
+                                "type": "array",
+                                "description": (
+                                    "Ordered rides for the day. ALWAYS "
+                                    "include ride_id on each entry — "
+                                    "get_planning_context returns it with "
+                                    "every ride, and held Lightning Lanes "
+                                    "are keyed by ride_id, so a day saved "
+                                    "with names only cannot have its LLs "
+                                    "recorded afterwards."
+                                ),
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "ride_name": {"type": "string"},
+                                        "ride_id": {"type": "string"},
+                                        "predicted_wait_min": {
+                                            "type": ["integer", "null"]
+                                        },
+                                        "position": {"type": "integer"},
+                                    },
+                                    "required": ["ride_name", "ride_id"],
+                                },
+                            },
                             "show_selections": {"type": "array", "items": {"type": "object"}},
                             "plan_window": {"type": "object"},
                             "notes": {"type": "string"},

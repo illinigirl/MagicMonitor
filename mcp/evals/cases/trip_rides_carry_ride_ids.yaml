@@ -1,0 +1,170 @@
+# Twelfth eval case — the create_trip ride_id contract.
+#
+# The behavioral half of the 2026-10-10 fix. The code-level half is
+# covered by tests/test_ride_id_resolution.py (write-time resolution
+# against the park catalog). What a unit test CANNOT cover is whether
+# Claude, reading create_trip's docstring at runtime, actually sends
+# ride_ids in the first place — and that is exactly what went wrong:
+#
+#   create_trip's docstring described ride_sequence as an opaque
+#   `[...]` with no entry shape and no ride_id ask, while record_plan's
+#   spelled the shape out and said "Include the ride_id field". Claude
+#   filled create_trip's sequence with ride NAMES only. ll_holds is a
+#   DDB map keyed by ride_id, so all four Lightning Lanes on the
+#   2026-10-17 EPCOT day were refused by set_held_ll.
+#
+# The scenario is that real failure, reduced to one day: a future EPCOT
+# day with four LL'd headliners. get_planning_context hands back rides
+# WITH ride_ids, so the ids are right there to copy — the pre-fix
+# failure was never a lack of available data.
+#
+# What we assert:
+#   - create_trip is called (future-dated build path, not record_plan).
+#   - EVERY ride_sequence entry across every day carries a non-empty
+#     ride_id. This is the lock: it fails if Claude sends names only,
+#     and it cannot pass vacuously (the assertion errors when no rides
+#     are found at all).
+#   - No day is activated — it's a week out.
+#
+# What we deliberately do NOT assert:
+#   - Which rides Claude picks, or their order. The user named four
+#     headliners but left the rest open; pinning the sequence would
+#     over-fit.
+#   - Anything about set_held_ll. It is not on the eval tool surface
+#     (see evals/tool_schemas.py), so Claude cannot call it here.
+#     The ride_id assertion is what makes it work later, and that
+#     is precisely what this case locks.
+
+name: trip_rides_carry_ride_ids
+description: >
+  Verifies Claude includes ride_id on every create_trip ride_sequence
+  entry, so held Lightning Lanes (keyed by ride_id) can be recorded
+  against the saved day. Regression guard for the 2026-10-17 EPCOT
+  failure where a name-only trip made set_held_ll impossible.
+
+prompt: >
+  Save next Saturday the 17th as a one-day EPCOT trip for the four of
+  us. We've got Lightning Lanes for Spaceship Earth, Soarin', Guardians
+  and Test Track, and we want to rope-drop Remy and Frozen before that.
+  Just get the day on file — we'll sort the exact timings later.
+
+tool_responses:
+  get_upcoming_trip:
+    response:
+      user_id: megan
+      found: false
+      note: "No upcoming trip."
+
+  get_user_plan_history:
+    response:
+      plans: []
+      calibration_summary: null
+
+  # Every ride comes back WITH its ride_id — copying them into the
+  # trip is a lookup, not a guess.
+  get_planning_context:
+    response:
+      park_key: epcot
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "21:00"
+        extra_evening_hours: null
+      weather_summary:
+        forecast_high_f: 84
+        forecast_low_f: 68
+        rain_chance_pct: 20
+      rides:
+        - ride_id: remys-ratatouille-adventure
+          ride_name: "Remy's Ratatouille Adventure"
+          status: OPERATING
+          wait_mins: 55
+          forecast:
+            typical_wait_now: 60
+            confidence: high
+        - ride_id: frozen-ever-after
+          ride_name: "Frozen Ever After"
+          status: OPERATING
+          wait_mins: 50
+          forecast:
+            typical_wait_now: 55
+            confidence: high
+        - ride_id: spaceship-earth
+          ride_name: "Spaceship Earth"
+          status: OPERATING
+          wait_mins: 15
+          forecast:
+            typical_wait_now: 20
+            confidence: high
+        - ride_id: soarin-around-the-world
+          ride_name: "Soarin' Around the World"
+          status: OPERATING
+          wait_mins: 40
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+        - ride_id: guardians-cosmic-rewind
+          ride_name: "Guardians of the Galaxy: Cosmic Rewind"
+          status: OPERATING
+          wait_mins: 105
+          forecast:
+            typical_wait_now: 100
+            confidence: high
+        - ride_id: test-track
+          ride_name: "Test Track"
+          status: OPERATING
+          wait_mins: 110
+          forecast:
+            typical_wait_now: 100
+            confidence: high
+        - ride_id: living-with-the-land
+          ride_name: "Living with the Land"
+          status: OPERATING
+          wait_mins: 20
+          forecast:
+            typical_wait_now: 20
+            confidence: medium
+      currently_down_in_park: []
+
+  create_trip:
+    response:
+      trip_id: "2026-10-17_1760000000"
+      name: "October EPCOT day"
+      start_date: "2026-10-17"
+      end_date: "2026-10-17"
+      days:
+        - date: "2026-10-17"
+          park_key: epcot
+          plan_id: "2026-10-10T14:00:00.000001+00:00"
+      next_step_hint: >
+        Trip created — the day is dormant (no alerts). On the day, call
+        activate_plan to re-evaluate against live conditions and start
+        monitoring.
+
+  # Defined so either follow-up route resolves cleanly. Not asserted on.
+  record_plan:
+    response:
+      ok: true
+      plan_id: "2026-10-10T14:05:00+00:00"
+      user_id: megan
+      park_key: epcot
+      planned_for_date: "2026-10-17"
+      trip_id: "2026-10-17_1760000000"
+      active: false
+      expires_at_epoch: 1760745600
+
+assertions:
+  - tool_called: create_trip
+
+  # THE lock. Every ride on every day must carry a ride_id — a
+  # name-only sequence is the exact shape that broke set_held_ll.
+  - tool_called_with:
+      tool: create_trip
+      args_nested_items_have_keys:
+        path: [days, ride_sequence]
+        keys: [ride_id]
+
+  # A week out: dormant, not activated.
+  - tool_not_called: activate_plan
+
+  - stop_reason: end_turn

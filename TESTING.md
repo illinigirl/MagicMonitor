@@ -118,13 +118,23 @@ drift. The eval framework in `mcp/evals/` exists for this category.
 
 **Defense:** when adding a new MCP tool, changing a docstring, or
 changing the agentic planner's instructions, add an eval case that
-exercises the new behavior. The existing 10 cases cover the core
+exercises the new behavior. The existing 13 cases cover the core
 planning flow (happy path, write-side guardrail, context-reading,
-personalization, calibration, ambiguity resolution) plus the M5
+personalization, calibration, ambiguity resolution), the M5
 multi-day surface (future trip build, on-the-day activation,
-future-day lookup, single future-dated record, trip deletion); new
-dimensions deserve new cases. Run `pytest evals/` from `mcp/`
-before merging.
+future-day lookup, single future-dated record, trip deletion), and
+two contract guards added 2026-10-10 (`trip_rides_carry_ride_ids`,
+`party_night_full_window`); new dimensions deserve new cases. Run
+`pytest evals/` from `mcp/` before merging.
+
+**The eval surface is a SECOND copy of the contract.**
+`evals/tool_schemas.py` holds Anthropic-API tool definitions that
+mirror the MCP docstrings by hand. On 2026-10-10 the create_trip
+`ride_sequence` gap existed in BOTH — a shapeless
+`{"type": "object"}` next to an opaque `[...]` docstring — so an
+eval could not have caught the bug it was meant to guard. When you
+change a tool's docstring, update the matching schema in the same
+pass or the eval tests a contract that no longer exists.
 
 ### Multi-source alert dispatch picking the wrong winner
 

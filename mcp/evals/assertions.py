@@ -61,7 +61,22 @@ def _assert_tool_called_with(spec: dict[str, Any], trace: Trace) -> None:
         "args_min_length": { "<arg>": <int> },  # optional
         "args_max_length": { "<arg>": <int> },  # optional
         "args_equal": { "<arg>": <value> },     # optional
+        "args_nested_items_have_keys": {        # optional
+            "path": ["days", "ride_sequence"],
+            "keys": ["ride_id"],
+        },
     }
+
+    args_nested_items_have_keys walks `path` — each step a list, the
+    first naming a top-level argument and the rest a key on the items
+    of the previous list — and requires every leaf dict to carry each
+    of `keys` with a non-empty value. At least one leaf must exist, so
+    an empty list can't satisfy it vacuously.
+
+    Added 2026-10-10 for the create_trip ride_id contract: the tool's
+    docstring now asks for ride_id on every ride_sequence entry, and
+    the whole point of the fix is that name-only entries are what broke
+    set_held_ll. Nothing else here can assert on nested list items.
     """
     name = spec.get("tool")
     if not name:
@@ -73,6 +88,7 @@ def _assert_tool_called_with(spec: dict[str, Any], trace: Trace) -> None:
     min_lens: dict[str, int] = spec.get("args_min_length", {}) or {}
     max_lens: dict[str, int] = spec.get("args_max_length", {}) or {}
     equals: dict[str, Any] = spec.get("args_equal", {}) or {}
+    nested: dict[str, Any] = spec.get("args_nested_items_have_keys", {}) or {}
 
     # Find at least one call that satisfies every constraint.
     last_failure: str | None = None
@@ -101,6 +117,38 @@ def _assert_tool_called_with(spec: dict[str, Any], trace: Trace) -> None:
                         f"call to '{name}' had {arg_name}={actual_val!r}, "
                         f"expected {expected_val!r}"
                     )
+            if nested:
+                path = list(nested.get("path") or [])
+                keys = list(nested.get("keys") or [])
+                if not path or not keys:
+                    raise ValueError(
+                        "args_nested_items_have_keys needs 'path' and 'keys'"
+                    )
+                level = tc.arguments.get(path[0]) or []
+                if not isinstance(level, list):
+                    raise AssertionError(
+                        f"call to '{name}': {path[0]} is not a list"
+                    )
+                for step in path[1:]:
+                    nxt: list[Any] = []
+                    for item in level:
+                        if isinstance(item, dict):
+                            sub = item.get(step) or []
+                            if isinstance(sub, list):
+                                nxt.extend(sub)
+                    level = nxt
+                if not level:
+                    raise AssertionError(
+                        f"call to '{name}': no items found at "
+                        f"{'.'.join(path)} — nothing to check"
+                    )
+                for leaf in level:
+                    for k in keys:
+                        if not str((leaf or {}).get(k) or "").strip():
+                            raise AssertionError(
+                                f"call to '{name}': item at "
+                                f"{'.'.join(path)} missing '{k}': {leaf!r}"
+                            )
             return  # this call satisfied everything
         except AssertionError as e:
             last_failure = str(e)

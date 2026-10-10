@@ -1,0 +1,167 @@
+# Thirteenth eval case — hard-ticket party nights are open hours.
+#
+# The behavioral half of the party-night fix. Timeline:
+#
+#   themeparks.wiki splits a party day into a daytime OPERATING block
+#   (9am-6pm) and a separate TICKETED_EVENT block for the party itself
+#   (7pm-midnight). Both the poller's fetch_park_hours and the MCP's
+#   _fetch_park_hours_today counted only OPERATING + EXTRA_HOURS.
+#
+#   - 2026-08-27 (a5fb254): fixed in the poller, which had been
+#     switching every alert off at the 5:30pm closing-buffer cutoff for
+#     the exact five hours a party guest is inside riding things.
+#   - 2026-10-10: fixed on the MCP side, which had been reporting a 6pm
+#     Magic Kingdom close to the planner.
+#
+# The unit tests (tests/test_ride_id_resolution.py) pin the filter and
+# assert the MCP tuple still matches the poller's. What they can't
+# cover is the consequence that actually reaches the user: given hours
+# that run to midnight, does Claude plan the evening, or does it still
+# wrap the night up early? A planner that stops at 6pm on a party night
+# is the "plausible-but-wrong output" this suite exists for — it reads
+# as a perfectly sensible plan unless you know the park is open.
+#
+# The user holds party tickets and says so, and park_hours now reports
+# the merged window (09:00-23:59). Both facts point the same way.
+#
+# What we assert:
+#   - Claude reads live context for the park (the flow starts).
+#   - The response shows it is planning PAST the old 6pm cutoff —
+#     midnight, "after 7", "late", "rest of the night". That is the
+#     observable difference between the fixed and broken behavior.
+#
+# What we deliberately do NOT assert:
+#   - That record_plan is called. The prompt asks "what should we do
+#     with the rest of the night?" — a proposal request, and this suite
+#     already codifies propose-without-recording as correct behavior
+#     (see propose_without_recording). Asserting a write here failed
+#     the case on correct output the first time it ran.
+#   - The words "party" / "MNSSHP" on their own. The USER says them in
+#     the prompt, so Claude echoing them back is no evidence it
+#     understood the hours. Only the late-window phrasings are.
+#   - "evening" on its own — 4-6pm is also the evening, so it does not
+#     distinguish fixed from broken.
+#   - That the response never says "closes at 6". On a party night the
+#     park genuinely does close at 6 for non-party guests, so Claude
+#     explaining that is CORRECT output, not the bug. A negative
+#     assertion here would fail good answers.
+#   - Specific rides or an exact itinerary. Which headliners belong in
+#     a party window is a judgment call, not a contract.
+
+name: party_night_full_window
+description: >
+  Verifies Claude plans the full hard-ticket party window rather than
+  treating the 6pm daytime close as the end of the night. Regression
+  guard for the party-night park-hours bug (poller 2026-08-27, MCP
+  2026-10-10).
+
+prompt: >
+  We're at Magic Kingdom tonight for Mickey's Not-So-Scary Halloween
+  Party — we've got party tickets. It's 4pm and we just got back to the
+  park from the hotel. What should we do with the rest of the night?
+
+tool_responses:
+  get_upcoming_trip:
+    response:
+      user_id: megan
+      found: false
+      note: "No upcoming trip."
+
+  get_user_plan_history:
+    response:
+      plans: []
+      calibration_summary: null
+
+  # park_hours is the merged alertable window: the daytime OPERATING
+  # block plus the TICKETED_EVENT party block. Pre-fix this said
+  # close "18:00" and the planner believed the night ended at 6.
+  get_planning_context:
+    response:
+      park_key: magic_kingdom
+      park_open_now: true
+      park_hours:
+        open: "09:00"
+        close: "23:59"
+        extra_evening_hours: null
+        note: >
+          Hard-ticket party night (MNSSHP). The window merges the
+          daytime operating block with the 7pm-midnight party block;
+          the 6-7pm changeover hour is inside it.
+      weather_summary:
+        forecast_high_f: 88
+        forecast_low_f: 72
+        rain_chance_pct: 10
+      rides:
+        - ride_id: seven-dwarfs-mine-train
+          ride_name: "Seven Dwarfs Mine Train"
+          status: OPERATING
+          wait_mins: 65
+          forecast:
+            typical_wait_now: 70
+            confidence: high
+        - ride_id: space-mountain
+          ride_name: "Space Mountain"
+          status: OPERATING
+          wait_mins: 45
+          forecast:
+            typical_wait_now: 35
+            confidence: high
+        - ride_id: big-thunder-mountain
+          ride_name: "Big Thunder Mountain Railroad"
+          status: OPERATING
+          wait_mins: 35
+          forecast:
+            typical_wait_now: 30
+            confidence: high
+        - ride_id: haunted-mansion
+          ride_name: "Haunted Mansion"
+          status: OPERATING
+          wait_mins: 40
+          forecast:
+            typical_wait_now: 45
+            confidence: high
+        - ride_id: peter-pans-flight
+          ride_name: "Peter Pan's Flight"
+          status: OPERATING
+          wait_mins: 50
+          forecast:
+            typical_wait_now: 40
+            confidence: medium
+        - ride_id: tron-lightcycle-run
+          ride_name: "TRON Lightcycle / Run"
+          status: OPERATING
+          wait_mins: 80
+          forecast:
+            typical_wait_now: 55
+            confidence: high
+      currently_down_in_park: []
+
+  record_plan:
+    response:
+      ok: true
+      plan_id: "2026-10-10T16:05:00+00:00"
+      user_id: megan
+      park_key: magic_kingdom
+      planned_for_date: "2026-10-10"
+      active: true
+      expires_at_epoch: 1760500000
+
+assertions:
+  - tool_called: get_planning_context
+
+  # THE lock: evidence Claude is planning past the old 6pm cutoff.
+  # Deliberately excludes "party"/"MNSSHP" (the user said those) and
+  # bare "evening" (4-6pm is evening too) — neither distinguishes the
+  # fixed behavior from the broken one.
+  - response_mentions_any:
+      - midnight
+      - "11:59"
+      - "after 7"
+      - "7pm"
+      - "7 pm"
+      - "late night"
+      - "rest of the night"
+      - "all night"
+      - "until close"
+
+  - stop_reason: end_turn
