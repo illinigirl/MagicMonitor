@@ -12,7 +12,7 @@ new DisneyStack(app, "DisneyStack", {
     account: "601669029997",
     region: "us-east-2",
   },
-  description: "Disney parks ride-status alerter — phase 1 (poller + Pushover)",
+  description: "Disney parks ride-status alerter - phase 1 (poller + Pushover)",
 });
 
 // Net-new stack for the HTTPS MCP transport (M9 Phase 1). Intentionally
@@ -20,5 +20,5 @@ new DisneyStack(app, "DisneyStack", {
 // touching any of the customer-facing resources. References the
 // DisneyData table by name rather than via cross-stack ref.
 new DisneyMcpStack(app, "DisneyMcpStack", {
-  description: "HTTPS MCP transport for Claude mobile — M9 Phase 1, session 1 (bearer-token v1)",
+  description: "HTTPS MCP transport for Claude mobile - M9 Phase 1, session 1 (bearer-token v1)",
 });

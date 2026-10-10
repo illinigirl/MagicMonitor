@@ -498,7 +498,7 @@ export class DisneyMcpStack extends cdk.Stack {
         allowedSubs.split(",").map((s) => s.trim()).filter(Boolean).length,
       ),
       description:
-        "How many Cognito subs are allowlisted (sanity check after deploy — should match expected user count)",
+        "How many Cognito subs are allowlisted (sanity check after deploy - should match expected user count)",
     });
   }
 }

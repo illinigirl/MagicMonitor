@@ -473,11 +473,11 @@ export class DisneyStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, "PollerFunctionName", {
       value: pollerFn.functionName,
-      description: "Poller Lambda — invoke manually with `aws lambda invoke` to test",
+      description: "Poller Lambda - invoke manually with `aws lambda invoke` to test",
     });
     new cdk.CfnOutput(this, "PollerLogGroup", {
       value: `/aws/lambda/${pollerFn.functionName}`,
-      description: "CloudWatch log group — `aws logs tail` to watch live",
+      description: "CloudWatch log group - `aws logs tail` to watch live",
     });
 
     // ═════════════════════════════════════════════════════════════════
@@ -909,15 +909,15 @@ export class DisneyStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, "AmplifyDefaultUrl", {
       value: `https://${mainBranch.branchName}.${webApp.defaultDomain}`,
-      description: "Default *.amplifyapp.com URL — works alongside the custom domain",
+      description: "Default *.amplifyapp.com URL - works alongside the custom domain",
     });
     new cdk.CfnOutput(this, "AmplifyCustomUrl", {
       value: `https://${APP_DOMAIN}`,
-      description: "Public URL (custom domain) — primary user-facing URL",
+      description: "Public URL (custom domain) - primary user-facing URL",
     });
     new cdk.CfnOutput(this, "AmplifyDomainStatus", {
       value: webAppCustomDomain.domainName,
-      description: "Custom domain attached to Amplify app — see console for production CNAME target",
+      description: "Custom domain attached to Amplify app - see console for production CNAME target",
     });
     new cdk.CfnOutput(this, "CognitoClientId", {
       value: userPoolClient.userPoolClientId,
@@ -925,7 +925,7 @@ export class DisneyStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, "CognitoIssuer", {
       value: cognitoIssuer,
-      description: "OIDC issuer URL — NextAuth uses this to fetch JWKS",
+      description: "OIDC issuer URL - NextAuth uses this to fetch JWKS",
     });
     new cdk.CfnOutput(this, "CognitoDomainUrl", {
       value: COGNITO_DOMAIN_URL,
