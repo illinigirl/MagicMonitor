@@ -381,6 +381,21 @@ def _fetch_park_currently_down(table, park_key: str) -> list[dict] | None:
     return out
 
 
+# Schedule block types that count as "the park is open and rides are
+# running". Must stay in sync with the poller's ALERTABLE_SCHEDULE_TYPES
+# (wait_times.py) — this module's whole contract is that the planner sees
+# the same hours the alert filter uses.
+#
+# TICKETED_EVENT added 2026-10-10, trailing the poller's 2026-08-27 fix
+# (a5fb254): on a hard-ticket party night themeparks.wiki splits the day
+# into a daytime OPERATING block (9am-6pm) and a separate TICKETED_EVENT
+# block for the party (7pm-midnight). Counting only OPERATING made the
+# planner report a 6pm Magic Kingdom close on MNSSHP/MVMCP/After Hours
+# nights, so Claude planned around a close that wasn't real — for the
+# exact five hours a party guest is inside riding things.
+_ALERTABLE_SCHEDULE_TYPES = ("OPERATING", "EXTRA_HOURS", "TICKETED_EVENT")
+
+
 def _fetch_park_hours_today(park_key: str) -> dict[str, Any] | None:
     """Fetch today's open/close window for a park from themeparks.wiki.
 
@@ -388,6 +403,13 @@ def _fetch_park_hours_today(park_key: str) -> dict[str, Any] | None:
     sees the same hours the alert filter uses. Returns a dict with
     open + close ISO timestamps (with timezone), or None on failure
     (the planner can degrade gracefully if hours aren't available).
+
+    Every _ALERTABLE_SCHEDULE_TYPES block merges into one span (earliest
+    open → latest close). On a party night that spans the 6-7pm
+    changeover hour when the park really is empty — accepted
+    deliberately, same tradeoff the poller documents: rides read CLOSED
+    through it, and modelling disjoint windows costs more than the hour
+    of slack it would save.
     """
     park_ids = {
         "magic_kingdom":     "75ea578a-adc8-4116-a54d-dccb60765ef9",
@@ -414,7 +436,7 @@ def _fetch_park_hours_today(park_key: str) -> dict[str, Any] | None:
     for entry in data.get("schedule", []):
         if entry.get("date") != today_local:
             continue
-        if entry.get("type") not in ("OPERATING", "EXTRA_HOURS"):
+        if entry.get("type") not in _ALERTABLE_SCHEDULE_TYPES:
             continue
         try:
             o = datetime.fromisoformat(entry["openingTime"])
@@ -2667,6 +2689,51 @@ def _norm_ride_name(s: str) -> str:
     return " ".join(_re.split(r"[^a-z0-9]+", s.lower())).strip()
 
 
+def _match_name_ladder(
+    items: list[dict[str, Any]],
+    query: str,
+    name_key: str,
+    id_key: str = "ride_id",
+) -> tuple[dict[str, Any] | None, str, list[dict[str, Any]]]:
+    """The shared ride-matching ladder:
+      1. exact id;
+      2. punctuation-normalized exact name ('mission space' ==
+         'Mission: SPACE');
+      3. normalized substring — but ONLY when exactly one item matches.
+
+    Returns (item, status, candidates) where status is "ok", "ambiguous"
+    (candidates populated) or "none".
+
+    Callers format their own error payloads so "not in this plan" and
+    "not in this park" stay DISTINCT messages. Collapsing two different
+    failures into one error string is what made the 2026-10-10
+    set_held_ll failure read as a name-matching bug when the name
+    matched fine and the ride_id was simply absent.
+
+    Extracted 2026-10-10 so the plan matcher and the park-catalog
+    resolver can't drift apart — the ladder's hardening is the product
+    of a real wrong-ride incident (see match_plan_ride) and is worth
+    having exactly once.
+    """
+    q_raw = (query or "").strip()
+    q = _norm_ride_name(q_raw)
+    for it in items:
+        if it.get(id_key) == q_raw:
+            return it, "ok", []
+    for it in items:
+        if _norm_ride_name(it.get(name_key) or "") == q:
+            return it, "ok", []
+    partial = [
+        it for it in items
+        if q and q in _norm_ride_name(it.get(name_key) or "")
+    ]
+    if len(partial) == 1:
+        return partial[0], "ok", []
+    if len(partial) > 1:
+        return None, "ambiguous", partial
+    return None, "none", []
+
+
 def match_plan_ride(
     ride_sequence: list[dict[str, Any]],
     query: str,
@@ -2674,36 +2741,30 @@ def match_plan_ride(
     """Resolve a user-supplied ride reference against a plan's own
     ride_sequence. Returns (ride, None) or (None, error_payload).
 
-    Matching ladder — hardened 2026-07-04 after first-substring-wins
-    silently put a hold on the wrong ride TWICE ('space' matches
-    'SpaceSHIP Earth' before 'Mission: SPACE', and the colon defeats an
-    exact-name match):
-      1. exact ride_id;
-      2. punctuation-normalized exact name ('mission space' ==
-         'Mission: SPACE');
-      3. normalized substring — but ONLY when exactly one ride matches.
-         Multiple matches return an AMBIGUOUS error naming the
-         candidates instead of guessing; zero matches say so.
+    Matching ladder (see _match_name_ladder) — hardened 2026-07-04 after
+    first-substring-wins silently put a hold on the wrong ride TWICE
+    ('space' matches 'SpaceSHIP Earth' before 'Mission: SPACE', and the
+    colon defeats an exact-name match). Multiple matches return an
+    AMBIGUOUS error naming the candidates instead of guessing; zero
+    matches say so.
+
+    NOTE: a returned ride is "in the plan" — it is NOT guaranteed to
+    carry a ride_id. Callers that need the id must check for it and say
+    so distinctly; see set_held_ll.
     """
     q_raw = (query or "").strip()
-    q = _norm_ride_name(q_raw)
     if not q_raw:
         return None, {"error": "Ride required",
                       "error_message": "Pass a ride name or ride_id."}
-    for r in ride_sequence:
-        if r.get("ride_id") == q_raw:
-            return r, None
-    for r in ride_sequence:
-        if _norm_ride_name(r.get("ride_name") or "") == q:
-            return r, None
-    partial = [
-        r for r in ride_sequence
-        if q and q in _norm_ride_name(r.get("ride_name") or "")
-    ]
-    if len(partial) == 1:
-        return partial[0], None
-    if len(partial) > 1:
-        names = ", ".join(sorted(r.get("ride_name") or "?" for r in partial))
+    match, status, candidates = _match_name_ladder(
+        ride_sequence, q_raw, "ride_name"
+    )
+    if status == "ok":
+        return match, None
+    if status == "ambiguous":
+        names = ", ".join(
+            sorted(r.get("ride_name") or "?" for r in candidates)
+        )
         return None, {
             "error": "Ambiguous ride",
             "error_message": (
@@ -2715,6 +2776,83 @@ def match_plan_ride(
         "error": "Ride not in plan",
         "error_message": f"'{q_raw}' doesn't match any ride in the plan.",
     }
+
+
+def resolve_ride_sequence_ids(
+    table,
+    ride_sequence: list[dict[str, Any]],
+    park_key: str,
+) -> dict[str, Any] | None:
+    """Fill in any missing `ride_id` on a ride_sequence IN PLACE, by
+    matching each entry's ride_name against that park's own STATE-row
+    catalog. Returns an error payload on the first unresolvable entry,
+    else None.
+
+    Why this exists (2026-10-10): create_trip documented ride_sequence
+    as an opaque `[...]` and wrote it through verbatim, so name-only
+    entries reached the table. `ll_holds` is a DDB map KEYED by ride_id
+    (apply_held_ll) and the poller reads it by ride_id, so a hold
+    cannot physically be stored for an id-less ride — set_held_ll
+    failed on all four Lightning Lanes of the 2026-10-17 EPCOT day.
+    Resolving at write time makes that row un-writable rather than
+    merely discouraged by a docstring.
+
+    FAIL LOUD on ambiguity or no match — same stance as
+    normalize_ride_targets. A silently dropped ride_id is the dropped
+    ll_holds bug class wearing a different hat.
+
+    Cost: ONE bounded GSI partition Query (O(rides-in-park),
+    independent of table size), and only when some entry is missing an
+    id — a fully-specified ride_sequence does no reads at all.
+    """
+    missing = [
+        r for r in ride_sequence
+        if not str(r.get("ride_id") or "").strip()
+    ]
+    if not missing:
+        return None
+    catalog = _convert_decimals(_park_state_rows_via_gsi(table, park_key))
+    if not catalog:
+        return {
+            "error": "Ride catalog unavailable",
+            "error_message": (
+                f"No ride catalog found for park '{park_key}', so the "
+                f"{len(missing)} ride(s) without a ride_id could not be "
+                "resolved — nothing was saved."
+            ),
+        }
+    for r in missing:
+        name = str(r.get("ride_name") or "").strip()
+        if not name:
+            return {
+                "error": "Ride needs a name or id",
+                "error_message": (
+                    "A ride_sequence entry has neither ride_name nor "
+                    f"ride_id: {r!r} — nothing was saved."
+                ),
+            }
+        match, status, candidates = _match_name_ladder(catalog, name, "name")
+        if status == "ambiguous":
+            names = ", ".join(sorted(c.get("name") or "?" for c in candidates))
+            return {
+                "error": "Ambiguous ride",
+                "error_message": (
+                    f"'{name}' matches more than one ride in {park_key} "
+                    f"({names}). Use the exact name or pass ride_id — "
+                    "nothing was saved."
+                ),
+            }
+        if status == "none":
+            return {
+                "error": "Unknown ride",
+                "error_message": (
+                    f"'{name}' doesn't match any ride in {park_key}. Check "
+                    "the name against get_planning_context, or pass "
+                    "ride_id — nothing was saved."
+                ),
+            }
+        r["ride_id"] = match.get("ride_id")
+    return None
 
 
 def resolve_ll_holds(

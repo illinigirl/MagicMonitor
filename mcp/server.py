@@ -1745,9 +1745,20 @@ def create_trip(
         days: Ordered list, one per trip day. Each entry:
             {"date": "YYYY-MM-DD" (required),
              "park": park key/name (required),
-             "ride_sequence": [...] (optional — can be filled in later
-                 per day via record_plan with this trip_id, or
-                 add_ride_to_plan),
+             "ride_sequence": [...] (optional) — ordered rides, SAME
+                 entry shape record_plan takes: {"ride_name": str,
+                 "ride_id": str, "predicted_wait_min": int | null,
+                 "position": int}. **Include the `ride_id` field** — it
+                 comes back with every ride in get_planning_context's
+                 response. Held Lightning Lanes are keyed by ride_id, so
+                 a day saved with names only cannot have its LLs
+                 recorded by set_held_ll afterwards. An entry missing an
+                 id is resolved against that park's ride catalog at
+                 write time, and the whole call fails (writing nothing)
+                 if a name is ambiguous or unknown — so prefer passing
+                 ride_id. May also be omitted and filled in later per
+                 day via record_plan with this trip_id, or
+                 add_ride_to_plan,
              "show_selections": [...] (optional),
              "plan_window": {"open","close"} (optional),
              "notes": str (optional)}
@@ -1789,10 +1800,34 @@ def create_trip(
             park_key = _normalize_park(park)
         except ValueError as e:
             return {"error": "Invalid day park", "error_message": f"day {i}: {e}"}
+        # Resolve ride_name → ride_id against the park's catalog BEFORE any
+        # write. ll_holds is a map keyed by ride_id, so a name-only
+        # ride_sequence yields a day whose Lightning Lanes can never be
+        # recorded — that's the 2026-10-17 EPCOT failure, where all four
+        # set_held_ll calls were refused. Inside the validate-everything
+        # loop deliberately: a bad name aborts the whole trip rather than
+        # leaving a half-written one.
+        ride_sequence = day.get("ride_sequence") or []
+        if ride_sequence:
+            try:
+                ids_err = _tool_impls.resolve_ride_sequence_ids(
+                    _ddb_table(), ride_sequence, park_key
+                )
+            except Exception as e:
+                err = _aws_error_payload(e)
+                return err if err is not None else {
+                    "error": "Ride id resolution failed",
+                    "error_message": f"day {i}: {e}",
+                }
+            if ids_err is not None:
+                ids_err["error_message"] = (
+                    f"day {i}: {ids_err['error_message']}"
+                )
+                return ids_err
         normalized.append({
             "date": date_str,
             "park_key": park_key,
-            "ride_sequence": day.get("ride_sequence") or [],
+            "ride_sequence": ride_sequence,
             "show_selections": day.get("show_selections") or [],
             "plan_window": day.get("plan_window"),
             "notes": day.get("notes"),

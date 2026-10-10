@@ -1746,6 +1746,14 @@ def create_trip(name: str, days: list[dict[str, Any]]) -> dict[str, Any]:
         days: Ordered list, one per day. Each: {"date":"YYYY-MM-DD",
             "park": key/name, "ride_sequence"?:[...], "show_selections"?,
             "plan_window"?:{open,close}, "notes"?}.
+            ride_sequence entries take record_plan's shape:
+            {"ride_name", "ride_id", "predicted_wait_min", "position"}.
+            **Include the `ride_id`** — get_planning_context returns it
+            with every ride. Held Lightning Lanes are keyed by ride_id,
+            so a names-only day cannot have its LLs recorded by
+            set_held_ll afterwards. An id-less entry is resolved against
+            that park's catalog at write time, and an ambiguous or
+            unknown name fails the whole call without writing.
 
     Returns:
         Dict with trip_id, name, start_date, end_date, days [{date,
@@ -1772,10 +1780,34 @@ def create_trip(name: str, days: list[dict[str, Any]]) -> dict[str, Any]:
             park_key = _normalize_park(park)
         except ValueError as e:
             return {"error": "Invalid day park", "error_message": f"day {i}: {e}"}
+        # Resolve ride_name → ride_id against the park's catalog BEFORE any
+        # write. ll_holds is a map keyed by ride_id, so a name-only
+        # ride_sequence yields a day whose Lightning Lanes can never be
+        # recorded — the 2026-10-17 EPCOT failure, where all four
+        # set_held_ll calls were refused. Inside the validate-everything
+        # loop deliberately: a bad name aborts the whole trip rather than
+        # leaving a half-written one.
+        ride_sequence = day.get("ride_sequence") or []
+        if ride_sequence:
+            try:
+                ids_err = _tool_impls.resolve_ride_sequence_ids(
+                    _ddb_table(), ride_sequence, park_key
+                )
+            except Exception as e:
+                err = _aws_error_payload(e)
+                return err if err is not None else {
+                    "error": "Ride id resolution failed",
+                    "error_message": f"day {i}: {e}",
+                }
+            if ids_err is not None:
+                ids_err["error_message"] = (
+                    f"day {i}: {ids_err['error_message']}"
+                )
+                return ids_err
         normalized.append({
             "date": date_str,
             "park_key": park_key,
-            "ride_sequence": day.get("ride_sequence") or [],
+            "ride_sequence": ride_sequence,
             "show_selections": day.get("show_selections") or [],
             "plan_window": day.get("plan_window"),
             "notes": day.get("notes"),
@@ -2576,9 +2608,26 @@ def set_held_ll(
         )
         if match_err is not None:
             return match_err
-        if not match.get("ride_id"):
-            return {"error": "Ride not in plan",
-                    "error_message": f"'{ride}' isn't in the plan for {target}."}
+        if not str(match.get("ride_id") or "").strip():
+            # The name DID match a plan ride — it just carries no ride_id,
+            # so there is no key to write ll_holds under (apply_held_ll
+            # keys that map by ride_id and the poller reads it the same
+            # way). Reporting this as "Ride not in plan" sent the
+            # 2026-10-17 EPCOT debugging down a matching-logic dead end
+            # for all four Lightning Lanes; name the real problem and the
+            # way out. create_trip now resolves ids at write time, so new
+            # plans can't land here — this covers rows written before
+            # that fix.
+            return {
+                "error": "Plan ride has no ride_id",
+                "error_message": (
+                    f"'{match.get('ride_name') or ride}' is in the plan for "
+                    f"{target} but was saved without a ride_id, and held "
+                    "Lightning Lanes are keyed by ride_id. Re-save the day "
+                    "with record_plan including each ride's ride_id (from "
+                    "get_planning_context), then set the hold."
+                ),
+            }
         ride_id = match["ride_id"]
         held_iso = None
         if return_time:
