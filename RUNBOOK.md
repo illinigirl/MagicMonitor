@@ -489,6 +489,61 @@ aws cognito-idp describe-user-pool-client \
 Paste the result into `web/.env.local` as `COGNITO_CLIENT_SECRET`.
 See `web/.env.local.example` for the full local-dev env shape.
 
+## Known gap: the poller's baselines only refresh on deploy
+
+**Not low priority — it silently degrades short-wait alerts.** Found
+2026-10-10.
+
+`infra/lambda/poller/baselines.json` holds the per-ride low-wait
+thresholds. The poller reads it from the BUNDLED ASSET at container
+init (`index.py:73`, `Path(__file__).parent / "baselines.json"`), so
+the thresholds the Lambda uses are frozen at whatever shipped with the
+last `cdk deploy`.
+
+The nightly `aggregate.yml` job regenerates the file, uploads it to S3
+for the MCP analytics tools, and commits it to git — but it never
+deploys. Nothing closes the loop, so git and S3 stay current while the
+running poller drifts.
+
+Measured on 2026-10-10: the deployed poller was using thresholds
+generated **2026-08-27** while git had **2026-10-09**. Six weeks stale,
+with no error, no alarm, and nothing in `cdk diff` that reads as a
+problem (it shows only an opaque asset-hash change).
+
+How to check what's actually running — the init line prints on cold
+start:
+
+```
+aws logs filter-log-events \
+  --log-group-name /aws/lambda/<poller fn> --region us-east-2 \
+  --start-time $(( ($(date -u +%s) - 3600) * 1000 )) \
+  --filter-pattern '"low-wait thresholds"' \
+  --query 'events[].message' --output text
+# [poller] loaded low-wait thresholds for 33 rides (generated <date>)
+```
+
+Compare that date against
+`python3 -c "import json;print(json.load(open('infra/lambda/poller/baselines.json'))['generated_at'])"`.
+A `cdk deploy DisneyStack` is the current manual fix.
+
+Options, none chosen yet (deliberately deferred 2026-10-10):
+
+1. **Poller reads baselines from S3 at init**, bundled file as
+   fallback. The nightly job already uploads them, so thresholds would
+   refresh without a deploy. Needs its own design pass — adds an S3
+   read to the init path and a failure mode when S3 is unavailable.
+2. **Add `cdk deploy` to `aggregate.yml`** after the commit step.
+   Simplest, but it means a scheduled job deploys infrastructure
+   nightly — much bigger blast radius than uploading a file.
+3. **Alarm on staleness** — compare the init line's `generated_at`
+   against now and alert past a threshold. Doesn't fix it, but
+   converts a silent drift into a visible one.
+
+This is the same shape as the silent-data-growth class in CLAUDE.md:
+code whose correctness depends on an artifact that updates somewhere
+other than where it's read. Worth asking of any bundled data file:
+*what refreshes this in production, and what tells us when it stops?*
+
 ## Known follow-ups (low priority)
 
 These don't block anything; clean up when convenient.
