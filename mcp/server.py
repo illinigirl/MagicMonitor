@@ -1438,10 +1438,16 @@ def record_plan(
             **Include the `ride_id` field** — it comes back as part of
             each ride in get_planning_context's response, and the
             poller uses it to match plans against live DOWN/UP events
-            for plan-aware disruption alerts. Falling back to ride_name
-            still works (case-insensitive match) but ride_id is more
-            reliable for the Disney Adventure Friends Cavalcade /
-            Festival of Fantasy Parade kind of name overlap edge cases.
+            for plan-aware disruption alerts. There is NO name-based
+            fallback: the poller filters out any planned ride without
+            a ride_id before it is ever considered (poller/db.py), so
+            a name-only ride is invisible to disruption alerts, the
+            plan-drift check and the next-up nudge — and held
+            Lightning Lanes cannot be recorded against it at all,
+            since ll_holds is keyed by ride_id. A missing id is
+            resolved against the park's ride catalog at write time
+            and an unknown or ambiguous name fails the whole call, so
+            passing ride_id is both cheaper and more precise.
             Capture the planner's prediction for each ride so we can
             compare against actual later. Keep it compact — a few
             fields per ride.
@@ -1565,6 +1571,31 @@ def record_plan(
             "error_message": f"Could not parse '{planned_for_date}'. Use YYYY-MM-DD.",
         }
 
+    # Fill in any missing ride_id BEFORE the holds resolve below, which
+    # keys ll_holds by ride_id and would otherwise fail loud on a
+    # name-only ride.
+    #
+    # create_trip got this on 2026-10-10; record_plan is the same door
+    # into the same bug. Its docstring already ASKS for ride_id, and the
+    # whole lesson of that incident is that an ask is not enforcement —
+    # a plan saved without ids can never have its Lightning Lanes
+    # recorded by set_held_ll, because ll_holds is keyed by ride_id.
+    # Ordered ahead of resolve_ll_holds deliberately: with ids filled in
+    # first, a name-only ride_sequence that carries holds now SUCCEEDS
+    # instead of being rejected.
+    if ride_sequence:
+        try:
+            ids_err = _tool_impls.resolve_ride_sequence_ids(
+                _ddb_table(), ride_sequence, park_key
+            )
+        except Exception as e:
+            err = _aws_error_payload(e)
+            return err if err is not None else {
+                "error": "Ride id resolution failed",
+                "error_message": str(e),
+            }
+        if ids_err is not None:
+            return ids_err
     # Resolve pre-booked Lightning Lanes against the plan's own rides
     # BEFORE any write — a bad entry fails the whole call (see
     # resolve_ll_holds: silent hold loss is the 2026-07-04 bug class).
@@ -2400,6 +2431,54 @@ def activate_plan(
                 f"monitoring doesn't start firing weeks early."
             ),
         }
+
+    # A re-evaluation on the day must not silently strip ride_ids. This
+    # tool OVERWRITES ride_sequence wholesale, so a name-only sequence
+    # here would (a) make every ride invisible to the poller, which
+    # filters id-less plan rides out entirely (poller/db.py), and (b)
+    # orphan every entry in ll_holds, which stays keyed by ride_id —
+    # killing the day's alerting silently, at the exact moment it
+    # matters most. Worse than the create_trip case it shares a cause
+    # with (2026-10-10): this one REGRESSES a plan that was already
+    # correct.
+    #
+    # Fails loud rather than writing a degraded sequence. Activation
+    # itself stays available — call activate_plan without ride_sequence
+    # to just flip the plan live — and the message says so. Its own
+    # get_item (the future-date guard above reads conditionally and
+    # swallows errors by design) because we need park_key specifically.
+    if ride_sequence:
+        try:
+            _row = _convert_decimals(
+                _ddb_table().get_item(
+                    Key={"PK": f"USER#{user_id}", "SK": sk}
+                ).get("Item") or {}
+            )
+            _park = _row.get("park_key")
+            if not _park:
+                return {
+                    "error": "Cannot resolve plan's park",
+                    "error_message": (
+                        "This plan row has no park_key, so the rides in "
+                        "ride_sequence can't be checked for ride_id. "
+                        "Re-activate without ride_sequence to just turn "
+                        "monitoring on, then fix the plan with record_plan."
+                    ),
+                }
+            ids_err = _tool_impls.resolve_ride_sequence_ids(
+                _ddb_table(), ride_sequence, _park
+            )
+            if ids_err is not None:
+                return ids_err
+        except Exception as e:
+            err = _aws_error_payload(e)
+            return err if err is not None else {
+                "error": "Ride id resolution failed",
+                "error_message": (
+                    f"{e}. Re-activate without ride_sequence to turn "
+                    "monitoring on without rewriting the rides."
+                ),
+            }
 
     now_iso = datetime.now(timezone.utc).isoformat()
 

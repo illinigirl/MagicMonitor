@@ -74,6 +74,10 @@ class _StubTable:
         return _BW()
 
     # -- reads --
+    def get_item(self, Key):
+        it = self.items.get((Key["PK"], Key["SK"]))
+        return {"Item": dict(it)} if it else {}
+
     def query(self, IndexName=None, KeyConditionExpression=None,
               ExpressionAttributeValues=None, ScanIndexForward=True,
               Limit=None, ExclusiveStartKey=None):
@@ -113,8 +117,13 @@ class _StubTable:
                     ExpressionAttributeValues=None,
                     ExpressionAttributeNames=None, ConditionExpression=None,
                     ReturnValues=None):
-        """Just enough for apply_held_ll: ensure-map, set one map key,
-        remove one map key."""
+        """Handles the shapes these paths use: apply_held_ll's ll_holds
+        map updates (ensure-map / set-one-key / remove-one-key), plus a
+        generic comma-separated `SET attr = :val` for activate_plan.
+
+        The ll_holds branches must stay ahead of the generic SET branch —
+        `SET ll_holds = if_not_exists(...)` also starts with "SET ".
+        """
         key = (Key["PK"], Key["SK"])
         if (ConditionExpression and "attribute_exists(PK)" in ConditionExpression
                 and key not in self.items):
@@ -134,9 +143,14 @@ class _StubTable:
             item.setdefault("ll_holds", {})[names["#r"]] = vals[":t"]
         elif expr.startswith("REMOVE ll_holds.#r"):
             item.get("ll_holds", {}).pop(names["#r"], None)
+        elif expr.upper().startswith("SET "):
+            for assign in expr[4:].split(","):
+                lhs, rhs = assign.split("=")
+                attr = lhs.strip()
+                item[names.get(attr, attr)] = vals[rhs.strip()]
         else:  # pragma: no cover - guard against silent test drift
             raise AssertionError(f"stub can't handle: {expr!r}")
-        return {}
+        return {"Attributes": dict(item)}
 
     # -- test helpers --
     def plan_and_trip_rows(self) -> list[dict]:
@@ -434,3 +448,219 @@ class TestAlertableScheduleTypes:
         assert out is not None
         assert out["close"].startswith(f"{today}T23:59")
         assert out["open"].startswith(f"{today}T09:00")
+
+
+# ─── record_plan: the same door into the same bug ───────────────────
+
+
+@pytest.mark.parametrize("mod_name", ["server", "server_http"])
+class TestRecordPlanResolvesIds:
+    """record_plan's docstring has always ASKED for ride_id, and that ask
+    is what failed on 2026-10-17 — create_trip was fixed first, but a
+    name-only plan could still be written straight through record_plan.
+    An ask is not enforcement."""
+
+    def _record(self, mod_name, **kw):
+        mod = server if mod_name == "server" else server_http
+        if mod_name == "server_http":
+            kw.pop("user_id", None)
+        return mod.record_plan(**kw)
+
+    def _plan_row(self, stub):
+        return next(
+            v for (p, s), v in stub.items.items() if s.startswith("PLAN#")
+        )
+
+    def test_name_only_rides_get_ids(self, stub, mod_name):
+        out = self._record(
+            mod_name,
+            park="EPCOT",
+            ride_sequence=[
+                {"ride_name": "Test Track", "position": 1},
+                {"ride_name": "Frozen Ever After", "position": 2},
+            ],
+            planned_for_date=_future(3),
+        )
+        assert "error" not in out, out
+        ids = [r.get("ride_id") for r in self._plan_row(stub)["ride_sequence"]]
+        assert ids == ["testtrack", "frozen"]
+
+    def test_name_only_rides_WITH_holds_now_succeed(self, stub, mod_name):
+        """Before this fix resolve_ll_holds rejected the call outright:
+        the hold's ride matched by name but had no ride_id to key the
+        ll_holds map by. Resolving ids first turns that into a success."""
+        out = self._record(
+            mod_name,
+            park="EPCOT",
+            ride_sequence=[{"ride_name": "Test Track", "position": 1}],
+            ll_holds={"Test Track": "3:00 PM"},
+            planned_for_date=_future(3),
+        )
+        assert "error" not in out, out
+        row = self._plan_row(stub)
+        assert list(row["ll_holds"].keys()) == ["testtrack"]
+        assert row["ll_holds"]["testtrack"].startswith(f"{_future(3)}T15:00")
+
+    def test_unknown_ride_writes_nothing(self, stub, mod_name):
+        out = self._record(
+            mod_name,
+            park="EPCOT",
+            ride_sequence=[{"ride_name": "Haunted Mansion", "position": 1}],
+            planned_for_date=_future(3),
+        )
+        assert out["error"] == "Unknown ride"
+        assert stub.plan_and_trip_rows() == []
+
+    def test_ambiguous_ride_writes_nothing(self, stub, mod_name):
+        out = self._record(
+            mod_name,
+            park="EPCOT",
+            ride_sequence=[{"ride_name": "the", "position": 1}],
+            planned_for_date=_future(3),
+        )
+        assert out["error"] == "Ambiguous ride"
+        assert stub.plan_and_trip_rows() == []
+
+    def test_ids_already_present_does_no_catalog_read(self, stub, mod_name):
+        out = self._record(
+            mod_name,
+            park="EPCOT",
+            ride_sequence=[{"ride_name": "Test Track", "ride_id": "testtrack"}],
+            planned_for_date=_future(3),
+        )
+        assert "error" not in out, out
+        assert stub.gsi_queries == 0
+
+    def test_empty_sequence_still_records(self, stub, mod_name):
+        """The zero-state case: an empty plan is legal and must not be
+        turned into an error by the resolver."""
+        out = self._record(
+            mod_name, park="EPCOT", ride_sequence=[],
+            planned_for_date=_future(3),
+        )
+        assert "error" not in out, out
+        assert stub.gsi_queries == 0
+
+
+# ─── activate_plan: the dangerous door (it REGRESSES a good plan) ───
+
+
+@pytest.mark.parametrize("mod_name", ["server", "server_http"])
+class TestActivatePlanPreservesIds:
+    """activate_plan overwrites ride_sequence wholesale, on the morning
+    of the trip. A name-only re-evaluation there doesn't just fail to
+    add ids — it STRIPS ids a correct plan already had, making every
+    ride invisible to the poller and orphaning ll_holds (still keyed by
+    ride_id). This is the 2026-10-17 shape at its worst."""
+
+    def _seed(self, stub, mod_name, ride_sequence, ll_holds=None):
+        uid = (
+            server._DEFAULT_USER_ID if mod_name == "server"
+            else server_http._SHARED_USER_ID
+        )
+        today = server._today_et_date_iso()
+        sk = f"PLAN#{today}T09:00:00+00:00"
+        item = {
+            "PK": f"USER#{uid}", "SK": sk,
+            "planned_for_date": today,
+            "planned_at": f"{today}T09:00:00+00:00",
+            "park_key": "epcot",
+            "active": False,
+            "ride_sequence": ride_sequence,
+        }
+        if ll_holds:
+            item["ll_holds"] = ll_holds
+        stub.put_item(item)
+        return sk, (f"USER#{uid}", sk)
+
+    def _activate(self, mod_name, **kw):
+        mod = server if mod_name == "server" else server_http
+        return mod.activate_plan(**kw)
+
+    def test_name_only_reevaluation_gets_ids(self, stub, mod_name):
+        sk, key = self._seed(
+            stub, mod_name, [{"ride_name": "Test Track", "ride_id": "testtrack"}]
+        )
+        out = self._activate(
+            mod_name, plan_id=sk,
+            ride_sequence=[
+                {"ride_name": "Frozen Ever After", "position": 1},
+                {"ride_name": "Test Track", "position": 2},
+            ],
+        )
+        assert "error" not in out, out
+        ids = [r.get("ride_id") for r in stub.items[key]["ride_sequence"]]
+        assert ids == ["frozen", "testtrack"], "ids must survive activation"
+
+    def test_holds_are_not_orphaned(self, stub, mod_name):
+        """The Oct 17 scenario: a plan with ids AND four-ish holds gets
+        re-evaluated by name on the day. The holds stay keyed by
+        ride_id, so if activation stripped the ids every hold would
+        point at a ride no longer in the sequence."""
+        holds = {"testtrack": "2026-10-17T15:25:00-04:00",
+                 "frozen": "2026-10-17T10:25:00-04:00"}
+        sk, key = self._seed(
+            stub, mod_name,
+            [{"ride_name": "Test Track", "ride_id": "testtrack"},
+             {"ride_name": "Frozen Ever After", "ride_id": "frozen"}],
+            ll_holds=holds,
+        )
+        out = self._activate(
+            mod_name, plan_id=sk,
+            ride_sequence=[
+                {"ride_name": "Test Track", "position": 1},
+                {"ride_name": "Frozen Ever After", "position": 2},
+            ],
+        )
+        assert "error" not in out, out
+        row = stub.items[key]
+        seq_ids = {r.get("ride_id") for r in row["ride_sequence"]}
+        orphans = set(row["ll_holds"]) - seq_ids
+        assert orphans == set(), f"holds orphaned by activation: {orphans}"
+
+    def test_unknown_ride_does_not_activate_or_overwrite(self, stub, mod_name):
+        sk, key = self._seed(
+            stub, mod_name, [{"ride_name": "Test Track", "ride_id": "testtrack"}]
+        )
+        out = self._activate(
+            mod_name, plan_id=sk,
+            ride_sequence=[{"ride_name": "Haunted Mansion", "position": 1}],
+        )
+        assert out["error"] == "Unknown ride"
+        row = stub.items[key]
+        assert row["active"] is False, "must not activate on a bad sequence"
+        assert row["ride_sequence"][0]["ride_id"] == "testtrack", \
+            "original sequence must be untouched"
+
+    def test_activation_without_ride_sequence_still_works(self, stub, mod_name):
+        """The recovery path the error message points at — and proof the
+        resolver doesn't do a catalog read when there's nothing to
+        resolve."""
+        sk, key = self._seed(
+            stub, mod_name, [{"ride_name": "Test Track", "ride_id": "testtrack"}]
+        )
+        out = self._activate(mod_name, plan_id=sk)
+        assert "error" not in out, out
+        assert stub.items[key]["active"] is True
+        assert stub.gsi_queries == 0
+
+    def test_missing_park_key_refuses_rather_than_degrading(
+        self, stub, mod_name
+    ):
+        uid = (
+            server._DEFAULT_USER_ID if mod_name == "server"
+            else server_http._SHARED_USER_ID
+        )
+        today = server._today_et_date_iso()
+        sk = f"PLAN#{today}T09:00:00+00:00"
+        stub.put_item({
+            "PK": f"USER#{uid}", "SK": sk,
+            "planned_for_date": today, "active": False,
+            "ride_sequence": [{"ride_name": "Test Track", "ride_id": "tt"}],
+        })  # deliberately no park_key
+        out = self._activate(
+            mod_name, plan_id=sk,
+            ride_sequence=[{"ride_name": "Test Track", "position": 1}],
+        )
+        assert out["error"] == "Cannot resolve plan's park"
+        assert "without ride_sequence" in out["error_message"]
