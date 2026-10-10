@@ -359,6 +359,42 @@ aws dynamodb get-item --profile watchtower --region us-east-2 \
 aws sso login --profile watchtower
 ```
 
+**If the browser never opens, use `--no-browser`** (seen 2026-10-10):
+
+```
+aws sso login --profile watchtower --no-browser
+```
+
+It prints a URL instead of launching anything; open that URL, approve,
+and the waiting command finishes on its own. Keep the shell alive while
+you do — the flow redirects back to a `127.0.0.1:<port>` listener that
+the command itself is holding open.
+
+The failure signature is silence: no browser, no error, and nothing new
+written to `~/.aws/sso/cache/`, so `aws sts get-caller-identity` keeps
+reporting "Token has expired and refresh failed". Check the cache
+timestamps to tell "login didn't happen" apart from "login happened and
+something else is wrong":
+
+```
+ls -lt ~/.aws/sso/cache/*.json
+```
+
+(The entry with a months-away `expiresAt` is the long-lived client
+registration, not an access token — don't read it as a valid session.)
+
+Root cause unconfirmed. Ruled out on 2026-10-10: the AWS CLI itself
+(2.32.11, installed Dec 2025 — unchanged since well before SSO last
+worked on 2026-08-27), a set `BROWSER` env var (unset), and the
+LaunchServices `https` handler (intact, pointing at Chrome). The open
+lead is that macOS software updates ran 2026-10-06, between the last
+working login and the failure: `aws sso login` launches the browser by
+asking macOS to launch another app, and an OS update is a known trigger
+for those automation/TCC grants being reset — after which the launch
+fails silently. If it recurs, check System Settings → Privacy &
+Security → Automation for the terminal app before spending time
+elsewhere. `--no-browser` sidesteps the launch entirely either way.
+
 ### Tail the poller
 
 ```
@@ -412,6 +448,21 @@ npx cdk deploy --profile watchtower --require-approval never
 
 CDK with `--require-approval never` is fine because we always run
 `cdk diff` first. Don't skip the diff.
+
+**If any `npx cdk` command dies before CDK even starts** with
+`Cannot find module '.../cmux-claude-node-options/restore-node-options.cjs'`
+(seen 2026-10-10), the shell's `NODE_OPTIONS` is preloading a temp file
+that no longer exists — `/var/folders/.../T/` gets cleared on reboot or
+by temp cleanup while the env var still points at it. It's a tooling
+artifact, nothing to do with the stack. Run the command with the var
+dropped for that invocation:
+
+```
+env -u NODE_OPTIONS npx cdk diff DisneyMcpStack
+```
+
+Don't permanently unset it — the `--max-old-space-size=4096` it also
+carries is worth keeping for large synths.
 
 ### Smoke-test the live URL
 
