@@ -96,8 +96,8 @@ tool_responses:
           forecast:
             typical_wait_now: 20
             confidence: high
-        - ride_id: soarin-around-the-world
-          ride_name: "Soarin' Around the World"
+        - ride_id: soarin-across-america
+          ride_name: "Soarin' Across America"
           status: OPERATING
           wait_mins: 40
           forecast:

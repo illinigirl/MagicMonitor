@@ -174,7 +174,7 @@ EPCOT_RIDES = [
     ("frozen", "Frozen Ever After"),
     ("lwtl", "Living with the Land"),
     ("sse", "Spaceship Earth"),
-    ("soarin", "Soarin' Around the World"),
+    ("soarin", "Soarin' Across America"),  # real catalog name
     ("guardians", "Guardians of the Galaxy: Cosmic Rewind"),
     ("testtrack", "Test Track"),
     ("missionspace", "Mission: SPACE"),
@@ -310,7 +310,7 @@ class TestCreateTripResolvesIds:
                 {"ride_name": "Remy's Ratatouille Adventure", "position": 1},
                 {"ride_name": "Frozen Ever After", "position": 2},
                 {"ride_name": "Spaceship Earth", "position": 3},
-                {"ride_name": "Soarin' Around the World", "position": 4},
+                {"ride_name": "Soarin' Across America", "position": 4},
                 {"ride_name": "Guardians of the Galaxy: Cosmic Rewind",
                  "position": 5},
                 {"ride_name": "Test Track", "position": 6},
@@ -664,3 +664,77 @@ class TestActivatePlanPreservesIds:
         )
         assert out["error"] == "Cannot resolve plan's park"
         assert "without ride_sequence" in out["error_message"]
+
+
+# ─── bidirectional matching (catalog name inside a longer query) ────
+
+
+class TestReverseNameMatch:
+    """The forward pass only matches a query SHORTER than the catalog
+    name, so Disney's marketing names ("Test Track presented by
+    Chevrolet" vs the catalog's "Test Track") failed the whole write.
+    Added 2026-10-10 as a TIERED fallback — consulted only when the
+    forward pass finds nothing, so it can't turn a clean unique match
+    into an ambiguity."""
+
+    def test_longer_official_name_resolves(self, stub):
+        seq = [{"ride_name": "Test Track presented by Chevrolet"}]
+        assert _tool_impls.resolve_ride_sequence_ids(stub, seq, "epcot") is None
+        assert seq[0]["ride_id"] == "testtrack"
+
+    def test_trailing_qualifier_resolves(self, stub):
+        seq = [{"ride_name": "Frozen Ever After in Norway"}]
+        assert _tool_impls.resolve_ride_sequence_ids(stub, seq, "epcot") is None
+        assert seq[0]["ride_id"] == "frozen"
+
+    def test_forward_match_still_wins_over_reverse(self, stub):
+        """'Guardians' is a forward (shorter-than-catalog) hit. The
+        reverse tier must never be reached for it."""
+        seq = [{"ride_name": "Guardians"}]
+        assert _tool_impls.resolve_ride_sequence_ids(stub, seq, "epcot") is None
+        assert seq[0]["ride_id"] == "guardians"
+
+    def test_exact_match_unaffected_by_reverse_tier(self, stub):
+        """Regression guard: the catalog has both 'Living with the Land'
+        and (in production) a longer Glimmering Greenhouses variant.
+        An exact normalized name must still win at step 2."""
+        stub.add_ride("lwtl_gg", "Living with the Land – Glimmering "
+                                 "Greenhouses", "epcot")
+        seq = [{"ride_name": "Living with the Land"}]
+        assert _tool_impls.resolve_ride_sequence_ids(stub, seq, "epcot") is None
+        assert seq[0]["ride_id"] == "lwtl"
+
+    def test_still_unknown_when_wording_genuinely_differs(self, stub):
+        """'Soarin' Around the World' vs the catalog's 'Soarin' Across
+        America' overlap only on one token — neither direction matches,
+        and guessing would be worse than failing. This is the case the
+        error message exists for."""
+        seq = [{"ride_name": "Soarin' Around the World"}]
+        err = _tool_impls.resolve_ride_sequence_ids(stub, seq, "epcot")
+        assert err["error"] == "Unknown ride"
+        assert "ride_id" not in seq[0]
+
+    def test_single_token_catalog_name_cannot_swallow_a_long_query(self, stub):
+        """The >=2-token floor on the reverse tier. A one-word entry
+        inside a long string is too weak a signal to write on."""
+        stub.add_ride("gen", "Journey", "epcot")
+        seq = [{"ride_name": "A long made up Journey of something else"}]
+        err = _tool_impls.resolve_ride_sequence_ids(stub, seq, "epcot")
+        assert err is not None, "one-token reverse match must not resolve"
+
+    def test_KNOWN_COST_reverse_match_can_grab_a_different_entity(self, stub):
+        """Documented downside, not a bug to fix silently: a query naming
+        a DIFFERENT entity that contains a ride name resolves to the
+        ride. 'Jungle Cruise Skipper Canteen' is a restaurant, and it
+        matches the Jungle Cruise ride.
+
+        Accepted because (a) it still requires a unique hit, so it can't
+        pick arbitrarily between candidates the way the 2026-07-04
+        wrong-ride bug did, (b) ride_sequence is for rides — dining goes
+        in `reservations` — and (c) the alternative is failing a write
+        that names a real ride in the right park. If this ever bites,
+        this test is the place that says it was a choice."""
+        stub.add_ride("jc", "Jungle Cruise", "epcot")
+        seq = [{"ride_name": "Jungle Cruise Skipper Canteen"}]
+        assert _tool_impls.resolve_ride_sequence_ids(stub, seq, "epcot") is None
+        assert seq[0]["ride_id"] == "jc"

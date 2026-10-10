@@ -2699,10 +2699,28 @@ def _match_name_ladder(
       1. exact id;
       2. punctuation-normalized exact name ('mission space' ==
          'Mission: SPACE');
-      3. normalized substring — but ONLY when exactly one item matches.
+      3. query inside the item's name — the SHORT-query direction
+         ('TRON' → 'TRON Lightcycle / Run'), only when exactly one
+         item matches;
+      4. item's name inside the query — the LONG-query direction
+         ('Test Track presented by Chevrolet' → 'Test Track'), only
+         when exactly one item matches and its name is >=2 tokens.
+
+    Every tier requires a UNIQUE hit; two or more candidates return
+    "ambiguous" rather than guessing. Tier 4 is consulted only when 3
+    found nothing, so it can never turn a clean match into an
+    ambiguity.
 
     Returns (item, status, candidates) where status is "ok", "ambiguous"
     (candidates populated) or "none".
+
+    Known cost of tier 4: a query naming a DIFFERENT entity that
+    contains a ride name resolves to the ride ('Jungle Cruise Skipper
+    Canteen', a restaurant, matches the Jungle Cruise). Accepted
+    deliberately — it still can't pick arbitrarily between candidates
+    the way the 2026-07-04 wrong-ride bug did, and the alternative is
+    rejecting writes that name a real ride in the right park. See
+    test_KNOWN_COST_reverse_match_can_grab_a_different_entity.
 
     Callers format their own error payloads so "not in this plan" and
     "not in this park" stay DISTINCT messages. Collapsing two different
@@ -2731,6 +2749,30 @@ def _match_name_ladder(
         return partial[0], "ok", []
     if len(partial) > 1:
         return None, "ambiguous", partial
+    # 4. Reverse direction — the catalog name sitting inside a LONGER
+    #    query. The forward pass above can only match a query that is
+    #    SHORTER than the catalog name, so Disney's marketing names
+    #    ("Test Track presented by Chevrolet" vs the catalog's "Test
+    #    Track") could never resolve and failed the whole write.
+    #
+    #    Tiered deliberately rather than folded into the pass above: a
+    #    reverse hit is consulted ONLY when the forward pass found
+    #    nothing, so adding it cannot turn a previously clean unique
+    #    match into an ambiguity. Still requires a unique hit.
+    #
+    #    The >=2-token floor stops a hypothetical one-word catalog entry
+    #    from swallowing an unrelated multi-word query; a single token
+    #    inside a long string is far too weak a signal to write to the
+    #    table on.
+    rev = []
+    for it in items:
+        nm = _norm_ride_name(it.get(name_key) or "")
+        if nm and len(nm.split()) >= 2 and q and nm in q:
+            rev.append(it)
+    if len(rev) == 1:
+        return rev[0], "ok", []
+    if len(rev) > 1:
+        return None, "ambiguous", rev
     return None, "none", []
 
 
