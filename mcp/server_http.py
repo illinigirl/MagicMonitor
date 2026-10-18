@@ -2867,6 +2867,13 @@ def add_ride_to_plan(
     """Add a spontaneous ride to a plan's ride_sequence (starts
     monitoring it for disruptions). Idempotent on ride_id.
 
+    Args:
+        position: Optional, 1-indexed, and HONORED — the ride is
+            inserted there, the rest shift down, and plan_order is
+            updated to match. Omit to append. Out-of-range clamps.
+            Pass it whenever the user says where the ride goes
+            ("let's do Pirates third").
+
     Returns:
         Dict with added (0/1), total_rides.
     """
@@ -2895,7 +2902,13 @@ def add_ride_to_plan(
         entry["position"] = position
     if notes:
         entry["notes"] = notes
-    ride_seq.append(entry)
+    # Insert at the requested position instead of appending, and slot the
+    # ride into plan_order when the row has one — without that second
+    # step the web reader still ranks it last (MAX_SAFE_INTEGER). See
+    # insert_ride_at_position for why both matter.
+    ride_seq, new_plan_order = _tool_impls.insert_ride_at_position(
+        ride_seq, entry, position, list(item.get("plan_order") or [])
+    )
 
     try:
         # Re-adding a ride also UN-DROPS it: clear it from dropped_ride_ids
@@ -2904,9 +2917,13 @@ def add_ride_to_plan(
         # of an absent member is a harmless no-op.
         vals = _floats_to_decimals({":seq": ride_seq})
         vals[":dropid"] = {ride_id}
+        set_expr = "ride_sequence = :seq"
+        if new_plan_order is not None:
+            set_expr += ", plan_order = :ord"
+            vals[":ord"] = new_plan_order
         table.update_item(
             Key={"PK": f"USER#{_SHARED_USER_ID}", "SK": sk},
-            UpdateExpression="SET ride_sequence = :seq DELETE dropped_ride_ids :dropid",
+            UpdateExpression=f"SET {set_expr} DELETE dropped_ride_ids :dropid",
             ExpressionAttributeValues=vals,
             ConditionExpression="attribute_exists(PK)",
         )

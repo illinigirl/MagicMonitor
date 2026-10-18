@@ -3136,11 +3136,15 @@ def add_ride_to_plan(
             for this ride right now, including LL-queue time if the
             user is booking an LL slot for it. Useful for the
             feedback loop's per-ride bias calibration later.
-        position: Optional. Where this ride falls in the sequence
-            (1-indexed). Informational only — Claude uses it for
-            ordering when reasoning about the plan, but the data
-            plane doesn't enforce uniqueness or shift existing
-            positions on insert.
+        position: Optional. Where this ride goes in the sequence
+            (1-indexed), and it is HONORED — the ride is inserted
+            there, the other rides shift down, and the plan's
+            explicit plan_order ranking is updated to match. Omit to
+            append to the end. Out-of-range values clamp (position 9
+            in a 6-ride plan means last), so this never errors.
+            Pass it whenever the user says where a ride goes
+            ("let's do Pirates third") — before 2026-10-18 the value
+            was stored but ignored and the ride always landed last.
         notes: Optional free-text ("assumed LL booked at 4pm" /
             "spontaneous add after Pirates").
         user_id: Single-user default "megan".
@@ -3201,7 +3205,13 @@ def add_ride_to_plan(
     if notes:
         new_entry["notes"] = notes
 
-    ride_seq.append(new_entry)
+    # Insert at the requested position instead of appending, and slot the
+    # ride into plan_order when the row has one — without that second
+    # step the web reader still ranks it last (MAX_SAFE_INTEGER). See
+    # insert_ride_at_position for why both matter.
+    ride_seq, new_plan_order = _tool_impls.insert_ride_at_position(
+        ride_seq, new_entry, position, list(item.get("plan_order") or [])
+    )
 
     try:
         # Re-adding un-drops: also clear the ride from dropped_ride_ids
@@ -3209,9 +3219,13 @@ def add_ride_to_plan(
         # silently kept off the watch set. DELETE of an absent member no-ops.
         vals = _floats_to_decimals({":seq": ride_seq})
         vals[":dropid"] = {ride_id}
+        set_expr = "ride_sequence = :seq"
+        if new_plan_order is not None:
+            set_expr += ", plan_order = :ord"
+            vals[":ord"] = new_plan_order
         table.update_item(
             Key={"PK": f"USER#{user_id}", "SK": sk},
-            UpdateExpression="SET ride_sequence = :seq DELETE dropped_ride_ids :dropid",
+            UpdateExpression=f"SET {set_expr} DELETE dropped_ride_ids :dropid",
             ExpressionAttributeValues=vals,
             ConditionExpression="attribute_exists(PK)",
         )

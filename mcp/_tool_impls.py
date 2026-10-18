@@ -3106,3 +3106,66 @@ def _pop_ride_from_sequence(
             continue
         new_seq.append(r)
     return new_seq, popped
+
+
+def insert_ride_at_position(
+    ride_sequence: list[dict[str, Any]],
+    new_entry: dict[str, Any],
+    position: int | None,
+    plan_order: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str] | None]:
+    """Insert `new_entry` into a plan's ride_sequence at a 1-INDEXED
+    `position`, renumbering every entry's `position` field to match the
+    resulting order. Returns (new_sequence, new_plan_order_or_None) —
+    plan_order is None when it needs no write.
+
+    Why this exists (2026-10-18): add_ride_to_plan stored the requested
+    `position` on the entry and then unconditionally appended it, so a
+    ride asked for at position 3 landed last. Its docstring called the
+    field "informational only", and that was true in the worst way —
+    NOTHING in the repo ever read `position`. Array order is the
+    authoritative representation (see web/src/lib/plan-timeline.ts and
+    dynamodb.ts), so a position field that disagreed with the array was
+    a write-only lie. Fixing the insert and renumbering makes the two
+    representations agree.
+
+    THREE things express order, and a correct insert has to respect two
+    of them:
+      1. `ride_sequence` array order — the backbone, authoritative.
+      2. `plan_order` — an explicit ride_id ranking the /replan flow
+         writes. When present, the web read sorts by it and ranks any
+         ride MISSING from it at MAX_SAFE_INTEGER, i.e. dead last. So
+         inserting into the array alone is NOT enough: with a
+         plan_order on the row, the new ride still sorts to the bottom.
+         That is the same trap web/src/app/replan/actions.ts hit on
+         2026-07-04 with Test Track, which it solved with
+         insertIntoPlanOrder.
+      3. `position` — renumbered here, still read by nobody.
+
+    position=None appends (unchanged). Out-of-range values clamp rather
+    than erroring: a plan is a human artifact and "put it 9th" in a
+    6-ride plan obviously means last.
+    """
+    seq = list(ride_sequence)
+    if position is None:
+        idx = len(seq)
+    else:
+        # 1-indexed → 0-indexed, clamped into [0, len].
+        idx = max(0, min(int(position) - 1, len(seq)))
+    seq.insert(idx, new_entry)
+
+    # Renumber so `position` and array order can never disagree again.
+    for n, r in enumerate(seq, start=1):
+        r["position"] = n
+
+    # plan_order: only touched when the row already has one. Inserting
+    # at the same index keeps the explicit ranking consistent with the
+    # array; a ride_id absent from plan_order is ranked last by the web
+    # reader, which is exactly the bug being fixed.
+    new_order: list[str] | None = None
+    rid = new_entry.get("ride_id")
+    if plan_order and rid and rid not in plan_order:
+        o = list(plan_order)
+        o.insert(max(0, min(idx, len(o))), rid)
+        new_order = o
+    return seq, new_order
