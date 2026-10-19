@@ -239,6 +239,52 @@ PLAN_DRIFT_ENABLED = os.environ.get("PLAN_DRIFT_ENABLED", "false").lower() == "t
 NUDGE_ENABLED = os.environ.get("NUDGE_ENABLED", "true").lower() == "true"
 
 
+def build_ll_wanted(active_plans: list[dict]) -> set[tuple[str, str]]:
+    """The (user_id, ride_id) pairs that actually WANT Lightning Lane
+    alerts: the user either already HOLDS an LL for the ride, or marked
+    it `ll_planned` (intends to grab one).
+
+    A plan ride with neither is a standby ride. Plan membership alone
+    used to qualify, and that was the 2026-10-19 bug: Pirates stayed in
+    the plan after the LL moved off it, so every earlier/reappeared
+    offer alerted indefinitely. Clearing the hold is what STARTED the
+    noise, because the "only if it beats what you hold" filter
+    (_ll_beats_held in handler) only exists while a hold exists — no
+    hold meant no filter, not silence.
+
+    Keeps the MLL-hunting case working: ll_planned with no hold yet is
+    exactly why reappearance alerts exist (2026-07-04). The flag is the
+    discriminator between "hunting an LL" and "walking on".
+
+    Per-(user, ride) because one person in the party can be hunting an
+    LL for a ride another is riding standby.
+    """
+    wanted: set[tuple[str, str]] = set()
+    for p in active_plans or []:
+        uid = p.get("user_id")
+        if not uid:
+            continue
+        for rid in (p.get("ll_holds") or {}):
+            if rid:
+                wanted.add((uid, rid))
+        for r in (p.get("rides") or []):
+            if r.get("ride_id") and r.get("ll_planned"):
+                wanted.add((uid, r["ride_id"]))
+    return wanted
+
+
+def plan_ll_recipients(
+    plan_pid_by_uid: dict[str, str],
+    ll_wanted: set[tuple[str, str]],
+    ride_id: str,
+) -> set[str]:
+    """Of the users with this ride in an active plan, those who want LL
+    alerts for it (see build_ll_wanted). Empty set = everyone planning
+    this ride is riding standby, so an LL offer is noise for all of them.
+    """
+    return {u for u in (plan_pid_by_uid or {}) if (u, ride_id) in ll_wanted}
+
+
 def _compute_plan_drift(
     rides: list[dict],
     current_waits: dict[str, int],
@@ -417,6 +463,11 @@ def handler(event, context):
         for _rid, _ret in (_p.get("ll_holds") or {}).items():
             if _rid and _ret:
                 held_ll_by_ride.setdefault(_rid, _ret)
+    # (user, ride) pairs that want LL alerts — held LL or ll_planned.
+    # held_ll_by_ride above stays flattened because it gates whether the
+    # EVENT is interesting; this gates WHO hears about it. See
+    # build_ll_wanted for the 2026-10-19 rationale.
+    ll_wanted = build_ll_wanted(active_plans)
     if plan_ride_index:
         print(
             f"[poller] Active plans for {today_local_iso}: "
@@ -660,10 +711,6 @@ def handler(event, context):
                         and db.is_ll_earlier_on_cooldown(ride_id)
                     )
                 ):
-                    if _ll_event == "reappeared":
-                        db.mark_ll_reappear_alert_sent(ride_id)
-                    else:
-                        db.mark_ll_earlier_alert_sent(ride_id)
                     new_ll = attr["ll"]
                     prior_ll = (existing or {}).get("ll") or {}
                     print(
@@ -679,7 +726,12 @@ def handler(event, context):
                     for keyname in (ride_id, attr["name"].lower()):
                         for u, pid in plan_ride_index.get(keyname, []):
                             plan_pid_by_uid.setdefault(u, pid)
-                    plan_users = set(plan_pid_by_uid)
+                    # In-plan recipients, narrowed to those who hold an LL
+                    # for this ride or marked it ll_planned. A plan ride
+                    # with neither is a standby ride (see ll_wanted).
+                    plan_users = plan_ll_recipients(
+                        plan_pid_by_uid, ll_wanted, ride_id
+                    )
                     # Favoriters who opted in (park-subscribers only).
                     watch_favs = {
                         s
@@ -695,6 +747,20 @@ def handler(event, context):
                         in_plan = uid in plan_users
                         prev = ll_by_key.get(key)
                         ll_by_key[key] = (uid, in_plan or bool(prev and prev[1]))
+                    # Burn the cooldown only when someone is actually going
+                    # to hear about it. Marking it earlier (as this did until
+                    # 2026-10-19) was harmless while plan membership alone
+                    # qualified, because there was always a recipient. Now
+                    # that standby rides are filtered out, an un-marked
+                    # no-recipient event would have silently eaten the
+                    # cooldown window and suppressed the NEXT offer — the
+                    # one that lands after someone books or flags
+                    # ll_planned mid-window.
+                    if ll_by_key:
+                        if _ll_event == "reappeared":
+                            db.mark_ll_reappear_alert_sent(ride_id)
+                        else:
+                            db.mark_ll_earlier_alert_sent(ride_id)
                     for key, (uid, in_plan) in ll_by_key.items():
                         if notifier.alert_ll_earlier(
                             key,

@@ -1457,12 +1457,24 @@ def record_plan(
             ("10:00 AM", "14:30", or ISO; shown on the trip page,
             future nudge anchor); `ll_planned` (bool) — the plan is to
             ride this via a Lightning Lane you INTEND to grab but don't
-            hold yet (predicted_wait_min is LL-priced). ll_planned
-            rides are excluded from the "busier than planned" drift
-            math — without the flag their tiny LL prediction gets
-            compared to standby and fires false "running behind"
-            alerts. Once the LL is actually booked, record it in
-            ll_holds / set_held_ll (holds also suppress drift).
+            hold yet (predicted_wait_min is LL-priced).
+
+            **`ll_planned` now also decides whether the user gets
+            Lightning Lane alerts for the ride** (changed 2026-10-19),
+            so SET IT whenever an LL is intended. A plan ride with
+            neither ll_planned nor a hold in ll_holds is treated as a
+            STANDBY ride and gets no LL-earlier / LL-reappeared pushes
+            — that is the point: a ride left in the plan after the LL
+            moved off it used to alert forever (Pirates, 2026-10-19).
+            The flip side is that omitting the flag on a ride you ARE
+            hunting an LL for silences exactly the alerts you want.
+
+            ll_planned rides are also excluded from the "busier than
+            planned" drift math — without the flag their tiny LL
+            prediction gets compared to standby and fires false
+            "running behind" alerts. Once the LL is actually booked,
+            record it in ll_holds / set_held_ll (holds also suppress
+            drift AND re-enable LL alerts on their own).
         show_selections: Optional list of shows being fitted into the
             plan. Each entry: {"show_name": str, "performance_start":
             iso_ts, "predicted_arrival_min": int}. Empty list / None
